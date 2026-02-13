@@ -1,0 +1,68 @@
+{
+    "defaultProfile": "moonshotAnthropic",
+    "profiles": {
+      "moonshotAnthropic": {
+        "provider": "anthropic",
+        "baseUrl": "https://api.moonshot.cn/anthropic",
+        "auth": {
+          "apiKeyEnv": "MOONSHOT_API_KEY",
+          "anthropicVersion": "2023-06-01"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages"
+          ]
+        },
+        "defaults": {
+          "model": "kimi-k2.5",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      },
+      "moonshot": {
+        "provider": "openai_compatible",
+        "baseUrl": "https://api.moonshot.cn/v1",
+        "auth": {
+          "apiKeyEnv": "MOONSHOT_API_KEY"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages",
+            "openai_chat"
+          ]
+        },
+        "defaults": {
+          "model": "kimi-k2.5",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      },
+      "codexOAuth": {
+        "provider": "openai_compatible",
+        "baseUrl": "https://api.openai.com/v1",
+        "auth": {
+          "type": "codex_oauth",
+          "accessTokenEnv": "CODEX_ACCESS_TOKEN",
+          "accountIdEnv": "CODEX_ACCOUNT_ID",
+          "codexEndpoint": "https://chatgpt.com/backend-api/codex/responses"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages",
+            "openai_chat"
+          ]
+        },
+        "defaults": {
+          "model": "gpt-5.2-codex",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      }
+    }
+}
