@@ -1,10 +1,28 @@
 # start_proxy.py
 import os
 import argparse
+import asyncio
 from dotenv import load_dotenv
-from upstream_config import load_and_validate_config, UpstreamConfigError
+from token_auth import ensure_codex_login_for_startup
+from upstream_config import load_and_validate_config, UpstreamConfigError, get_effective_auth_type
 
 load_dotenv(override=True)
+
+def _has_codex_oauth_profile(cfg: dict) -> bool:
+    profiles = cfg.get("profiles") if isinstance(cfg, dict) else {}
+    if not isinstance(profiles, dict):
+        return False
+    for _, profile in profiles.items():
+        if not isinstance(profile, dict):
+            continue
+        try:
+            if get_effective_auth_type(profile) == "codex_oauth":
+                return True
+        except Exception:
+            # 配置校验阶段会给出明确错误；这里只做探测
+            continue
+    return False
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -29,9 +47,17 @@ if __name__ == "__main__":
         os.environ["BAN_STREAM"] = "true"
 
     try:
-        load_and_validate_config()
+        cfg = load_and_validate_config()
     except UpstreamConfigError as e:
         raise SystemExit(f"[FATAL] 上游配置校验失败: {e}")
+
+    if _has_codex_oauth_profile(cfg):
+        try:
+            asyncio.run(ensure_codex_login_for_startup())
+        except KeyboardInterrupt:
+            raise SystemExit("[FATAL] Codex 登录被中断，服务未启动")
+        except Exception as e:
+            raise SystemExit(f"[FATAL] Codex 登录失败，服务未启动: {e}")
 
     host = os.getenv("PROXY_HOST", "127.0.0.1")
     port = int(os.getenv("PROXY_PORT", "4000"))

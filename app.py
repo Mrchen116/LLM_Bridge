@@ -13,10 +13,18 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 
-from token_auth import get_x_auth_token
+from token_auth import (
+    begin_codex_oauth,
+    clear_codex_auth,
+    complete_codex_oauth_callback,
+    get_codex_auth_status,
+    get_codex_upstream_headers,
+    get_x_auth_token,
+)
 from upstream_config import (
     PROTOCOL_ANTHROPIC_MESSAGES,
     PROTOCOL_OPENAI_CHAT,
+    PROTOCOL_OPENAI_RESPONSES,
     UpstreamCapabilityError,
     UpstreamConfigError,
     build_auth_headers,
@@ -372,6 +380,279 @@ def oai_finish_reason_to_stop_reason(fr: Optional[str]) -> Optional[str]:
     return "end_turn"
 
 
+def _message_content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif "text" in item:
+                    parts.append(str(item.get("text") or ""))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return str(content)
+
+
+def _chat_tool_choice_to_responses(tool_choice: Any) -> Any:
+    if isinstance(tool_choice, str):
+        if tool_choice in {"auto", "none", "required"}:
+            return tool_choice
+        return "auto"
+    if not isinstance(tool_choice, dict):
+        return None
+
+    t = str(tool_choice.get("type") or "")
+    if t in {"auto", "none", "required"}:
+        return t
+    if t == "function":
+        fn = tool_choice.get("function")
+        if isinstance(fn, dict):
+            name = str(fn.get("name") or "")
+            if name:
+                return {"type": "function", "name": name}
+    return "auto"
+
+
+def _chat_tools_to_responses_tools(tools: Any) -> Optional[List[Dict[str, Any]]]:
+    if not isinstance(tools, list):
+        return None
+
+    out: List[Dict[str, Any]] = []
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        if str(t.get("type") or "") != "function":
+            continue
+        fn = t.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = str(fn.get("name") or "").strip()
+        if not name:
+            continue
+        item: Dict[str, Any] = {
+            "type": "function",
+            "name": name,
+        }
+        if fn.get("description") is not None:
+            item["description"] = fn.get("description")
+        if fn.get("parameters") is not None:
+            item["parameters"] = fn.get("parameters")
+        out.append(item)
+    return out
+
+
+def _chat_content_to_responses_input_parts(content: Any) -> List[Dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"type": "input_text", "text": content}]
+    if not isinstance(content, list):
+        text = _message_content_to_text(content)
+        return [{"type": "input_text", "text": text}] if text else []
+
+    out: List[Dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                out.append({"type": "input_text", "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        p_type = str(part.get("type") or "")
+        if p_type == "text":
+            text = str(part.get("text") or "")
+            if text:
+                out.append({"type": "input_text", "text": text})
+            continue
+        # 先兼容常见图片结构；其他类型先降级为文本
+        if p_type == "image_url" and isinstance(part.get("image_url"), dict):
+            url = str(part["image_url"].get("url") or "")
+            if url:
+                out.append({"type": "input_image", "image_url": url})
+            continue
+        fallback = _message_content_to_text(part)
+        if fallback:
+            out.append({"type": "input_text", "text": fallback})
+    return out
+
+
+def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -> Dict[str, Any]:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+
+    input_items: List[Dict[str, Any]] = []
+
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        content = m.get("content")
+
+        # 贴近 opencode：system 不合并掉，而是以 system/developer 角色进入 input。
+        if role in {"system", "developer"}:
+            text = _message_content_to_text(content)
+            if text:
+                input_items.append(
+                    {
+                        "role": "developer" if role == "developer" else "system",
+                        "content": text,
+                    }
+                )
+            continue
+
+        if role == "user":
+            parts = _chat_content_to_responses_input_parts(content)
+            if parts:
+                input_items.append(
+                    {
+                        "role": "user",
+                        "content": parts,
+                    }
+                )
+            continue
+
+        if role == "assistant":
+            text = _message_content_to_text(content)
+            if text:
+                input_items.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                )
+            tool_calls = m.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    if str(tc.get("type") or "") != "function":
+                        continue
+                    tc_id = str(tc.get("id") or "")
+                    fn = tc.get("function")
+                    if not tc_id or not isinstance(fn, dict):
+                        continue
+                    name = str(fn.get("name") or "")
+                    arguments = fn.get("arguments")
+                    if not name:
+                        continue
+                    if isinstance(arguments, str):
+                        args_str = arguments
+                    elif arguments is None:
+                        args_str = "{}"
+                    else:
+                        args_str = json.dumps(arguments, ensure_ascii=False)
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tc_id,
+                            "name": name,
+                            "arguments": args_str,
+                        }
+                    )
+            continue
+
+        if role == "tool":
+            call_id = str(m.get("tool_call_id") or "")
+            text = _message_content_to_text(content)
+            if call_id:
+                input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": text,
+                    }
+                )
+            continue
+
+    # 保持 instructions 独立（贴近 opencode：与 input 并行存在）
+    instructions = str(
+        body.get("instructions")
+        or os.getenv("CODEX_DEFAULT_INSTRUCTIONS")
+        or "You are a helpful assistant."
+    ).strip()
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "instructions": instructions,
+        "input": input_items,
+        "stream": bool(body.get("stream", False)),
+        # 对齐 opencode：Codex/Responses 路径显式关闭 store
+        "store": False,
+    }
+
+    if body.get("max_tokens") is not None:
+        payload["max_output_tokens"] = body.get("max_tokens")
+    if body.get("temperature") is not None:
+        payload["temperature"] = body.get("temperature")
+    if body.get("top_p") is not None:
+        payload["top_p"] = body.get("top_p")
+    if body.get("tool_choice") is not None:
+        mapped = _chat_tool_choice_to_responses(body.get("tool_choice"))
+        if mapped is not None:
+            payload["tool_choice"] = mapped
+    if body.get("tools") is not None:
+        mapped_tools = _chat_tools_to_responses_tools(body.get("tools"))
+        if mapped_tools is not None:
+            payload["tools"] = mapped_tools
+
+    return payload
+
+
+def _extract_codex_output_text(resp_json: Dict[str, Any]) -> str:
+    out = resp_json.get("output")
+    if not isinstance(out, list):
+        return ""
+
+    texts: List[str] = []
+    for item in out:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            ctype = c.get("type")
+            if ctype == "output_text":
+                texts.append(str(c.get("text") or ""))
+            elif ctype == "text":
+                texts.append(str(c.get("text") or ""))
+    return "".join(texts)
+
+
+def _codex_responses_to_chat_completion(resp_json: Dict[str, Any], model: str) -> Dict[str, Any]:
+    text = _extract_codex_output_text(resp_json)
+    usage = resp_json.get("usage") if isinstance(resp_json.get("usage"), dict) else {}
+    prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+    total_tokens = prompt_tokens + completion_tokens
+
+    return {
+        "id": str(resp_json.get("id") or f"chatcmpl-{uuid.uuid4().hex}"),
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        },
+    }
+
+
 # -----------------------------
 # Upstream call
 # -----------------------------
@@ -387,6 +668,8 @@ def _extract_model_and_ban_explore(raw_model: Any, base_ban_explore: bool) -> Tu
 
 async def _build_headers_by_profile(profile: Dict[str, Any], model: str) -> Dict[str, str]:
     auth_type = get_effective_auth_type(profile)
+    if auth_type == "codex_oauth":
+        return await get_codex_upstream_headers(profile)
     if auth_type == "internal_hw":
         token = await get_x_auth_token()
         return build_auth_headers(profile, model, x_auth_token=token)
@@ -413,6 +696,93 @@ def is_rate_limit_status(status_code: int) -> bool:
 # -----------------------------
 @app.get("/health")
 async def health():
+    return {"ok": True}
+
+
+def _codex_oauth_success_html() -> str:
+    return """<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Codex 登录成功</title>
+    <style>
+      body { font-family: system-ui, -apple-system, sans-serif; background: #131010; color: #f1ecec; margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; }
+      .card { text-align: center; padding: 24px; }
+      .muted { color: #b7b1b1; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>登录成功</h1>
+      <p class="muted">你可以关闭此页面并回到 LLM_PROXY。</p>
+    </div>
+    <script>setTimeout(() => window.close(), 1800)</script>
+  </body>
+</html>"""
+
+
+def _codex_oauth_error_html(msg: str) -> str:
+    safe = (msg or "unknown error").replace("<", "&lt;").replace(">", "&gt;")
+    return f"""<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Codex 登录失败</title>
+    <style>
+      body {{ font-family: system-ui, -apple-system, sans-serif; background: #131010; color: #f1ecec; margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; }}
+      .card {{ text-align: center; padding: 24px; }}
+      .error {{ color: #ff917b; background: #3c140d; border-radius: 8px; padding: 12px; margin-top: 12px; font-family: monospace; }}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>登录失败</h1>
+      <div class="error">{safe}</div>
+    </div>
+  </body>
+</html>"""
+
+
+@app.get("/auth/codex/status")
+async def codex_auth_status():
+    return await get_codex_auth_status()
+
+
+@app.get("/auth/codex/login")
+async def codex_auth_login():
+    try:
+        flow = await begin_codex_oauth()
+        return {
+            "ok": True,
+            **flow,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/auth/codex/callback")
+async def codex_auth_callback(req: Request):
+    code = req.query_params.get("code")
+    state = req.query_params.get("state") or ""
+    error = req.query_params.get("error")
+    error_description = req.query_params.get("error_description")
+    try:
+        await complete_codex_oauth_callback(
+            state=state,
+            code=code,
+            error=error,
+            error_description=error_description,
+        )
+        return Response(content=_codex_oauth_success_html(), media_type="text/html")
+    except ValueError as e:
+        return Response(content=_codex_oauth_error_html(str(e)), media_type="text/html", status_code=400)
+    except Exception as e:
+        return Response(content=_codex_oauth_error_html(str(e)), media_type="text/html", status_code=500)
+
+
+@app.post("/auth/codex/logout")
+async def codex_auth_logout():
+    await clear_codex_auth()
     return {"ok": True}
 
 
@@ -764,6 +1134,124 @@ async def _forward_anthropic_native_messages(
     return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
 
 
+@app.post("/v1/responses")
+async def openai_responses(req: Request):
+    """
+    OpenAI Responses endpoint pass-through:
+      - non-stream: upstream JSON pass-through
+      - stream: upstream SSE pass-through
+    """
+    body = await req.json()
+    body_model = body.get("model")
+    model_from_body, _ = _extract_model_and_ban_explore(body_model, BAN_EXPLORE)
+    if model_from_body is not None:
+        body["model"] = model_from_body
+    stream = bool(body.get("stream", False))
+
+    try:
+        resolved = resolve_profile(UPSTREAM_CONFIG, body, PROTOCOL_OPENAI_RESPONSES)
+    except UpstreamCapabilityError as e:
+        return JSONResponse({"error": {"message": str(e), "type": "unsupported_for_upstream"}}, status_code=404)
+    except UpstreamConfigError as e:
+        return JSONResponse({"error": {"message": str(e), "type": "upstream_config_error"}}, status_code=400)
+
+    profile_name = resolved.profile_name
+    profile = resolved.profile
+    model = resolved.model
+
+    os.makedirs("logs_openai", exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
+    req_path = os.path.join("logs_openai", f"{ts}-responses-req.json")
+    res_path = os.path.join("logs_openai", f"{ts}-responses-res.json")
+
+    upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_RESPONSES)
+    verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
+    upstream_headers = await _build_headers_by_profile(profile, model)
+    body["model"] = model
+    if get_effective_auth_type(profile) == "codex_oauth":
+        # 对齐 opencode：Codex 要求 store=false，用户传 true 时也要覆盖
+        body["store"] = False
+
+    log_body = dict(body)
+    log_body["_upstream_profile"] = profile_name
+    log_body["_upstream_provider"] = profile.get("provider")
+    _dump_json(req_path, log_body)
+
+    if not stream:
+        async with httpx.AsyncClient(
+            verify=verify,
+            timeout=httpx.Timeout(timeout_seconds),
+            trust_env=trust_env,
+        ) as client:
+            r = None
+            last_retry_response = None
+            for attempt in range(max_retries):
+                r = await client.post(upstream_url, headers=upstream_headers, json=body)
+                if not is_rate_limit_status(r.status_code):
+                    break
+                last_retry_response = r
+                logging.warning(f"{attempt} retryable response (responses non-stream): {r.status_code} {r.text}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1 * (2 ** attempt))
+                    upstream_headers = await _build_headers_by_profile(profile, model)
+            if is_rate_limit_status(r.status_code) and last_retry_response is not None:
+                r = last_retry_response
+
+        _dump_json(res_path, _resp_to_obj(r))
+        return Response(
+            content=r.content,
+            status_code=r.status_code,
+            media_type=r.headers.get("content-type", "application/json"),
+        )
+
+    async def sse_passthrough() -> AsyncIterator[bytes]:
+        chunks: List[Any] = []
+        try:
+            async with httpx.AsyncClient(
+                verify=verify,
+                timeout=httpx.Timeout(timeout_seconds),
+                trust_env=trust_env,
+            ) as client:
+                retry_headers = upstream_headers
+                last_retry_err_text = None
+                last_retry_status = None
+                connected = False
+                for attempt in range(max_retries):
+                    async with client.stream("POST", upstream_url, headers=retry_headers, json=body) as r:
+                        chunks.append({"type": "response_meta", "status_code": r.status_code, "headers": dict(r.headers)})
+                        if is_rate_limit_status(r.status_code):
+                            err = await r.aread()
+                            last_retry_err_text = err.decode("utf-8", errors="replace")
+                            last_retry_status = r.status_code
+                            chunks.append({"type": "error_body", "body": last_retry_err_text})
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(1 * (2 ** attempt))
+                                retry_headers = await _build_headers_by_profile(profile, model)
+                            continue
+
+                        connected = True
+                        if r.status_code >= 400:
+                            err = await r.aread()
+                            err_text = err.decode("utf-8", errors="replace")
+                            chunks.append({"type": "error_body", "body": err_text})
+                            yield err
+                            return
+
+                        async for raw in r.aiter_raw():
+                            chunks.append(raw.decode("utf-8", errors="replace"))
+                            yield raw
+                        break
+
+                if not connected and last_retry_status is not None and is_rate_limit_status(last_retry_status):
+                    if last_retry_err_text is not None:
+                        yield last_retry_err_text.encode("utf-8", errors="replace")
+                    return
+        finally:
+            _dump_json(res_path, {"type": "responses_passthrough_sse_capture", "chunks": chunks})
+
+    return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
+
+
 @app.post("/v1/messages")
 async def v1_messages(req: Request):
     body = await req.json()
@@ -846,6 +1334,7 @@ async def v1_messages(req: Request):
     profile_name = resolved.profile_name
     profile = resolved.profile
     model = resolved.model
+    auth_type = get_effective_auth_type(profile)
 
     log_body = dict(body)
     log_body["_upstream_profile"] = profile_name
@@ -1538,6 +2027,7 @@ async def openai_chat_completions(req: Request):
     profile_name = resolved.profile_name
     profile = resolved.profile
     model = resolved.model
+    auth_type = get_effective_auth_type(profile)
 
     ## 适配codeagent获取session id
     session_id = req.headers.get("X-Session-Id")
@@ -1572,9 +2062,15 @@ async def openai_chat_completions(req: Request):
     elif "tools" in body:
         body.pop("tools", None)
 
+    upstream_request_body = body
+    if auth_type == "codex_oauth":
+        upstream_request_body = _build_codex_responses_payload_from_chat(body, model)
+
     log_body = dict(body)
     log_body["_upstream_profile"] = profile_name
     log_body["_upstream_provider"] = profile.get("provider")
+    if auth_type == "codex_oauth":
+        log_body["_upstream_payload_kind"] = "codex_responses"
     _dump_json(req_path, log_body)
 
     # ---- non-stream ----
@@ -1589,7 +2085,10 @@ async def openai_chat_completions(req: Request):
             last_retry_response = None
 
             for attempt in range(max_retries):
-                r = await client.post(upstream_url, headers=upstream_headers, json=body)
+                if auth_type == "codex_oauth":
+                    r = await client.post(upstream_url, headers=upstream_headers, json=upstream_request_body)
+                else:
+                    r = await client.post(upstream_url, headers=upstream_headers, json=body)
 
                 if not is_rate_limit_status(r.status_code):
                     # 不是限流错误，直接使用这个响应
@@ -1611,6 +2110,16 @@ async def openai_chat_completions(req: Request):
         # 记录上下游响应（非流式）
         _dump_json(res_path, _resp_to_obj(r))
 
+        if auth_type == "codex_oauth" and r.status_code < 400:
+            try:
+                codex_json = r.json()
+                converted = _codex_responses_to_chat_completion(codex_json, model)
+                _dump_json(res_path, {"status_code": r.status_code, "headers": dict(r.headers), "json": converted})
+                return JSONResponse(content=converted, status_code=200)
+            except Exception:
+                # 转换失败时回退到透传，便于排查
+                pass
+
         # ✅ 上游错误透传（状态码+body 原样返回）
         return Response(
             content=r.content,
@@ -1622,6 +2131,81 @@ async def openai_chat_completions(req: Request):
     async def sse_passthrough() -> AsyncIterator[bytes]:
         up_chunks: List[Any] = []
         try:
+            if auth_type == "codex_oauth":
+                # Codex responses SSE 事件模型与 chat.completions 不同，这里做兼容桥接：
+                # 以上游非流式结果组装成 OpenAI SSE 两帧，保证客户端可消费。
+                nonstream_body = dict(upstream_request_body)
+                nonstream_body["stream"] = False
+                async with httpx.AsyncClient(
+                    verify=verify,
+                    timeout=httpx.Timeout(timeout_seconds),
+                    trust_env=trust_env,
+                ) as client:
+                    r = await client.post(upstream_url, headers=upstream_headers, json=nonstream_body)
+                    up_chunks.append(
+                        {
+                            "type": "codex_stream_bridge_meta",
+                            "status_code": r.status_code,
+                            "headers": dict(r.headers),
+                        }
+                    )
+                    if r.status_code >= 400:
+                        err_text = r.text
+                        up_chunks.append({"type": "error_body", "body": err_text})
+                        error_data = {
+                            "id": "chatcmpl-error",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+                            "error": {"message": err_text, "type": "upstream_error", "code": r.status_code},
+                        }
+                        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8")
+                        yield b"data: [DONE]\n\n"
+                        return
+
+                    try:
+                        codex_json = r.json()
+                        converted = _codex_responses_to_chat_completion(codex_json, model)
+                        content_text = (
+                            converted.get("choices", [{}])[0].get("message", {}).get("content", "")
+                            if isinstance(converted.get("choices"), list)
+                            else ""
+                        )
+                        first_chunk = {
+                            "id": str(converted.get("id") or f"chatcmpl-{uuid.uuid4().hex}"),
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model,
+                            "choices": [{"index": 0, "delta": {"content": content_text}, "finish_reason": None}],
+                        }
+                        last_chunk = {
+                            "id": first_chunk["id"],
+                            "object": "chat.completion.chunk",
+                            "created": first_chunk["created"],
+                            "model": model,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                            "usage": converted.get("usage"),
+                        }
+                        up_chunks.append({"type": "codex_stream_bridge_converted", "json": converted})
+                        yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                        yield f"data: {json.dumps(last_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                        yield b"data: [DONE]\n\n"
+                        return
+                    except Exception as e:
+                        up_chunks.append({"type": "convert_error", "error": str(e)})
+                        error_data = {
+                            "id": "chatcmpl-error",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+                            "error": {"message": f"codex response convert error: {e}", "type": "convert_error"},
+                        }
+                        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8")
+                        yield b"data: [DONE]\n\n"
+                        return
+
             async with httpx.AsyncClient(
                 verify=verify,
                 timeout=httpx.Timeout(timeout_seconds),

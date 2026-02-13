@@ -5,9 +5,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 PROTOCOL_ANTHROPIC_MESSAGES = "anthropic_messages"
 PROTOCOL_OPENAI_CHAT = "openai_chat"
-SUPPORTED_PROTOCOLS = {PROTOCOL_ANTHROPIC_MESSAGES, PROTOCOL_OPENAI_CHAT}
-SUPPORTED_PROVIDERS = {"openai_compatible", "anthropic"}
-SUPPORTED_AUTH_TYPES = {"internal_hw", "bearer", "anthropic_key", "none"}
+PROTOCOL_OPENAI_RESPONSES = "openai_responses"
+SUPPORTED_PROTOCOLS = {PROTOCOL_ANTHROPIC_MESSAGES, PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES}
+SUPPORTED_PROVIDERS = {"openai_compatible", "anthropic", "codex_oauth"}
+SUPPORTED_AUTH_TYPES = {"internal_hw", "bearer", "anthropic_key", "none", "codex_oauth"}
 
 
 class UpstreamConfigError(Exception):
@@ -48,6 +49,12 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 
 def _resolve_auth_type_for_profile(profile_name: str, provider: str, auth: Dict[str, Any]) -> str:
+    if provider == "codex_oauth":
+        # codex_oauth 的鉴权类型与 provider 绑定，不接受 auth.type 覆盖
+        if auth.get("type") is not None:
+            raise UpstreamConfigError(f"profiles.{profile_name}.provider=codex_oauth 时不允许配置 auth.type")
+        return "codex_oauth"
+
     auth_type = auth.get("type")
     if auth_type is not None:
         if auth_type not in SUPPORTED_AUTH_TYPES:
@@ -92,7 +99,8 @@ def load_and_validate_config(path: Optional[str] = None) -> Dict[str, Any]:
         if not isinstance(base_url, str) or not base_url.strip():
             raise UpstreamConfigError(f"profiles.{name}.baseUrl 必须是非空字符串")
 
-        auth = _ensure_dict(f"profiles.{name}.auth", profile.get("auth"))
+        auth = profile.get("auth") or {}
+        auth = _ensure_dict(f"profiles.{name}.auth", auth)
         auth_type = _resolve_auth_type_for_profile(name, provider, auth)
         if auth_type == "bearer":
             if not isinstance(auth.get("apiKeyEnv"), str) or not auth.get("apiKeyEnv"):
@@ -106,6 +114,10 @@ def load_and_validate_config(path: Optional[str] = None) -> Dict[str, Any]:
             for key in required:
                 if not isinstance(auth.get(key), str) or not auth.get(key):
                     raise UpstreamConfigError(f"profiles.{name}.auth.{key} 必填")
+        if auth_type == "codex_oauth":
+            codex_endpoint = auth.get("codexEndpoint")
+            if codex_endpoint is not None and (not isinstance(codex_endpoint, str) or not codex_endpoint.strip()):
+                raise UpstreamConfigError(f"profiles.{name}.auth.codexEndpoint 非法")
 
         capabilities = _ensure_dict(f"profiles.{name}.capabilities", profile.get("capabilities"))
         ingress = _ensure_list(f"profiles.{name}.capabilities.ingress", capabilities.get("ingress"))
@@ -170,10 +182,20 @@ def resolve_profile(
 def build_upstream_url(profile: Dict[str, Any], protocol: str) -> str:
     base = str(profile["baseUrl"]).rstrip("/")
     provider = profile["provider"]
+    auth = _ensure_dict("profile.auth", profile.get("auth") or {})
+    auth_type = _resolve_auth_type_for_profile("runtime", provider, auth)
+    if auth_type == "codex_oauth":
+        # Codex OAuth 走 ChatGPT 的 codex 专用响应端点，不拼接 /chat/completions。
+        return str(auth.get("codexEndpoint") or "https://chatgpt.com/backend-api/codex/responses").rstrip("/")
+
     if protocol == PROTOCOL_OPENAI_CHAT:
-        if provider != "openai_compatible":
+        if provider not in {"openai_compatible", "codex_oauth"}:
             raise UpstreamCapabilityError("anthropic provider 不支持 openai_chat")
         return f"{base}/chat/completions"
+    if protocol == PROTOCOL_OPENAI_RESPONSES:
+        if provider not in {"openai_compatible", "codex_oauth"}:
+            raise UpstreamCapabilityError("anthropic provider 不支持 openai_responses")
+        return f"{base}/responses"
     if protocol == PROTOCOL_ANTHROPIC_MESSAGES:
         if provider == "anthropic":
             # 兼容两种 baseUrl 写法：
@@ -198,7 +220,7 @@ def get_runtime_options(profile: Dict[str, Any]) -> Tuple[bool, float, int, bool
 
 
 def build_auth_headers(profile: Dict[str, Any], model: str, x_auth_token: str = "") -> Dict[str, str]:
-    auth = profile["auth"]
+    auth = _ensure_dict("profile.auth", profile.get("auth") or {})
     auth_type = _resolve_auth_type_for_profile("runtime", profile["provider"], auth)
     headers: Dict[str, str] = {
         "Content-Type": "application/json",
@@ -247,10 +269,24 @@ def build_auth_headers(profile: Dict[str, Any], model: str, x_auth_token: str = 
         headers["X-HW-APPKEY"] = hw_appkey
         return headers
 
+    if auth_type == "codex_oauth":
+        access_token_env = str(auth.get("accessTokenEnv") or "CODEX_ACCESS_TOKEN")
+        access_token = os.getenv(access_token_env, "")
+        if not access_token:
+            raise UpstreamConfigError(f"未设置环境变量: {access_token_env}")
+        headers["Authorization"] = f"Bearer {access_token}"
+
+        account_id_env = str(auth.get("accountIdEnv") or "CODEX_ACCOUNT_ID").strip()
+        if account_id_env:
+            account_id = os.getenv(account_id_env, "")
+            if account_id:
+                headers["ChatGPT-Account-Id"] = account_id
+        return headers
+
     raise UpstreamConfigError(f"未知 auth.type: {auth_type}")
 
 
 def get_effective_auth_type(profile: Dict[str, Any]) -> str:
-    auth = _ensure_dict("profile.auth", profile.get("auth"))
+    auth = _ensure_dict("profile.auth", profile.get("auth") or {})
     provider = str(profile.get("provider") or "")
     return _resolve_auth_type_for_profile("runtime", provider, auth)

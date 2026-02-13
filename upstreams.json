@@ -42,18 +42,13 @@
         }
       },
       "codexOAuth": {
-        "provider": "openai_compatible",
+        "provider": "codex_oauth",
         "baseUrl": "https://api.openai.com/v1",
-        "auth": {
-          "type": "codex_oauth",
-          "accessTokenEnv": "CODEX_ACCESS_TOKEN",
-          "accountIdEnv": "CODEX_ACCOUNT_ID",
-          "codexEndpoint": "https://chatgpt.com/backend-api/codex/responses"
-        },
         "capabilities": {
           "ingress": [
             "anthropic_messages",
-            "openai_chat"
+            "openai_chat",
+            "openai_responses"
           ]
         },
         "defaults": {
