@@ -2,3 +2,5 @@
 __pycache__/
 .pytest_cache/
 .codex_oauth.json
+logs/
+logs_*/

@@ -44,6 +44,12 @@ BAN_STREAM = os.getenv("BAN_STREAM", "false").lower() == "true"
 EXPOSE_THINKING = os.getenv("EXPOSE_THINKING", "true").lower() == "true"
 UPSTREAM_CONFIG = load_and_validate_config()
 
+LOGS_ROOT_DIR = "logs"
+LOGS_OPENAI_DIR = os.path.join(LOGS_ROOT_DIR, "openai")
+LOGS_ANTHROPIC_DIR = os.path.join(LOGS_ROOT_DIR, "anthropic")
+LOGS_SESSION_DIR = os.path.join(LOGS_ROOT_DIR, "session")
+LOGS_CODEAGENT_DIR = os.path.join(LOGS_ROOT_DIR, "codeagent")
+
 
 # 初始化 Claude 使用的编码器 (延迟加载)
 _enc = None
@@ -1159,10 +1165,10 @@ async def openai_responses(req: Request):
     profile = resolved.profile
     model = resolved.model
 
-    os.makedirs("logs_openai", exist_ok=True)
+    os.makedirs(LOGS_OPENAI_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-    req_path = os.path.join("logs_openai", f"{ts}-responses-req.json")
-    res_path = os.path.join("logs_openai", f"{ts}-responses-res.json")
+    req_path = os.path.join(LOGS_OPENAI_DIR, f"{ts}-responses-req.json")
+    res_path = os.path.join(LOGS_OPENAI_DIR, f"{ts}-responses-res.json")
 
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_RESPONSES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
@@ -1269,7 +1275,7 @@ async def v1_messages(req: Request):
             },
             status_code=400,
         )
-    os.makedirs("logs_anthropic", exist_ok=True)
+    os.makedirs(LOGS_ANTHROPIC_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]  # 带毫秒，避免并发重名
 
     session_id = None
@@ -1283,19 +1289,19 @@ async def v1_messages(req: Request):
     if session_id:
         skip_session_logging = _should_skip_session_logging(body)
 
-    req_path = os.path.join("logs_anthropic", f"{ts}-req.json")
-    up_res_path = os.path.join("logs_anthropic", f"{ts}-upstream-res.json")
-    down_res_path = os.path.join("logs_anthropic", f"{ts}-downstream-res.json")
-    headers_path = os.path.join("logs_anthropic", f"{ts}-headers.json")
+    req_path = os.path.join(LOGS_ANTHROPIC_DIR, f"{ts}-req.json")
+    up_res_path = os.path.join(LOGS_ANTHROPIC_DIR, f"{ts}-upstream-res.json")
+    down_res_path = os.path.join(LOGS_ANTHROPIC_DIR, f"{ts}-downstream-res.json")
+    headers_path = os.path.join(LOGS_ANTHROPIC_DIR, f"{ts}-headers.json")
 
     session_req_path = None
     session_down_res_path = None
     session_non_stream_path = None
     if session_id and not skip_session_logging:
         # 若该 session_id 已有目录则复用，否则按当前时间戳新建
-        os.makedirs("logs_session", exist_ok=True)
-        existing_dirs = sorted(glob.glob(os.path.join("logs_session", f"*_{session_id}")))
-        session_dir = existing_dirs[0] if existing_dirs else os.path.join("logs_session", f"{ts}_{session_id}")
+        os.makedirs(LOGS_SESSION_DIR, exist_ok=True)
+        existing_dirs = sorted(glob.glob(os.path.join(LOGS_SESSION_DIR, f"*_{session_id}")))
+        session_dir = existing_dirs[0] if existing_dirs else os.path.join(LOGS_SESSION_DIR, f"{ts}_{session_id}")
         os.makedirs(session_dir, exist_ok=True)
         session_req_path = os.path.join(session_dir, f"{ts}-req.json")
         session_down_res_path = os.path.join(session_dir, f"{ts}-downstream-res.json")
@@ -1981,11 +1987,11 @@ async def session_stats(session_id: str):
             "num_turns": num_turns,
         }
 
-    session_dirs = sorted(glob.glob(os.path.join("logs_session", f"*_{session_id}")))
+    session_dirs = sorted(glob.glob(os.path.join(LOGS_SESSION_DIR, f"*_{session_id}")))
     stats = _scan_session_dirs(session_dirs) if session_dirs else None
     if not stats or stats.get("num_turns", 0) == 0:
-        # logs_session 无数据时再回退到 logs_codeagent
-        session_dirs = sorted(glob.glob(os.path.join("logs_codeagent", f"*_{session_id}")))
+        # session 日志无数据时再回退到 codeagent 日志
+        session_dirs = sorted(glob.glob(os.path.join(LOGS_CODEAGENT_DIR, f"*_{session_id}")))
         stats = _scan_session_dirs(session_dirs) if session_dirs else None
 
     if not stats or stats.get("num_turns", 0) == 0:
@@ -2034,19 +2040,19 @@ async def openai_chat_completions(req: Request):
 
     # 保存请求/响应日志（OpenAI 直通）
     if session_id:
-        os.makedirs("logs_codeagent", exist_ok=True)
+        os.makedirs(LOGS_CODEAGENT_DIR, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]  # 带毫秒，避免并发重名
         # 若该 session_id 已有目录则复用，否则按当前时间戳新建
-        existing_dirs = sorted(glob.glob(os.path.join("logs_codeagent", f"*_{session_id}")))
-        session_dir = existing_dirs[0] if existing_dirs else os.path.join("logs_codeagent", f"{ts}_{session_id}")
+        existing_dirs = sorted(glob.glob(os.path.join(LOGS_CODEAGENT_DIR, f"*_{session_id}")))
+        session_dir = existing_dirs[0] if existing_dirs else os.path.join(LOGS_CODEAGENT_DIR, f"{ts}_{session_id}")
         os.makedirs(session_dir, exist_ok=True)
         req_path = os.path.join(session_dir, f"{ts}-req.json")
         res_path = os.path.join(session_dir, f"{ts}--res.json")
     else:
-        os.makedirs("logs_openai", exist_ok=True)
+        os.makedirs(LOGS_OPENAI_DIR, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]  # 带毫秒，避免并发重名
-        req_path = os.path.join("logs_openai", f"{ts}-req.json")
-        res_path = os.path.join("logs_openai", f"{ts}--res.json")
+        req_path = os.path.join(LOGS_OPENAI_DIR, f"{ts}-req.json")
+        res_path = os.path.join(LOGS_OPENAI_DIR, f"{ts}--res.json")
 
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_CHAT)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)

@@ -260,7 +260,7 @@ def test_chat_completions_non_stream_passthrough(client_with_logs: TestClient):
     assert resp.status_code == 200
     assert resp.json() == upstream_body
 
-    log_dir = Path.cwd() / "logs_openai"
+    log_dir = Path.cwd() / "logs" / "openai"
     assert log_dir.exists()
     req_files = sorted(log_dir.glob("*-req.json"))
     res_files = sorted(log_dir.glob("*--res.json"))
@@ -529,7 +529,7 @@ def test_messages_stream_writes_session_logs(client_with_logs: TestClient):
     assert "event: content_block_delta" in stream_data
     assert "event: message_stop" in stream_data
 
-    session_root = Path.cwd() / "logs_session"
+    session_root = Path.cwd() / "logs" / "session"
     assert session_root.exists()
     session_dirs = sorted(session_root.glob("*_streamcase"))
     assert session_dirs, "应为该 session 生成目录"
@@ -553,7 +553,7 @@ def test_messages_stream_writes_session_logs(client_with_logs: TestClient):
     assert non_stream_obj["usage"]["input_tokens"] == 2
     assert non_stream_obj["usage"]["output_tokens"] == 1
 
-    anthropic_log_dir = Path.cwd() / "logs_anthropic"
+    anthropic_log_dir = Path.cwd() / "logs" / "anthropic"
     assert anthropic_log_dir.exists()
     assert sorted(anthropic_log_dir.glob("*-req.json")), "应生成 anthropic 请求日志"
     assert sorted(anthropic_log_dir.glob("*-headers.json")), "应生成 anthropic 请求头日志"
