@@ -410,32 +410,23 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
     assert FakeAsyncClient.last_post_args["json"]["store"] is False
 
 
-def test_codex_oauth_login_callback_and_upstream_use_store_token(client: TestClient, monkeypatch):
+def test_codex_oauth_upstream_use_store_token(client: TestClient, monkeypatch):
     monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("CODEX_ACCOUNT_ID", raising=False)
-    async def fake_exchange_code_for_tokens(code: str, redirect_uri: str, code_verifier: str) -> Dict[str, Any]:
-        return {
-            "access_token": "oauth-access-from-callback",
-            "refresh_token": "oauth-refresh",
-            "expires_in": 3600,
-        }
-
-    monkeypatch.setattr(token_auth, "_exchange_code_for_tokens", fake_exchange_code_for_tokens)
-
-    login_resp = client.get("/auth/codex/login")
-    assert login_resp.status_code == 200
-    assert login_resp.json()["ok"] is True
-    state = login_resp.json()["state"]
-    assert "auth.openai.com/oauth/authorize" in login_resp.json()["authorization_url"]
-
-    callback_resp = client.get("/auth/codex/callback", params={"code": "demo-code", "state": state})
-    assert callback_resp.status_code == 200
-    assert "登录成功" in callback_resp.text
-
-    status_resp = client.get("/auth/codex/status")
-    assert status_resp.status_code == 200
-    assert status_resp.json()["authorized"] is True
-    assert status_resp.json()["source"] == "store"
+    Path(".codex_oauth.json").write_text(
+        json.dumps(
+            {
+                "codex_oauth": {
+                    "access_token": "oauth-access-from-store",
+                    "refresh_token": "oauth-refresh",
+                    "expires_at": 4102444800,
+                    "account_id": "",
+                    "updated_at": 1,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     FakeAsyncClient.post_response = httpx.Response(
         200,
@@ -449,7 +440,7 @@ def test_codex_oauth_login_callback_and_upstream_use_store_token(client: TestCli
     payload = {"model": "codexOAuth:gpt-5.2-codex", "messages": [{"role": "user", "content": "hello"}]}
     upstream_resp = client.post("/v1/chat/completions", json=payload)
     assert upstream_resp.status_code == 200
-    assert FakeAsyncClient.last_post_args["headers"]["Authorization"] == "Bearer oauth-access-from-callback"
+    assert FakeAsyncClient.last_post_args["headers"]["Authorization"] == "Bearer oauth-access-from-store"
 
 
 def test_codex_oauth_auto_refresh_on_upstream_call(client: TestClient, monkeypatch):

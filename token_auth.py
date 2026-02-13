@@ -1,30 +1,25 @@
 import asyncio
 import base64
-import hashlib
 import json
 import os
-import secrets
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import urlencode
 
 import httpx
 
-# 与 Codex CLI/OAuth 兼容的 OpenAI OAuth 参数
+# 与 Codex OAuth 兼容的 OpenAI OAuth 参数
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 ISSUER = "https://auth.openai.com"
-SCOPE = "openid profile email offline_access"
 STORE_FILENAME = ".codex_oauth.json"
 
 # 刷新提前量，避免边界时刻 token 刚好过期
 REFRESH_MARGIN_SECONDS = 60
-# pending 授权状态保留时间（秒）
+# device 授权轮询超时时间（秒）
 PENDING_TTL_SECONDS = 10 * 60
 OAUTH_POLLING_SAFETY_MARGIN_SECONDS = 3
 
 _lock = asyncio.Lock()
-_pending_auth: Dict[str, Dict[str, Any]] = {}
 
 
 def get_x_auth_token(*args, **kwargs):
@@ -57,78 +52,6 @@ def _write_store(data: Dict[str, Any]) -> None:
     path = _store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _base64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
-
-
-def _generate_pkce() -> Tuple[str, str]:
-    verifier = _base64url(secrets.token_bytes(32))
-    challenge = _base64url(hashlib.sha256(verifier.encode("utf-8")).digest())
-    return verifier, challenge
-
-
-def _generate_state() -> str:
-    return _base64url(secrets.token_bytes(24))
-
-
-def _build_redirect_uri() -> str:
-    explicit = os.getenv("CODEX_OAUTH_REDIRECT_URI", "").strip()
-    if explicit:
-        return explicit
-
-    public_base = os.getenv("PROXY_PUBLIC_BASE_URL", "").strip()
-    if public_base:
-        return f"{public_base.rstrip('/')}/auth/codex/callback"
-
-    host = os.getenv("PROXY_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    if host in {"0.0.0.0", "::"}:
-        host = "127.0.0.1"
-    port = int(os.getenv("PROXY_PORT", "4000"))
-    return f"http://{host}:{port}/auth/codex/callback"
-
-
-def _cleanup_pending_locked() -> None:
-    now = _now_ts()
-    expired = [k for k, v in _pending_auth.items() if now - int(v.get("created_at", now)) > PENDING_TTL_SECONDS]
-    for k in expired:
-        _pending_auth.pop(k, None)
-
-
-async def begin_codex_oauth() -> Dict[str, Any]:
-    verifier, challenge = _generate_pkce()
-    state = _generate_state()
-    redirect_uri = _build_redirect_uri()
-
-    params = {
-        "response_type": "code",
-        "client_id": CLIENT_ID,
-        "redirect_uri": redirect_uri,
-        "scope": SCOPE,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "id_token_add_organizations": "true",
-        "codex_cli_simplified_flow": "true",
-        "state": state,
-        "originator": "llm_proxy",
-    }
-    auth_url = f"{ISSUER}/oauth/authorize?{urlencode(params)}"
-
-    async with _lock:
-        _cleanup_pending_locked()
-        _pending_auth[state] = {
-            "code_verifier": verifier,
-            "redirect_uri": redirect_uri,
-            "created_at": _now_ts(),
-        }
-
-    return {
-        "authorization_url": auth_url,
-        "state": state,
-        "redirect_uri": redirect_uri,
-        "expires_in_seconds": PENDING_TTL_SECONDS,
-    }
 
 
 def _parse_jwt_claims(token: str) -> Optional[Dict[str, Any]]:
@@ -214,55 +137,6 @@ async def _refresh_access_token(refresh_token: str) -> Dict[str, Any]:
     if resp.status_code >= 400:
         raise RuntimeError(f"token refresh failed: {resp.status_code} {resp.text[:300]}")
     return resp.json()
-
-
-async def complete_codex_oauth_callback(
-    *,
-    state: str,
-    code: Optional[str],
-    error: Optional[str],
-    error_description: Optional[str],
-) -> Dict[str, Any]:
-    if error:
-        raise ValueError(error_description or error)
-    if not code:
-        raise ValueError("缺少 authorization code")
-
-    async with _lock:
-        _cleanup_pending_locked()
-        pending = _pending_auth.pop(state, None)
-    if not pending:
-        raise ValueError("state 无效或已过期，请重新发起登录")
-
-    tokens = await _exchange_code_for_tokens(
-        code=code,
-        redirect_uri=str(pending["redirect_uri"]),
-        code_verifier=str(pending["code_verifier"]),
-    )
-
-    access_token = str(tokens.get("access_token") or "")
-    refresh_token = str(tokens.get("refresh_token") or "")
-    expires_in = int(tokens.get("expires_in") or 3600)
-    if not access_token or not refresh_token:
-        raise RuntimeError("OAuth 返回缺少 access_token 或 refresh_token")
-
-    account_id = _extract_account_id(tokens) or ""
-    record = {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "expires_at": _now_ts() + expires_in,
-        "account_id": account_id,
-        "updated_at": _now_ts(),
-    }
-    async with _lock:
-        data = _read_store()
-        data["codex_oauth"] = record
-        _write_store(data)
-
-    return {
-        "expires_at": record["expires_at"],
-        "account_id": account_id,
-    }
 
 
 async def _save_oauth_tokens(tokens: Dict[str, Any]) -> Dict[str, Any]:
@@ -388,7 +262,6 @@ async def get_codex_auth_status() -> Dict[str, Any]:
             "source": "env",
             "account_id": env_account,
             "expires_at": None,
-            "redirect_uri": _build_redirect_uri(),
         }
 
     root = _read_store()
@@ -399,7 +272,6 @@ async def get_codex_auth_status() -> Dict[str, Any]:
             "source": "none",
             "account_id": "",
             "expires_at": None,
-            "redirect_uri": _build_redirect_uri(),
         }
 
     expires_at = int(data.get("expires_at") or 0)
@@ -410,16 +282,7 @@ async def get_codex_auth_status() -> Dict[str, Any]:
         "source": "store",
         "account_id": str(data.get("account_id") or ""),
         "expires_at": expires_at or None,
-        "redirect_uri": _build_redirect_uri(),
     }
-
-
-async def clear_codex_auth() -> None:
-    async with _lock:
-        data = _read_store()
-        if isinstance(data, dict) and "codex_oauth" in data:
-            data.pop("codex_oauth", None)
-            _write_store(data)
 
 
 async def _get_or_refresh_store_token() -> Tuple[str, str]:
@@ -427,7 +290,7 @@ async def _get_or_refresh_store_token() -> Tuple[str, str]:
         data = _read_store()
         record = data.get("codex_oauth") if isinstance(data, dict) else None
         if not isinstance(record, dict):
-            raise RuntimeError("未完成 Codex OAuth 登录，请先访问 /auth/codex/login")
+            raise RuntimeError("未完成 Codex OAuth 登录，请先执行 start_proxy.py 完成登录")
         access_token = str(record.get("access_token") or "")
         refresh_token = str(record.get("refresh_token") or "")
         expires_at = int(record.get("expires_at") or 0)
