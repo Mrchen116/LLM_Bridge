@@ -399,6 +399,17 @@ def _chat_content_to_responses_input_parts(content: Any) -> List[Dict[str, Any]]
     return out
 
 
+def _normalize_reasoning_effort(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    effort = str(value).strip().lower()
+    # Responses API 的推理强度白名单，避免把无效值透传到上游导致 4xx。
+    allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    if effort in allowed:
+        return effort
+    return None
+
+
 def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -> Dict[str, Any]:
     messages = body.get("messages")
     if not isinstance(messages, list):
@@ -473,12 +484,9 @@ def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -
         "store": False,
     }
 
-    if body.get("max_tokens") is not None:
-        payload["max_output_tokens"] = body.get("max_tokens")
-    if body.get("temperature") is not None:
-        payload["temperature"] = body.get("temperature")
-    if body.get("top_p") is not None:
-        payload["top_p"] = body.get("top_p")
+    # codex_oauth 走的是 chatgpt.com 的 codex responses 端点。
+    # 该端点当前不接受 max_output_tokens/max_tokens，故这里不透传 max_tokens。
+    # codex_oauth 的 responses 端点当前会拒绝 temperature/top_p，故不透传采样参数。
     if body.get("tool_choice") is not None:
         mapped = _chat_tool_choice_to_responses(body.get("tool_choice"))
         if mapped is not None:
@@ -488,7 +496,57 @@ def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -
         if mapped_tools is not None:
             payload["tools"] = mapped_tools
 
+    # 关键兼容点 1：
+    # chat/completions 常用 reasoning_effort；responses 使用 reasoning.effort。
+    # 这里做字段映射，优先读取 chat 字段，兼容已是 responses 风格的传法。
+    reasoning_effort = _normalize_reasoning_effort(body.get("reasoning_effort"))
+    if reasoning_effort is None and isinstance(body.get("reasoning"), dict):
+        reasoning_effort = _normalize_reasoning_effort(body.get("reasoning", {}).get("effort"))
+    if reasoning_effort is None and "gpt-5" in model and "gpt-5-pro" not in model:
+        # 与 opencode 行为保持一致：gpt-5（非 pro）默认给中等推理强度
+        reasoning_effort = "medium"
+    if reasoning_effort is not None:
+        payload["reasoning"] = {"effort": reasoning_effort}
+
+    # 关键兼容点 2：
+    # 为了支持无状态多轮推理，强制确保 include 含 reasoning.encrypted_content。
+    # 若用户已传 include，则做并集合并，不覆盖其自定义项。
+    include_items: List[str] = []
+    raw_include = body.get("include")
+    if isinstance(raw_include, list):
+        include_items = [str(x) for x in raw_include if x is not None]
+    elif isinstance(raw_include, str) and raw_include.strip():
+        include_items = [raw_include.strip()]
+    if "reasoning.encrypted_content" not in include_items:
+        include_items.append("reasoning.encrypted_content")
+    payload["include"] = include_items
+
     return payload
+
+
+def _parse_codex_function_call_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item_type = str(item.get("type") or "")
+    if item_type not in {"function_call", "tool_call"}:
+        return None
+
+    name = str(item.get("name") or "")
+    if not name:
+        return None
+
+    call_id = str(item.get("call_id") or item.get("id") or f"toolu_{uuid.uuid4().hex}")
+    raw_args = item.get("arguments")
+    parsed_input: Dict[str, Any] = {}
+    if isinstance(raw_args, dict):
+        parsed_input = raw_args
+    elif isinstance(raw_args, str) and raw_args.strip():
+        try:
+            decoded = json.loads(raw_args)
+            if isinstance(decoded, dict):
+                parsed_input = decoded
+        except Exception:
+            parsed_input = {}
+
+    return {"id": call_id, "name": name, "input": parsed_input}
 
 
 def _extract_codex_output_text(resp_json: Dict[str, Any]) -> str:
@@ -516,6 +574,10 @@ def _extract_codex_output_text(resp_json: Dict[str, Any]) -> str:
 
 def _codex_responses_to_chat_completion(resp_json: Dict[str, Any], model: str) -> Dict[str, Any]:
     text = _extract_codex_output_text(resp_json)
+    # 关键兼容点 3（当前行为说明）：
+    # chat/completions 的标准返回结构没有 reasoning item 的一等字段。
+    # 因此这里仅抽取可见文本与 usage，responses output 里的 encrypted_content
+    # 暂不下发到 chat 返回体，避免破坏现有客户端兼容性。
     usage = resp_json.get("usage") if isinstance(resp_json.get("usage"), dict) else {}
     prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
@@ -533,6 +595,33 @@ def _codex_responses_to_chat_completion(resp_json: Dict[str, Any], model: str) -
             "total_tokens": total_tokens,
         },
     }
+
+
+def _extract_codex_output_tool_uses(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out = resp_json.get("output")
+    if not isinstance(out, list):
+        return []
+
+    tool_uses: List[Dict[str, Any]] = []
+    for item in out:
+        if not isinstance(item, dict):
+            continue
+
+        parsed_direct = _parse_codex_function_call_item(item)
+        if parsed_direct is not None:
+            tool_uses.append(parsed_direct)
+            continue
+
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            parsed_nested = _parse_codex_function_call_item(part)
+            if parsed_nested is not None:
+                tool_uses.append(parsed_nested)
+    return tool_uses
 
 
 def _extract_model_and_ban_explore(raw_model: Any, base_ban_explore: bool) -> Tuple[Optional[str], bool]:

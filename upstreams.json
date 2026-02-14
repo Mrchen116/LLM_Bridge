@@ -5,8 +5,7 @@
         "provider": "anthropic",
         "baseUrl": "https://api.moonshot.cn/anthropic",
         "auth": {
-          "apiKeyEnv": "MOONSHOT_API_KEY",
-          "anthropicVersion": "2023-06-01"
+          "apiKeyEnv": "MOONSHOT_API_KEY"
         },
         "capabilities": {
           "ingress": [

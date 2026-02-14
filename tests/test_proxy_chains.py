@@ -122,6 +122,25 @@ class FakeAsyncClient:
         return FakeStreamContext(FakeAsyncClient.stream_response)
 
 
+class ConnectErrorStreamContext:
+    async def __aenter__(self):
+        raise httpx.ConnectError("mock connect failure")
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class ConnectErrorAsyncClient(FakeAsyncClient):
+    def stream(self, method: str, url: str, headers: Dict[str, str], json: Dict[str, Any]):
+        FakeAsyncClient.last_stream_args = {
+            "method": method,
+            "url": url,
+            "headers": headers,
+            "json": json,
+        }
+        return ConnectErrorStreamContext()
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch) -> TestClient:
     monkeypatch.chdir(tmp_path)
@@ -199,6 +218,34 @@ def test_messages_anthropic_non_stream_passthrough(client: TestClient):
     assert resp.json() == upstream_body
 
 
+def test_messages_codex_oauth_non_stream_bridge(client: TestClient):
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_msg_1","output":[{"type":"message","content":[{"type":"output_text","text":"答案：x=7,y=3"}]}],"usage":{"input_tokens":5,"output_tokens":3}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "解方程"}],
+        "max_tokens": 128,
+        "thinking": {"type": "enabled", "budget_tokens": 2048},
+    }
+    resp = client.post("/v1/messages", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "message"
+    assert body["content"][0]["type"] == "text"
+    assert "x=7" in body["content"][0]["text"]
+
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert up["instructions"] == "You are a helpful assistant."
+    assert up["input"][0]["role"] == "user"
+    assert up["store"] is False
+    assert "reasoning.encrypted_content" in up["include"]
+
+
 def test_messages_stream_anthropic_passthrough(client: TestClient):
     FakeAsyncClient.stream_response = FakeStreamResponse(
         status_code=200,
@@ -213,6 +260,140 @@ def test_messages_stream_anthropic_passthrough(client: TestClient):
         data = "".join(resp.iter_text())
     assert resp.status_code == 200
     assert "data: ping" in data
+
+
+def test_messages_codex_oauth_stream_bridge(client: TestClient):
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.output_text.delta","delta":"x=7"}',
+            'data: {"type":"response.output_text.delta","delta":",y=3"}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "解方程"}],
+        "stream": True,
+    }
+    with client.stream("POST", "/v1/messages", json=payload) as resp:
+        data = "".join(resp.iter_text())
+    assert resp.status_code == 200
+    assert "event: message_start" in data
+    assert "event: content_block_delta" in data
+    assert "x=7,y=3" in data
+    assert "event: message_stop" in data
+
+
+def test_messages_codex_oauth_stream_bridge_maps_function_call_to_tool_use(client: TestClient):
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_tool_1","output":[{"type":"function_call","call_id":"call_123","name":"Task","arguments":"{\\"description\\":\\"Create sonnet file\\",\\"prompt\\":\\"Create empty file\\",\\"subagent_type\\":\\"general-purpose\\",\\"model\\":\\"sonnet\\"}"}],"usage":{"input_tokens":9,"output_tokens":5}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "调用工具"}],
+        "stream": True,
+    }
+    with client.stream("POST", "/v1/messages", json=payload) as resp:
+        data = "".join(resp.iter_text())
+    assert resp.status_code == 200
+    assert "event: content_block_start" in data
+    assert '"type": "tool_use"' in data
+    assert '"id": "call_123"' in data
+    assert '"name": "Task"' in data
+    assert '"type": "input_json_delta"' in data
+    assert "Create sonnet file" in data
+    assert '"stop_reason": "tool_use"' in data
+    assert "event: message_stop" in data
+
+
+def test_messages_codex_oauth_stream_writes_session_logs(client_with_logs: TestClient):
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.output_text.delta","delta":"ok"}',
+            'data: {"type":"response.completed","response":{"id":"resp_stream_session","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":7,"output_tokens":3}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+        "metadata": {"user_id": "user_x_session_codexstream"},
+    }
+    with client_with_logs.stream("POST", "/v1/messages", json=payload) as resp:
+        _ = "".join(resp.iter_text())
+
+    assert resp.status_code == 200
+    session_root = Path.cwd() / "logs" / "session"
+    session_dirs = sorted(session_root.glob("*_codexstream"))
+    assert session_dirs, "应为 codex 流式请求生成 session 目录"
+    session_dir = session_dirs[-1]
+
+    req_files = sorted(session_dir.glob("*-req.json"))
+    down_files = sorted(session_dir.glob("*-downstream-res.json"))
+    non_stream_files = sorted(session_dir.glob("*-non-stream-res.json"))
+
+    assert req_files, "应保留 session 请求日志"
+    assert down_files, "应生成 session 流式响应日志"
+    assert non_stream_files, "应生成 session 非流式聚合日志"
+
+    with non_stream_files[-1].open("r", encoding="utf-8") as f:
+        non_stream_obj = json.load(f)
+    usage = non_stream_obj.get("usage") or {}
+    assert usage.get("input_tokens") == 7
+    assert usage.get("output_tokens") == 3
+
+
+def test_messages_codex_oauth_non_stream_connect_error_returns_502(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "codex-access-token")
+    monkeypatch.setenv("CODEX_ACCOUNT_ID", "org-test-account")
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", TEST_UPSTREAM_CONFIG)
+    monkeypatch.setattr(app_module, "BAN_STREAM", False)
+    monkeypatch.setattr(app_module, "_dump_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module.httpx, "AsyncClient", ConnectErrorAsyncClient)
+    local_client = TestClient(app_module.app)
+
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+    }
+    resp = local_client.post("/v1/messages", json=payload)
+    assert resp.status_code == 502
+    body = resp.json()
+    assert body["error"]["type"] == "upstream_connection_error"
+
+
+def test_messages_codex_oauth_stream_connect_error_emits_error_event(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "codex-access-token")
+    monkeypatch.setenv("CODEX_ACCOUNT_ID", "org-test-account")
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", TEST_UPSTREAM_CONFIG)
+    monkeypatch.setattr(app_module, "BAN_STREAM", False)
+    monkeypatch.setattr(app_module, "_dump_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module.httpx, "AsyncClient", ConnectErrorAsyncClient)
+    local_client = TestClient(app_module.app)
+
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+    }
+    with local_client.stream("POST", "/v1/messages", json=payload) as resp:
+        data = "".join(resp.iter_text())
+    assert resp.status_code == 200
+    assert "event: error" in data
+    assert "ConnectError: mock connect failure" in data
+    assert "event: message_stop" in data
 
 
 def test_messages_stream_disabled(client: TestClient, monkeypatch):
@@ -288,37 +469,34 @@ def test_chat_completions_stream_passthrough(client: TestClient):
 
 
 def test_chat_completions_codex_oauth_uses_codex_endpoint_and_headers(client: TestClient):
-    FakeAsyncClient.post_response = httpx.Response(
-        200,
-        headers={"content-type": "application/json"},
-        json={
-            "id": "resp_1",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
-            "usage": {"input_tokens": 2, "output_tokens": 1},
-        },
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
     )
     payload = {"model": "codexOAuth:gpt-5.2-codex", "messages": [{"role": "user", "content": "hello"}]}
     resp = client.post("/v1/chat/completions", json=payload)
 
     assert resp.status_code == 200
-    assert FakeAsyncClient.last_post_args["url"] == "https://chatgpt.com/backend-api/codex/responses"
-    assert FakeAsyncClient.last_post_args["headers"]["Authorization"] == "Bearer codex-access-token"
-    assert FakeAsyncClient.last_post_args["headers"]["ChatGPT-Account-Id"] == "org-test-account"
-    assert FakeAsyncClient.last_post_args["json"]["instructions"] == "You are a helpful assistant."
-    assert FakeAsyncClient.last_post_args["json"]["input"][0]["role"] == "user"
-    assert FakeAsyncClient.last_post_args["json"]["input"][0]["content"][0]["text"] == "hello"
+    assert FakeAsyncClient.last_stream_args["url"] == "https://chatgpt.com/backend-api/codex/responses"
+    assert FakeAsyncClient.last_stream_args["headers"]["Authorization"] == "Bearer codex-access-token"
+    assert FakeAsyncClient.last_stream_args["headers"]["ChatGPT-Account-Id"] == "org-test-account"
+    assert FakeAsyncClient.last_stream_args["json"]["instructions"] == "You are a helpful assistant."
+    assert FakeAsyncClient.last_stream_args["json"]["input"][0]["role"] == "user"
+    assert FakeAsyncClient.last_stream_args["json"]["input"][0]["content"][0]["text"] == "hello"
+    assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
     assert resp.json()["choices"][0]["message"]["content"] == "ok"
 
 
 def test_chat_completions_codex_oauth_mapping_matches_opencode_style(client: TestClient):
-    FakeAsyncClient.post_response = httpx.Response(
-        200,
-        headers={"content-type": "application/json"},
-        json={
-            "id": "resp_map_1",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
-            "usage": {"input_tokens": 6, "output_tokens": 2},
-        },
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_map_1","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":6,"output_tokens":2}}}',
+            "data: [DONE]",
+        ],
     )
     payload = {
         "model": "codexOAuth:gpt-5.2-codex",
@@ -355,8 +533,8 @@ def test_chat_completions_codex_oauth_mapping_matches_opencode_style(client: Tes
 
     resp = client.post("/v1/chat/completions", json=payload)
     assert resp.status_code == 200
-    up = FakeAsyncClient.last_post_args["json"]
-    assert up["max_output_tokens"] == 12
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert "max_tokens" not in up
     assert up["instructions"] == "You are a helpful assistant."
     assert up["input"][0]["role"] == "system"
     assert up["input"][0]["content"] == "你是系统提示"
@@ -367,17 +545,63 @@ def test_chat_completions_codex_oauth_mapping_matches_opencode_style(client: Tes
     assert up["tool_choice"]["name"] == "tool_a"
     assert up["tools"][0]["type"] == "function"
     assert up["tools"][0]["name"] == "tool_a"
+    assert up["reasoning"]["effort"] == "medium"
+    assert "reasoning.encrypted_content" in up["include"]
+
+
+def test_chat_completions_codex_oauth_reasoning_effort_and_include_merge(client: TestClient):
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_map_2","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":4,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hello"}],
+        "reasoning_effort": "high",
+        "include": ["foo.bar"],
+    }
+
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert up["reasoning"]["effort"] == "high"
+    assert "foo.bar" in up["include"]
+    assert "reasoning.encrypted_content" in up["include"]
+
+
+def test_chat_completions_codex_oauth_strip_sampling_params(client: TestClient):
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_map_3","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":4,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 1,
+        "top_p": 0.9,
+    }
+
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert "temperature" not in up
+    assert "top_p" not in up
 
 
 def test_chat_completions_codex_oauth_stream_bridge(client: TestClient):
-    FakeAsyncClient.post_response = httpx.Response(
-        200,
-        headers={"content-type": "application/json"},
-        json={
-            "id": "resp_stream_1",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "pong"}]}],
-            "usage": {"input_tokens": 2, "output_tokens": 1},
-        },
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.output_text.delta","delta":"pong"}',
+            'data: {"type":"response.completed","response":{"id":"resp_stream_1","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}],"usage":{"input_tokens":2,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
     )
     payload = {
         "model": "codexOAuth:gpt-5.2-codex",
@@ -428,19 +652,17 @@ def test_codex_oauth_upstream_use_store_token(client: TestClient, monkeypatch):
         encoding="utf-8",
     )
 
-    FakeAsyncClient.post_response = httpx.Response(
-        200,
-        headers={"content-type": "application/json"},
-        json={
-            "id": "resp_2",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
-            "usage": {"input_tokens": 3, "output_tokens": 2},
-        },
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_2","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":2}}}',
+            "data: [DONE]",
+        ],
     )
     payload = {"model": "codexOAuth:gpt-5.2-codex", "messages": [{"role": "user", "content": "hello"}]}
     upstream_resp = client.post("/v1/chat/completions", json=payload)
     assert upstream_resp.status_code == 200
-    assert FakeAsyncClient.last_post_args["headers"]["Authorization"] == "Bearer oauth-access-from-store"
+    assert FakeAsyncClient.last_stream_args["headers"]["Authorization"] == "Bearer oauth-access-from-store"
 
 
 def test_codex_oauth_auto_refresh_on_upstream_call(client: TestClient, monkeypatch):
@@ -465,19 +687,17 @@ def test_codex_oauth_auto_refresh_on_upstream_call(client: TestClient, monkeypat
         }
     }
     Path(".codex_oauth.json").write_text(json.dumps(expired), encoding="utf-8")
-    FakeAsyncClient.post_response = httpx.Response(
-        200,
-        headers={"content-type": "application/json"},
-        json={
-            "id": "resp_3",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
-            "usage": {"input_tokens": 3, "output_tokens": 2},
-        },
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_3","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":2}}}',
+            "data: [DONE]",
+        ],
     )
     payload = {"model": "codexOAuth:gpt-5.2-codex", "messages": [{"role": "user", "content": "hello"}]}
     resp = client.post("/v1/chat/completions", json=payload)
     assert resp.status_code == 200
-    assert FakeAsyncClient.last_post_args["headers"]["Authorization"] == "Bearer refreshed-access"
+    assert FakeAsyncClient.last_stream_args["headers"]["Authorization"] == "Bearer refreshed-access"
 
     store = json.loads(Path(".codex_oauth.json").read_text(encoding="utf-8"))
     assert store["codex_oauth"]["refresh_token"] == "refresh-new"

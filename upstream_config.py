@@ -243,7 +243,7 @@ def build_auth_headers(profile: Dict[str, Any], model: str, x_auth_token: str = 
         if not api_key:
             raise UpstreamConfigError(f"未设置环境变量: {api_key_env}")
         headers["x-api-key"] = api_key
-        headers["anthropic-version"] = str(auth.get("anthropicVersion") or "2023-06-01")
+        headers["anthropic-version"] = "2023-06-01"
         return headers
 
     if auth_type == "internal_hw":

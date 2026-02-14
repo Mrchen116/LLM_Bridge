@@ -33,6 +33,7 @@ import logging
 from proxy_converters import (
     _build_codex_responses_payload_from_chat,
     _codex_responses_to_chat_completion,
+    _extract_codex_output_tool_uses,
     _extract_model_and_ban_explore,
     _strip_task_explore_line,
     anthropic_messages_to_openai,
@@ -92,6 +93,102 @@ def is_rate_limit_status(status_code: int) -> bool:
     所有调用处统一依赖本函数，而不是直接写死 (406, 429)。
     """
     return status_code in RATE_LIMIT_STATUS_CODES
+
+
+async def _collect_codex_response_from_stream(
+    client: httpx.AsyncClient,
+    upstream_url: str,
+    headers: Dict[str, str],
+    request_body: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    统一的 codex_oauth 上游请求器：
+    - 强制使用 stream=true 请求 codex responses 端点
+    - 聚合 response.output_text.delta / response.completed 事件
+    - 返回统一结构，供 /v1/messages 与 /v1/chat/completions 复用
+    """
+    req_body = dict(request_body)
+    req_body["stream"] = True
+    collected_chunks: List[Any] = []
+    try:
+        async with client.stream("POST", upstream_url, headers=headers, json=req_body) as r:
+            collected_chunks.append(
+                {
+                    "type": "codex_stream_meta",
+                    "status_code": r.status_code,
+                    "headers": dict(r.headers),
+                }
+            )
+            if r.status_code >= 400:
+                err = await r.aread()
+                err_text = err.decode("utf-8", errors="replace")
+                collected_chunks.append({"type": "error_body", "body": err_text})
+                return {
+                    "ok": False,
+                    "status_code": r.status_code,
+                    "error_bytes": err,
+                    "error_text": err_text,
+                    "chunks": collected_chunks,
+                }
+
+            text_parts: List[str] = []
+            completed_response: Optional[Dict[str, Any]] = None
+            async for line in r.aiter_lines():
+                if not line:
+                    continue
+                collected_chunks.append(line)
+                if not line.startswith("data:"):
+                    continue
+                data_part = line[5:].strip()
+                if data_part == "[DONE]":
+                    break
+                try:
+                    evt = json.loads(data_part)
+                except Exception:
+                    continue
+                if not isinstance(evt, dict):
+                    continue
+                evt_type = str(evt.get("type") or "")
+                if evt_type == "response.output_text.delta":
+                    delta_text = evt.get("delta")
+                    if isinstance(delta_text, str) and delta_text:
+                        text_parts.append(delta_text)
+                elif evt_type == "response.completed":
+                    response_obj = evt.get("response")
+                    if isinstance(response_obj, dict):
+                        completed_response = response_obj
+
+            if completed_response is None:
+                completed_response = {
+                    "id": f"resp_{uuid.uuid4().hex}",
+                    "object": "response",
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "".join(text_parts)}]}],
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                }
+            return {
+                "ok": True,
+                "status_code": r.status_code,
+                "response_json": completed_response,
+                "chunks": collected_chunks,
+            }
+    except httpx.HTTPError as e:
+        err_type = type(e).__name__
+        err_msg = str(e).strip() or err_type
+        error_payload = {
+            "error": {
+                "type": "upstream_connection_error",
+                "message": f"{err_type}: {err_msg}",
+            }
+        }
+        err_bytes = json.dumps(error_payload, ensure_ascii=False).encode("utf-8")
+        collected_chunks.append({"type": "transport_error", "error_type": err_type, "message": err_msg})
+        return {
+            "ok": False,
+            "status_code": 502,
+            "error_bytes": err_bytes,
+            "error_text": f"{err_type}: {err_msg}",
+            "chunks": collected_chunks,
+        }
 
 
 # -----------------------------
@@ -479,6 +576,26 @@ async def v1_messages(req: Request):
     if stream:
         upstream_payload["stream_options"] = {"include_usage": True}
 
+    if auth_type == "codex_oauth":
+        # codex_oauth 的上游是 responses 端点，不接受 chat/completions 风格 payload。
+        # 这里把「已转好的 OpenAI chat 消息」再桥接成 responses 请求，自动补 instructions/store/include。
+        codex_chat_body: Dict[str, Any] = {
+            "messages": oai_messages,
+            "stream": stream,
+            "max_tokens": max_tokens,
+        }
+        if oai_tools:
+            codex_chat_body["tools"] = oai_tools
+        if oai_tool_choice is not None:
+            codex_chat_body["tool_choice"] = oai_tool_choice
+        if temperature is not None:
+            codex_chat_body["temperature"] = temperature
+        if top_p is not None:
+            codex_chat_body["top_p"] = top_p
+        if stop_sequences is not None:
+            codex_chat_body["stop"] = stop_sequences
+        upstream_payload = _build_codex_responses_payload_from_chat(codex_chat_body, model)
+
 
     upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
@@ -486,74 +603,122 @@ async def v1_messages(req: Request):
 
     # ---- non-stream ----
     if not stream:
-        async with httpx.AsyncClient(
-            verify=verify,
-            timeout=httpx.Timeout(timeout_seconds),
-            trust_env=trust_env,
-        ) as client:
-            # 限流状态码重试逻辑：重试次数来自 profile 配置
-            r = None
-            last_retry_response = None
-            
-            for attempt in range(max_retries):
-                r = await client.post(upstream_url, headers=upstream_headers, json=upstream_payload)
-                
-                if not is_rate_limit_status(r.status_code):
-                    # 不是限流错误，直接使用这个响应
-                    break
-                
-                # 是限流错误，保存响应用于最后返回
-                last_retry_response = r
-                logging.warning(f"{attempt} retryable response: {r.status_code} {r.text}")
-                # 如果不是最后一次重试，等待后继续
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1 * (2 ** attempt))
-                    upstream_headers = await _build_headers_by_profile(profile, model)
-            
-            # 如果所有重试都是限流错误，使用最后一次的响应
-            if is_rate_limit_status(r.status_code) and last_retry_response is not None:
-                r = last_retry_response
+        if auth_type == "codex_oauth":
+            async with httpx.AsyncClient(
+                verify=verify,
+                timeout=httpx.Timeout(timeout_seconds),
+                trust_env=trust_env,
+            ) as client:
+                result: Dict[str, Any] = {}
+                last_retry_result: Optional[Dict[str, Any]] = None
+                retry_headers = upstream_headers
+                for attempt in range(max_retries):
+                    result = await _collect_codex_response_from_stream(
+                        client=client,
+                        upstream_url=upstream_url,
+                        headers=retry_headers,
+                        request_body=upstream_payload,
+                    )
+                    status_code = int(result.get("status_code") or 0)
+                    if not is_rate_limit_status(status_code):
+                        break
+                    last_retry_result = result
+                    err_msg = result.get("error_text") or ""
+                    logging.warning(f"{attempt} retryable response (messages codex non-stream): {status_code} {err_msg}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1 * (2 ** attempt))
+                        retry_headers = await _build_headers_by_profile(profile, model)
+                if is_rate_limit_status(int(result.get("status_code") or 0)) and last_retry_result is not None:
+                    result = last_retry_result
 
-        # 1) 存 upstream 原始返回（成功/失败都存）
-        up_obj = _resp_to_obj(r)
-        _dump_json(up_res_path, up_obj)
+            _dump_json(up_res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
+            if not bool(result.get("ok")):
+                down_obj = {
+                    "type": "passthrough_error",
+                    "status_code": int(result.get("status_code") or 500),
+                    "media_type": "application/json",
+                    "body": str(result.get("error_text") or ""),
+                }
+                _dump_json(down_res_path, down_obj)
+                if session_down_res_path:
+                    _discard_session_req(session_req_path)
+                return Response(
+                    content=result.get("error_bytes") or b"",
+                    status_code=int(result.get("status_code") or 500),
+                    media_type="application/json",
+                )
 
-        # upstream 错误：下游是透传 Response，这个也存一份“下游实际返回长啥样”
-        if r.status_code >= 400:
-            down_obj = {
-                "type": "passthrough_error",
-                "status_code": r.status_code,
-                "media_type": r.headers.get("content-type", "application/json"),
-                "body": (r.text if r.text is not None else ""),
-            }
-            _dump_json(down_res_path, down_obj)
-            if session_down_res_path:
-                # 检查是否包含 usage 字段 (有些错误返回也会带 usage，如果有则存，没有则不存)
-                has_usage = False
-                try:
-                    body_json = json.loads(down_obj["body"])
-                    if isinstance(body_json, dict) and "usage" in body_json:
-                        has_usage = True
-                except:
-                    pass
+            codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+            data = _codex_responses_to_chat_completion(codex_resp_json, model)
+        else:
+            async with httpx.AsyncClient(
+                verify=verify,
+                timeout=httpx.Timeout(timeout_seconds),
+                trust_env=trust_env,
+            ) as client:
+                # 限流状态码重试逻辑：重试次数来自 profile 配置
+                r = None
+                last_retry_response = None
 
-                if not has_usage:
-                    # 如果不包含 usage，则不写入 res 到 session，且把已写入的 req 也删掉
-                    if session_req_path and os.path.exists(session_req_path):
-                        try:
-                            os.remove(session_req_path)
-                        except:
-                            pass
-                else:
-                    _dump_json(session_down_res_path, down_obj)
-            return Response(
-                content=r.content,
-                status_code=r.status_code,
-                media_type=r.headers.get("content-type", "application/json"),
-            )
+                for attempt in range(max_retries):
+                    r = await client.post(upstream_url, headers=upstream_headers, json=upstream_payload)
 
-        # 2) 正常：你原来的整理逻辑
-        data = r.json()
+                    if not is_rate_limit_status(r.status_code):
+                        # 不是限流错误，直接使用这个响应
+                        break
+
+                    # 是限流错误，保存响应用于最后返回
+                    last_retry_response = r
+                    logging.warning(f"{attempt} retryable response: {r.status_code} {r.text}")
+                    # 如果不是最后一次重试，等待后继续
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1 * (2 ** attempt))
+                        upstream_headers = await _build_headers_by_profile(profile, model)
+
+                # 如果所有重试都是限流错误，使用最后一次的响应
+                if is_rate_limit_status(r.status_code) and last_retry_response is not None:
+                    r = last_retry_response
+
+            # 1) 存 upstream 原始返回（成功/失败都存）
+            up_obj = _resp_to_obj(r)
+            _dump_json(up_res_path, up_obj)
+
+            # upstream 错误：下游是透传 Response，这个也存一份“下游实际返回长啥样”
+            if r.status_code >= 400:
+                down_obj = {
+                    "type": "passthrough_error",
+                    "status_code": r.status_code,
+                    "media_type": r.headers.get("content-type", "application/json"),
+                    "body": (r.text if r.text is not None else ""),
+                }
+                _dump_json(down_res_path, down_obj)
+                if session_down_res_path:
+                    # 检查是否包含 usage 字段 (有些错误返回也会带 usage，如果有则存，没有则不存)
+                    has_usage = False
+                    try:
+                        body_json = json.loads(down_obj["body"])
+                        if isinstance(body_json, dict) and "usage" in body_json:
+                            has_usage = True
+                    except:
+                        pass
+
+                    if not has_usage:
+                        # 如果不包含 usage，则不写入 res 到 session，且把已写入的 req 也删掉
+                        if session_req_path and os.path.exists(session_req_path):
+                            try:
+                                os.remove(session_req_path)
+                            except:
+                                pass
+                    else:
+                        _dump_json(session_down_res_path, down_obj)
+                return Response(
+                    content=r.content,
+                    status_code=r.status_code,
+                    media_type=r.headers.get("content-type", "application/json"),
+                )
+
+            # 2) 正常：整理为 Anthropic message 返回
+            data = r.json()
         usage = data.get("usage")
         if session_down_res_path and usage is None:
             # 如果没有 usage 字段，则认为是不正常返回，不存 session，且把已写入的 req 也删掉
@@ -699,6 +864,94 @@ async def v1_messages(req: Request):
         has_started = False
 
         try:
+            if auth_type == "codex_oauth":
+                # responses 原生 SSE 与 chat/completions 增量格式不同，这里直接消费上游流并桥接成 Anthropic SSE。
+                # 注意：codex/responses 端点在流式请求场景要求 stream=true，不能降级成非流式调用。
+                async with httpx.AsyncClient(
+                    verify=verify,
+                    timeout=httpx.Timeout(timeout_seconds),
+                    trust_env=trust_env,
+                ) as client:
+                    result = await _collect_codex_response_from_stream(
+                        client=client,
+                        upstream_url=upstream_url,
+                        headers=upstream_headers,
+                        request_body=upstream_payload,
+                    )
+                    up_chunks.extend(result.get("chunks") or [])
+                    if not bool(result.get("ok")):
+                        err_text = str(result.get("error_text") or "")
+                        yield emit("error", {"upstream_status": int(result.get("status_code") or 500), "upstream_body": err_text})
+                        yield emit("message_stop", {})
+                        return
+
+                    codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+                    chat_obj = _codex_responses_to_chat_completion(codex_resp_json, model)
+                    usage_obj = chat_obj.get("usage") if isinstance(chat_obj.get("usage"), dict) else {}
+                    # codex_oauth 分支同样要标记 usage 已收到，否则 finally 会误判为异常并清空 session 请求日志。
+                    usage_received = bool(usage_obj)
+                    prompt_tokens = int(usage_obj.get("prompt_tokens") or 0)
+                    completion_tokens = int(usage_obj.get("completion_tokens") or 0)
+                    text = (
+                        (chat_obj.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                        if isinstance(chat_obj.get("choices"), list)
+                        else ""
+                    )
+                    tool_uses = _extract_codex_output_tool_uses(codex_resp_json)
+
+                    yield emit("message_start", {
+                        "message": {
+                            "id": msg_id,
+                            "type": "message",
+                            "role": "assistant",
+                            "model": model,
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": prompt_tokens, "output_tokens": 0},
+                        }
+                    })
+                    if text:
+                        yield emit("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}})
+                        yield emit("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": text}})
+                        yield emit("content_block_stop", {"index": 0})
+                    if tool_uses:
+                        tool_base_index = 1 if text else 0
+                        for idx, tool_use in enumerate(tool_uses):
+                            block_index = tool_base_index + idx
+                            tool_input = tool_use.get("input") if isinstance(tool_use.get("input"), dict) else {}
+                            # Anthropic 客户端通常依赖 input_json_delta 聚合 tool_use 参数，
+                            # 仅在 content_block_start 里放完整 input 可能被部分客户端忽略。
+                            # 这里统一按增量事件输出，保证与原生行为兼容。
+                            partial_json = json.dumps(tool_input, ensure_ascii=False)
+                            yield emit(
+                                "content_block_start",
+                                {
+                                    "index": block_index,
+                                    "content_block": {
+                                        "type": "tool_use",
+                                        "id": str(tool_use.get("id") or f"toolu_{uuid.uuid4().hex}"),
+                                        "name": str(tool_use.get("name") or "unknown"),
+                                        "input": {},
+                                    },
+                                },
+                            )
+                            if partial_json:
+                                yield emit(
+                                    "content_block_delta",
+                                    {
+                                        "index": block_index,
+                                        "delta": {"type": "input_json_delta", "partial_json": partial_json},
+                                    },
+                                )
+                            yield emit("content_block_stop", {"index": block_index})
+                    yield emit("message_delta", {
+                        "delta": {"stop_reason": "tool_use" if tool_uses else "end_turn"},
+                        "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens},
+                    })
+                    yield emit("message_stop", {})
+                    return
+
             async with httpx.AsyncClient(
                 verify=verify,
                 timeout=httpx.Timeout(timeout_seconds),
@@ -1054,6 +1307,8 @@ async def openai_chat_completions(req: Request):
 
     upstream_request_body = body
     if auth_type == "codex_oauth":
+        # OpenAI Chat -> Codex Responses 桥接入口：
+        # 在转换函数里会处理 reasoning_effort 映射与 include(encrypted_content) 合并。
         upstream_request_body = _build_codex_responses_payload_from_chat(body, model)
 
     log_body = dict(body)
@@ -1065,6 +1320,54 @@ async def openai_chat_completions(req: Request):
 
     # ---- non-stream ----
     if not stream:
+        if auth_type == "codex_oauth":
+            async with httpx.AsyncClient(
+                verify=verify,
+                timeout=httpx.Timeout(timeout_seconds),
+                trust_env=trust_env,
+            ) as client:
+                result: Dict[str, Any] = {}
+                last_retry_result: Optional[Dict[str, Any]] = None
+                retry_headers = upstream_headers
+                for attempt in range(max_retries):
+                    result = await _collect_codex_response_from_stream(
+                        client=client,
+                        upstream_url=upstream_url,
+                        headers=retry_headers,
+                        request_body=upstream_request_body,
+                    )
+                    status_code = int(result.get("status_code") or 0)
+                    if not is_rate_limit_status(status_code):
+                        break
+                    last_retry_result = result
+                    err_msg = result.get("error_text") or ""
+                    logging.warning(
+                        f"{attempt} retryable response (chat/completions codex non-stream): {status_code} {err_msg}"
+                    )
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1 * (2 ** attempt))
+                        retry_headers = await _build_headers_by_profile(profile, model)
+                if is_rate_limit_status(int(result.get("status_code") or 0)) and last_retry_result is not None:
+                    result = last_retry_result
+
+            _dump_json(res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
+            if not bool(result.get("ok")):
+                return Response(
+                    content=result.get("error_bytes") or b"",
+                    status_code=int(result.get("status_code") or 500),
+                    media_type="application/json",
+                )
+
+            try:
+                codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+                converted = _codex_responses_to_chat_completion(codex_json, model)
+                _dump_json(res_path, {"status_code": 200, "json": converted})
+                return JSONResponse(content=converted, status_code=200)
+            except Exception:
+                # 转换失败时尽量透传聚合后的 response 对象，避免直接丢失上游信息。
+                fallback_obj = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+                return JSONResponse(content=fallback_obj, status_code=200)
+
         async with httpx.AsyncClient(
             verify=verify,
             timeout=httpx.Timeout(timeout_seconds),
@@ -1103,6 +1406,8 @@ async def openai_chat_completions(req: Request):
         if auth_type == "codex_oauth" and r.status_code < 400:
             try:
                 codex_json = r.json()
+                # 当前桥接策略：Responses 回包转回 Chat 时只保留文本与 usage。
+                # output[].encrypted_content 不在 chat 标准字段中，暂不向下游暴露。
                 converted = _codex_responses_to_chat_completion(codex_json, model)
                 _dump_json(res_path, {"status_code": r.status_code, "headers": dict(r.headers), "json": converted})
                 return JSONResponse(content=converted, status_code=200)
@@ -1122,79 +1427,68 @@ async def openai_chat_completions(req: Request):
         up_chunks: List[Any] = []
         try:
             if auth_type == "codex_oauth":
-                # Codex responses SSE 事件模型与 chat.completions 不同，这里做兼容桥接：
-                # 以上游非流式结果组装成 OpenAI SSE 两帧，保证客户端可消费。
-                nonstream_body = dict(upstream_request_body)
-                nonstream_body["stream"] = False
+                # Codex responses SSE 事件模型与 chat.completions 不同，这里做流式桥接。
+                # 上游要求 stream=true，因此直接消费上游事件并转换为 OpenAI chunk。
                 async with httpx.AsyncClient(
                     verify=verify,
                     timeout=httpx.Timeout(timeout_seconds),
                     trust_env=trust_env,
                 ) as client:
-                    r = await client.post(upstream_url, headers=upstream_headers, json=nonstream_body)
-                    up_chunks.append(
-                        {
-                            "type": "codex_stream_bridge_meta",
-                            "status_code": r.status_code,
-                            "headers": dict(r.headers),
-                        }
+                    result = await _collect_codex_response_from_stream(
+                        client=client,
+                        upstream_url=upstream_url,
+                        headers=upstream_headers,
+                        request_body=upstream_request_body,
                     )
-                    if r.status_code >= 400:
-                        err_text = r.text
-                        up_chunks.append({"type": "error_body", "body": err_text})
+                    up_chunks.extend(result.get("chunks") or [])
+                    if not bool(result.get("ok")):
+                        err_text = str(result.get("error_text") or "")
                         error_data = {
                             "id": "chatcmpl-error",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": model,
                             "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
-                            "error": {"message": err_text, "type": "upstream_error", "code": r.status_code},
+                            "error": {
+                                "message": err_text,
+                                "type": "upstream_error",
+                                "code": int(result.get("status_code") or 500),
+                            },
                         }
                         yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8")
                         yield b"data: [DONE]\n\n"
                         return
 
-                    try:
-                        codex_json = r.json()
-                        converted = _codex_responses_to_chat_completion(codex_json, model)
-                        content_text = (
-                            converted.get("choices", [{}])[0].get("message", {}).get("content", "")
-                            if isinstance(converted.get("choices"), list)
-                            else ""
-                        )
+                    codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+                    converted = _codex_responses_to_chat_completion(codex_json, model)
+                    content_text = (
+                        converted.get("choices", [{}])[0].get("message", {}).get("content", "")
+                        if isinstance(converted.get("choices"), list)
+                        else ""
+                    )
+                    chunk_id = str(converted.get("id") or f"chatcmpl-{uuid.uuid4().hex}")
+                    created_ts = int(time.time())
+                    if content_text:
                         first_chunk = {
-                            "id": str(converted.get("id") or f"chatcmpl-{uuid.uuid4().hex}"),
+                            "id": chunk_id,
                             "object": "chat.completion.chunk",
-                            "created": int(time.time()),
+                            "created": created_ts,
                             "model": model,
                             "choices": [{"index": 0, "delta": {"content": content_text}, "finish_reason": None}],
                         }
-                        last_chunk = {
-                            "id": first_chunk["id"],
-                            "object": "chat.completion.chunk",
-                            "created": first_chunk["created"],
-                            "model": model,
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                            "usage": converted.get("usage"),
-                        }
-                        up_chunks.append({"type": "codex_stream_bridge_converted", "json": converted})
                         yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-                        yield f"data: {json.dumps(last_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
-                        return
-                    except Exception as e:
-                        up_chunks.append({"type": "convert_error", "error": str(e)})
-                        error_data = {
-                            "id": "chatcmpl-error",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": model,
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
-                            "error": {"message": f"codex response convert error: {e}", "type": "convert_error"},
-                        }
-                        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
-                        return
+
+                    last_chunk = {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": created_ts,
+                        "model": model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "usage": converted.get("usage"),
+                    }
+                    yield f"data: {json.dumps(last_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                    yield b"data: [DONE]\n\n"
+                    return
 
             async with httpx.AsyncClient(
                 verify=verify,
