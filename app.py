@@ -26,8 +26,8 @@ from upstream_config import (
 )
 load_dotenv(override=True)
 import logging
-import proxy_converters as converters_mod
-import proxy_logging as proxy_logging_mod
+import src.transforms.gateway_transforms as converters_mod
+import src.observability.gateway_logging as proxy_logging_mod
 
 from proxy_converters import (
     _build_codex_responses_payload_from_chat,
