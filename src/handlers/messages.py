@@ -330,6 +330,125 @@ def _build_anthropic_response_from_openai_chat(
     }
 
 
+async def _handle_openai_bridge_non_stream(
+    *,
+    auth_type: str,
+    model: str,
+    profile: Dict[str, Any],
+    upstream_url: str,
+    upstream_payload: Dict[str, Any],
+    upstream_headers: Dict[str, str],
+    max_retries: int,
+    verify: bool,
+    timeout_seconds: float,
+    trust_env: bool,
+    codex_reinject_trace: Optional[Dict[str, Any]],
+    up_res_path: str,
+    down_res_path: str,
+    session_req_path: Optional[str],
+    session_down_res_path: Optional[str],
+    expose_thinking: bool,
+) -> Response:
+    if auth_type == "codex_oauth":
+        async with httpx.AsyncClient(
+            verify=verify,
+            timeout=httpx.Timeout(timeout_seconds),
+            trust_env=trust_env,
+        ) as client:
+            result = await collect_with_retry(
+                collect_once=lambda hdrs: collect_codex_response_from_stream(
+                    client=client,
+                    upstream_url=upstream_url,
+                    headers=hdrs,
+                    request_body=upstream_payload,
+                ),
+                headers=upstream_headers,
+                max_retries=max_retries,
+                is_retryable=is_rate_limit_status,
+                refresh_headers=lambda: build_headers_by_profile(profile, model),
+            )
+
+        _dump_json(up_res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
+        if not bool(result.get("ok")):
+            down_obj = {
+                "type": "passthrough_error",
+                "status_code": int(result.get("status_code") or 500),
+                "media_type": "application/json",
+                "body": str(result.get("error_text") or ""),
+            }
+            _dump_json(down_res_path, down_obj)
+            if session_down_res_path:
+                _discard_session_req(session_req_path)
+            return Response(
+                content=result.get("error_bytes") or b"",
+                status_code=int(result.get("status_code") or 500),
+                media_type="application/json",
+            )
+
+        codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+        _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_resp_json)
+        data = codex_response_to_openai_chat_completion(codex_resp_json, model)
+    else:
+        r = await post_with_retry(
+            upstream_url=upstream_url,
+            request_body=upstream_payload,
+            headers=upstream_headers,
+            max_retries=max_retries,
+            is_retryable=is_rate_limit_status,
+            refresh_headers=lambda: build_headers_by_profile(profile, model),
+            verify=verify,
+            timeout_seconds=timeout_seconds,
+            trust_env=trust_env,
+        )
+
+        up_obj = _resp_to_obj(r)
+        _dump_json(up_res_path, up_obj)
+
+        if r.status_code >= 400:
+            down_obj = {
+                "type": "passthrough_error",
+                "status_code": r.status_code,
+                "media_type": r.headers.get("content-type", "application/json"),
+                "body": (r.text if r.text is not None else ""),
+            }
+            _dump_json(down_res_path, down_obj)
+            if session_down_res_path:
+                has_usage = False
+                try:
+                    body_json = json.loads(down_obj["body"])
+                    if isinstance(body_json, dict) and "usage" in body_json:
+                        has_usage = True
+                except Exception:
+                    pass
+
+                if not has_usage:
+                    _discard_session_req(session_req_path)
+                else:
+                    _dump_json(session_down_res_path, down_obj)
+            return Response(
+                content=r.content,
+                status_code=r.status_code,
+                media_type=r.headers.get("content-type", "application/json"),
+            )
+
+        data = r.json()
+
+    usage = data.get("usage")
+    if session_down_res_path and usage is None:
+        _discard_session_req(session_req_path)
+        session_down_res_path = None
+
+    resp = _build_anthropic_response_from_openai_chat(
+        data=data,
+        model=model,
+        expose_thinking=expose_thinking,
+    )
+    _dump_json(down_res_path, resp)
+    if session_down_res_path:
+        _dump_json(session_down_res_path, resp)
+    return JSONResponse(resp)
+
+
 async def run_messages_flow(
     req: Request,
     *,
@@ -457,103 +576,24 @@ async def run_messages_flow(
     upstream_headers = await build_headers_by_profile(profile, model)
 
     if not stream:
-        if auth_type == "codex_oauth":
-            async with httpx.AsyncClient(
-                verify=verify,
-                timeout=httpx.Timeout(timeout_seconds),
-                trust_env=trust_env,
-            ) as client:
-                result = await collect_with_retry(
-                    collect_once=lambda hdrs: collect_codex_response_from_stream(
-                        client=client,
-                        upstream_url=upstream_url,
-                        headers=hdrs,
-                        request_body=upstream_payload,
-                    ),
-                    headers=upstream_headers,
-                    max_retries=max_retries,
-                    is_retryable=is_rate_limit_status,
-                    refresh_headers=lambda: build_headers_by_profile(profile, model),
-                )
-
-            _dump_json(up_res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
-            if not bool(result.get("ok")):
-                down_obj = {
-                    "type": "passthrough_error",
-                    "status_code": int(result.get("status_code") or 500),
-                    "media_type": "application/json",
-                    "body": str(result.get("error_text") or ""),
-                }
-                _dump_json(down_res_path, down_obj)
-                if session_down_res_path:
-                    _discard_session_req(session_req_path)
-                return Response(
-                    content=result.get("error_bytes") or b"",
-                    status_code=int(result.get("status_code") or 500),
-                    media_type="application/json",
-                )
-
-            codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
-            _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_resp_json)
-            data = codex_response_to_openai_chat_completion(codex_resp_json, model)
-        else:
-            r = await post_with_retry(
-                upstream_url=upstream_url,
-                request_body=upstream_payload,
-                headers=upstream_headers,
-                max_retries=max_retries,
-                is_retryable=is_rate_limit_status,
-                refresh_headers=lambda: build_headers_by_profile(profile, model),
-                verify=verify,
-                timeout_seconds=timeout_seconds,
-                trust_env=trust_env,
-            )
-
-            up_obj = _resp_to_obj(r)
-            _dump_json(up_res_path, up_obj)
-
-            if r.status_code >= 400:
-                down_obj = {
-                    "type": "passthrough_error",
-                    "status_code": r.status_code,
-                    "media_type": r.headers.get("content-type", "application/json"),
-                    "body": (r.text if r.text is not None else ""),
-                }
-                _dump_json(down_res_path, down_obj)
-                if session_down_res_path:
-                    has_usage = False
-                    try:
-                        body_json = json.loads(down_obj["body"])
-                        if isinstance(body_json, dict) and "usage" in body_json:
-                            has_usage = True
-                    except Exception:
-                        pass
-
-                    if not has_usage:
-                        _discard_session_req(session_req_path)
-                    else:
-                        _dump_json(session_down_res_path, down_obj)
-                return Response(
-                    content=r.content,
-                    status_code=r.status_code,
-                    media_type=r.headers.get("content-type", "application/json"),
-                )
-
-            data = r.json()
-        usage = data.get("usage")
-        if session_down_res_path and usage is None:
-            _discard_session_req(session_req_path)
-            session_down_res_path = None
-
-        resp = _build_anthropic_response_from_openai_chat(
-            data=data,
+        return await _handle_openai_bridge_non_stream(
+            auth_type=auth_type,
             model=model,
+            profile=profile,
+            upstream_url=upstream_url,
+            upstream_payload=upstream_payload,
+            upstream_headers=upstream_headers,
+            max_retries=max_retries,
+            verify=verify,
+            timeout_seconds=timeout_seconds,
+            trust_env=trust_env,
+            codex_reinject_trace=codex_reinject_trace,
+            up_res_path=up_res_path,
+            down_res_path=down_res_path,
+            session_req_path=session_req_path,
+            session_down_res_path=session_down_res_path,
             expose_thinking=expose_thinking,
         )
-        _dump_json(down_res_path, resp)
-        if session_down_res_path:
-            _dump_json(session_down_res_path, resp)
-        return JSONResponse(resp)
 
     async def sse() -> AsyncIterator[bytes]:
         up_chunks = []
