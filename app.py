@@ -7,8 +7,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from upstream_config import load_and_validate_config
 load_dotenv(override=True)
-import src.transforms.gateway_transforms as converters_mod
-import src.observability.gateway_logging as proxy_logging_mod
+import proxy_converters as converters_mod
+import proxy_logging as proxy_logging_mod
 
 import src.orchestrator.reasoning_reinject as reasoning_mod
 import src.adapters.upstream_executor as executor_mod
