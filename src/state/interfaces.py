@@ -20,19 +20,3 @@ class ReasoningStore(ABC):
         decorated_prefix_input: List[Dict[str, Any]],
     ) -> None:
         raise NotImplementedError
-
-
-class SessionStore(ABC):
-    @abstractmethod
-    def get_stats(self, session_id: str) -> Optional[Dict[str, int]]:
-        raise NotImplementedError
-
-
-class OAuthStore(ABC):
-    @abstractmethod
-    def read(self) -> Dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def write(self, data: Dict[str, Any]) -> None:
-        raise NotImplementedError
