@@ -16,7 +16,22 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.http_retry import post_with_retry
-from src.runtime.context import RuntimeContext
+from src.adapters.upstream_executor import (
+    build_headers_by_profile,
+    collect_codex_response_from_stream,
+    is_rate_limit_status,
+)
+from src.orchestrator.reasoning_reinject import (
+    _maybe_reinject_codex_reasoning,
+    _update_codex_reasoning_reinject_cache,
+)
+from proxy_converters import (
+    _build_codex_responses_payload_from_chat,
+    _codex_responses_to_chat_completion,
+    _extract_model_and_ban_explore,
+    _strip_task_explore_line,
+)
+from proxy_logging import _dump_json, _resp_to_obj
 from upstream_config import (
     PROTOCOL_OPENAI_CHAT,
     UpstreamCapabilityError,
@@ -28,32 +43,23 @@ from upstream_config import (
 )
 
 
-async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
-    _extract_model_and_ban_explore = ctx.converters._extract_model_and_ban_explore
-    BAN_EXPLORE = ctx.ban_explore
-    UPSTREAM_CONFIG = ctx.upstream_config
-    LOGS_CODEAGENT_DIR = ctx.logs_codeagent_dir
-    LOGS_OPENAI_DIR = ctx.logs_openai_dir
-    _build_headers_by_profile = ctx.executor.build_headers_by_profile
-    _strip_task_explore_line = ctx.converters._strip_task_explore_line
-    _build_codex_responses_payload_from_chat = ctx.converters._build_codex_responses_payload_from_chat
-    _maybe_reinject_codex_reasoning = ctx.reasoning._maybe_reinject_codex_reasoning
-    _dump_json = ctx.proxy_logging._dump_json
-    _collect_codex_response_from_stream = ctx.executor.collect_codex_response_from_stream
-    is_rate_limit_status = ctx.executor.is_rate_limit_status
-    _update_codex_reasoning_reinject_cache = ctx.reasoning._update_codex_reasoning_reinject_cache
-    _codex_responses_to_chat_completion = ctx.converters._codex_responses_to_chat_completion
-    _resp_to_obj = ctx.proxy_logging._resp_to_obj
-
+async def run_chat_completions_flow(
+    req: Request,
+    *,
+    ban_explore: bool,
+    upstream_config: Dict[str, Any],
+    logs_openai_dir: str,
+    logs_codeagent_dir: str,
+):
     body = await req.json()
     stream = bool(body.get("stream", False))
     body_model = body.get("model")
-    model_from_body, ban_explore = _extract_model_and_ban_explore(body_model, BAN_EXPLORE)
+    model_from_body, ban_explore = _extract_model_and_ban_explore(body_model, ban_explore)
     if model_from_body is not None:
         body["model"] = model_from_body
 
     try:
-        resolved = resolve_profile(UPSTREAM_CONFIG, body, PROTOCOL_OPENAI_CHAT)
+        resolved = resolve_profile(upstream_config, body, PROTOCOL_OPENAI_CHAT)
     except UpstreamCapabilityError as e:
         return JSONResponse({"error": {"message": str(e), "type": "unsupported_for_upstream"}}, status_code=404)
     except UpstreamConfigError as e:
@@ -67,22 +73,22 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
     session_id = req.headers.get("X-Session-Id")
 
     if session_id:
-        os.makedirs(LOGS_CODEAGENT_DIR, exist_ok=True)
+        os.makedirs(logs_codeagent_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-        existing_dirs = sorted(glob.glob(os.path.join(LOGS_CODEAGENT_DIR, f"*_{session_id}")))
-        session_dir = existing_dirs[0] if existing_dirs else os.path.join(LOGS_CODEAGENT_DIR, f"{ts}_{session_id}")
+        existing_dirs = sorted(glob.glob(os.path.join(logs_codeagent_dir, f"*_{session_id}")))
+        session_dir = existing_dirs[0] if existing_dirs else os.path.join(logs_codeagent_dir, f"{ts}_{session_id}")
         os.makedirs(session_dir, exist_ok=True)
         req_path = os.path.join(session_dir, f"{ts}-req.json")
         res_path = os.path.join(session_dir, f"{ts}--res.json")
     else:
-        os.makedirs(LOGS_OPENAI_DIR, exist_ok=True)
+        os.makedirs(logs_openai_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-        req_path = os.path.join(LOGS_OPENAI_DIR, f"{ts}-req.json")
-        res_path = os.path.join(LOGS_OPENAI_DIR, f"{ts}--res.json")
+        req_path = os.path.join(logs_openai_dir, f"{ts}-req.json")
+        res_path = os.path.join(logs_openai_dir, f"{ts}--res.json")
 
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_CHAT)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
-    upstream_headers = await _build_headers_by_profile(profile, model)
+    upstream_headers = await build_headers_by_profile(profile, model)
 
     body["model"] = model
 
@@ -120,7 +126,7 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
                 trust_env=trust_env,
             ) as client:
                 result = await collect_with_retry(
-                    collect_once=lambda hdrs: _collect_codex_response_from_stream(
+                    collect_once=lambda hdrs: collect_codex_response_from_stream(
                         client=client,
                         upstream_url=upstream_url,
                         headers=hdrs,
@@ -129,7 +135,7 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
                     headers=upstream_headers,
                     max_retries=max_retries,
                     is_retryable=is_rate_limit_status,
-                    refresh_headers=lambda: _build_headers_by_profile(profile, model),
+                    refresh_headers=lambda: build_headers_by_profile(profile, model),
                 )
 
             _dump_json(res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
@@ -156,7 +162,7 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
             headers=upstream_headers,
             max_retries=max_retries,
             is_retryable=is_rate_limit_status,
-            refresh_headers=lambda: _build_headers_by_profile(profile, model),
+            refresh_headers=lambda: build_headers_by_profile(profile, model),
             verify=verify,
             timeout_seconds=timeout_seconds,
             trust_env=trust_env,
@@ -188,7 +194,7 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
                     timeout=httpx.Timeout(timeout_seconds),
                     trust_env=trust_env,
                 ) as client:
-                    result = await _collect_codex_response_from_stream(
+                    result = await collect_codex_response_from_stream(
                         client=client,
                         upstream_url=upstream_url,
                         headers=upstream_headers,
@@ -276,7 +282,7 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
                                 f"{attempt} retryable response (chat/completions stream): {r.status_code} {last_retry_err_text}")
                             if attempt < max_retries - 1:
                                 await asyncio.sleep(1 * (2 ** attempt))
-                                retry_headers = await _build_headers_by_profile(profile, model)
+                                retry_headers = await build_headers_by_profile(profile, model)
                             continue
 
                         connection_established = True
@@ -426,7 +432,7 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
 
                     if not connection_established and attempt < max_retries - 1:
                         await asyncio.sleep(1 * (2 ** attempt))
-                        retry_headers = await _build_headers_by_profile(profile, model)
+                        retry_headers = await build_headers_by_profile(profile, model)
 
                 if not connection_established and last_retry_status is not None and is_rate_limit_status(last_retry_status):
                     if last_retry_err_text is not None:

@@ -131,4 +131,10 @@ async def session_stats(session_id: str):
 # ---------- OpenAI Chat Completions ----------
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(req: Request):
-    return await run_chat_completions_flow(req, _build_runtime_context())
+    return await run_chat_completions_flow(
+        req,
+        ban_explore=BAN_EXPLORE,
+        upstream_config=UPSTREAM_CONFIG,
+        logs_openai_dir=LOGS_OPENAI_DIR,
+        logs_codeagent_dir=LOGS_CODEAGENT_DIR,
+    )
