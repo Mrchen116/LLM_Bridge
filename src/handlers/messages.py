@@ -174,6 +174,162 @@ async def _forward_anthropic_native_messages(
     return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
 
 
+def _build_openai_bridge_payload(
+    *,
+    model: str,
+    messages: List[Dict[str, Any]],
+    system: Any,
+    max_tokens: int,
+    stream: bool,
+    thinking: Any,
+    tools: Any,
+    tool_choice: Any,
+    temperature: Any,
+    top_p: Any,
+    stop_sequences: Any,
+    auth_type: str,
+    session_id: Optional[str],
+    provider: str,
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    oai_messages = anthropic_messages_to_openai_chat_messages(messages, system)
+
+    upstream_payload: Dict[str, Any] = {
+        "model": model,
+        "messages": oai_messages,
+        "max_tokens": max_tokens,
+        "stream": stream,
+    }
+    if thinking is not None:
+        upstream_payload["thinking"] = thinking
+
+    oai_tools = anthropic_tools_to_openai_chat_tools(tools)
+    if oai_tools:
+        upstream_payload["tools"] = oai_tools
+
+    oai_tool_choice = anthropic_tool_choice_to_openai_chat_tool_choice(tool_choice)
+    if oai_tool_choice is not None:
+        upstream_payload["tool_choice"] = oai_tool_choice
+
+    if isinstance(tool_choice, dict) and "disable_parallel_tool_use" in tool_choice:
+        upstream_payload["parallel_tool_calls"] = (not bool(tool_choice["disable_parallel_tool_use"]))
+
+    if temperature is not None:
+        upstream_payload["temperature"] = temperature
+    if top_p is not None:
+        upstream_payload["top_p"] = top_p
+    if stop_sequences is not None:
+        upstream_payload["stop"] = stop_sequences
+    if stream:
+        upstream_payload["stream_options"] = {"include_usage": True}
+
+    if auth_type != "codex_oauth":
+        return upstream_payload, None
+
+    codex_chat_body: Dict[str, Any] = {
+        "messages": oai_messages,
+        "stream": stream,
+        "max_tokens": max_tokens,
+    }
+    if oai_tools:
+        codex_chat_body["tools"] = oai_tools
+    if oai_tool_choice is not None:
+        codex_chat_body["tool_choice"] = oai_tool_choice
+    if temperature is not None:
+        codex_chat_body["temperature"] = temperature
+    if top_p is not None:
+        codex_chat_body["top_p"] = top_p
+    if stop_sequences is not None:
+        codex_chat_body["stop"] = stop_sequences
+
+    codex_payload = openai_chat_body_to_codex_payload(codex_chat_body, model)
+    codex_payload, codex_reinject_trace = _maybe_reinject_codex_reasoning(
+        session_id=session_id,
+        provider=provider,
+        model=model,
+        codex_chat_body=codex_chat_body,
+        codex_payload=codex_payload,
+    )
+    return codex_payload, codex_reinject_trace
+
+
+def _build_anthropic_response_from_openai_chat(
+    *,
+    data: Dict[str, Any],
+    model: str,
+    expose_thinking: bool,
+) -> Dict[str, Any]:
+    usage = data.get("usage") or {}
+    if not isinstance(usage, dict):
+        usage = {}
+
+    cache_creation = usage.get("cache_creation") or {}
+    if not isinstance(cache_creation, dict):
+        cache_creation = {}
+    server_tool_use = usage.get("server_tool_use")
+    if not isinstance(server_tool_use, dict):
+        server_tool_use = {"web_search_requests": 0}
+    service_tier = usage.get("service_tier") or "standard"
+
+    choice0 = (data.get("choices") or [None])[0] or {}
+    finish_reason = choice0.get("finish_reason")
+    msg = choice0.get("message") or {}
+
+    assistant_text = msg.get("content") or ""
+    tool_calls = msg.get("tool_calls") or []
+    content_blocks: List[Dict[str, Any]] = []
+
+    if expose_thinking:
+        reasoning_content = msg.get("reasoning_content")
+        if reasoning_content:
+            content_blocks.append({"type": "thinking", "thinking": reasoning_content})
+    if assistant_text:
+        content_blocks.append({"type": "text", "text": assistant_text})
+
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        name = fn.get("name") or "unknown_tool"
+        tool_id = tc.get("id") or f"toolu_{uuid.uuid4().hex}"
+        args_str = fn.get("arguments") or "{}"
+        try:
+            tool_input = json.loads(args_str) if isinstance(args_str, str) else (args_str or {})
+        except Exception:
+            tool_input = {"_raw_arguments": args_str}
+        content_blocks.append(
+            {
+                "type": "tool_use",
+                "id": tool_id,
+                "name": name,
+                "input": tool_input,
+            }
+        )
+
+    stop_reason = openai_chat_finish_reason_to_anthropic_stop_reason(finish_reason)
+    if tool_calls and stop_reason != "tool_use":
+        stop_reason = "tool_use"
+
+    return {
+        "id": f"msg_{uuid.uuid4().hex}",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": content_blocks,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+            "cache_creation": {
+                "ephemeral_1h_input_tokens": cache_creation.get("ephemeral_1h_input_tokens", 0),
+                "ephemeral_5m_input_tokens": cache_creation.get("ephemeral_5m_input_tokens", 0),
+            },
+            "server_tool_use": server_tool_use,
+            "service_tier": service_tier,
+        },
+    }
+
+
 async def run_messages_flow(
     req: Request,
     *,
@@ -279,63 +435,22 @@ async def run_messages_flow(
             session_non_stream_path=session_non_stream_path,
         )
 
-    oai_messages = anthropic_messages_to_openai_chat_messages(messages, system)
-
-    upstream_payload: Dict[str, Any] = {
-        "model": model,
-        "messages": oai_messages,
-        "max_tokens": max_tokens,
-        "stream": stream,
-    }
-    if thinking is not None:
-        upstream_payload["thinking"] = thinking
-
-    oai_tools = anthropic_tools_to_openai_chat_tools(tools)
-    if oai_tools:
-        upstream_payload["tools"] = oai_tools
-
-    oai_tool_choice = anthropic_tool_choice_to_openai_chat_tool_choice(tool_choice)
-    if oai_tool_choice is not None:
-        upstream_payload["tool_choice"] = oai_tool_choice
-
-    if isinstance(tool_choice, dict) and "disable_parallel_tool_use" in tool_choice:
-        upstream_payload["parallel_tool_calls"] = (not bool(tool_choice["disable_parallel_tool_use"]))
-
-    if temperature is not None:
-        upstream_payload["temperature"] = temperature
-    if top_p is not None:
-        upstream_payload["top_p"] = top_p
-    if stop_sequences is not None:
-        upstream_payload["stop"] = stop_sequences
-    if stream:
-        upstream_payload["stream_options"] = {"include_usage": True}
-
-    if auth_type == "codex_oauth":
-        codex_chat_body: Dict[str, Any] = {
-            "messages": oai_messages,
-            "stream": stream,
-            "max_tokens": max_tokens,
-        }
-        if oai_tools:
-            codex_chat_body["tools"] = oai_tools
-        if oai_tool_choice is not None:
-            codex_chat_body["tool_choice"] = oai_tool_choice
-        if temperature is not None:
-            codex_chat_body["temperature"] = temperature
-        if top_p is not None:
-            codex_chat_body["top_p"] = top_p
-        if stop_sequences is not None:
-            codex_chat_body["stop"] = stop_sequences
-        upstream_payload = openai_chat_body_to_codex_payload(codex_chat_body, model)
-        upstream_payload, codex_reinject_trace = _maybe_reinject_codex_reasoning(
-            session_id=session_id,
-            provider=str(profile.get("provider") or ""),
-            model=model,
-            codex_chat_body=codex_chat_body,
-            codex_payload=upstream_payload,
-        )
-    else:
-        codex_reinject_trace = None
+    upstream_payload, codex_reinject_trace = _build_openai_bridge_payload(
+        model=model,
+        messages=messages,
+        system=system,
+        max_tokens=max_tokens,
+        stream=stream,
+        thinking=thinking,
+        tools=tools,
+        tool_choice=tool_choice,
+        temperature=temperature,
+        top_p=top_p,
+        stop_sequences=stop_sequences,
+        auth_type=auth_type,
+        session_id=session_id,
+        provider=str(profile.get("provider") or ""),
+    )
 
     upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
@@ -415,11 +530,7 @@ async def run_messages_flow(
                         pass
 
                     if not has_usage:
-                        if session_req_path and os.path.exists(session_req_path):
-                            try:
-                                os.remove(session_req_path)
-                            except Exception:
-                                pass
+                        _discard_session_req(session_req_path)
                     else:
                         _dump_json(session_down_res_path, down_obj)
                 return Response(
@@ -431,81 +542,14 @@ async def run_messages_flow(
             data = r.json()
         usage = data.get("usage")
         if session_down_res_path and usage is None:
-            if session_req_path and os.path.exists(session_req_path):
-                try:
-                    os.remove(session_req_path)
-                except Exception:
-                    pass
+            _discard_session_req(session_req_path)
             session_down_res_path = None
 
-        usage = usage or {}
-        cache_creation = usage.get("cache_creation") or {}
-        if not isinstance(cache_creation, dict):
-            cache_creation = {}
-        server_tool_use = usage.get("server_tool_use")
-        if not isinstance(server_tool_use, dict):
-            server_tool_use = {"web_search_requests": 0}
-        service_tier = usage.get("service_tier") or "standard"
-
-        choice0 = (data.get("choices") or [None])[0] or {}
-        finish_reason = choice0.get("finish_reason")
-        msg = choice0.get("message") or {}
-
-        assistant_text = msg.get("content") or ""
-        tool_calls = msg.get("tool_calls") or []
-
-        content_blocks = []
-
-        if expose_thinking:
-            rc = msg.get("reasoning_content")
-            if rc:
-                content_blocks.append({"type": "thinking", "thinking": rc})
-
-        if assistant_text:
-            content_blocks.append({"type": "text", "text": assistant_text})
-
-        for tc in tool_calls:
-            fn = tc.get("function") or {}
-            name = fn.get("name") or "unknown_tool"
-            tool_id = tc.get("id") or f"toolu_{uuid.uuid4().hex}"
-            args_str = fn.get("arguments") or "{}"
-            try:
-                tool_input = json.loads(args_str) if isinstance(args_str, str) else (args_str or {})
-            except Exception:
-                tool_input = {"_raw_arguments": args_str}
-
-            content_blocks.append({
-                "type": "tool_use",
-                "id": tool_id,
-                "name": name,
-                "input": tool_input,
-            })
-
-        anthropic_stop_reason = openai_chat_finish_reason_to_anthropic_stop_reason(finish_reason)
-        if tool_calls and anthropic_stop_reason != "tool_use":
-            anthropic_stop_reason = "tool_use"
-
-        resp = {
-            "id": f"msg_{uuid.uuid4().hex}",
-            "type": "message",
-            "role": "assistant",
-            "model": model,
-            "content": content_blocks,
-            "stop_reason": anthropic_stop_reason,
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-                "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
-                "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
-                "cache_creation": {
-                    "ephemeral_1h_input_tokens": cache_creation.get("ephemeral_1h_input_tokens", 0),
-                    "ephemeral_5m_input_tokens": cache_creation.get("ephemeral_5m_input_tokens", 0),
-                },
-                "server_tool_use": server_tool_use,
-                "service_tier": service_tier,
-            },
-        }
+        resp = _build_anthropic_response_from_openai_chat(
+            data=data,
+            model=model,
+            expose_thinking=expose_thinking,
+        )
         _dump_json(down_res_path, resp)
         if session_down_res_path:
             _dump_json(session_down_res_path, resp)
