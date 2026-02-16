@@ -29,7 +29,7 @@ from src.bridge.openai_codex import (
     codex_response_to_openai_chat_completion,
     openai_chat_body_to_codex_payload,
 )
-from src.orchestrator.reasoning_reinject import (
+from src.reasoning.reinject import (
     _extract_session_id_from_body_metadata,
     _maybe_reinject_codex_reasoning,
     _update_codex_reasoning_reinject_cache,
