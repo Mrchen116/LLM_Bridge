@@ -31,9 +31,9 @@ def test_messages_codex_oauth_stream_writes_session_logs(client_with_logs: TestC
     assert session_dirs, "应为 codex 流式请求生成 session 目录"
     session_dir = session_dirs[-1]
 
-    req_files = sorted(session_dir.glob("*-req.json"))
-    down_files = sorted(session_dir.glob("*-downstream-res.json"))
-    non_stream_files = sorted(session_dir.glob("*-non-stream-res.json"))
+    req_files = sorted(session_dir.glob("*-req-anthropic_messages.json"))
+    down_files = sorted(session_dir.glob("*-downstream-res-anthropic_messages.json"))
+    non_stream_files = sorted(session_dir.glob("*-non-stream-res-anthropic_messages.json"))
 
     assert req_files, "应保留 session 请求日志"
     assert down_files, "应生成 session 流式响应日志"
@@ -74,9 +74,9 @@ def test_messages_stream_writes_session_logs(client_with_logs: TestClient):
     assert session_dirs, "应为该 session 生成目录"
     session_dir = session_dirs[-1]
 
-    req_files = sorted(session_dir.glob("*-req.json"))
-    down_files = sorted(session_dir.glob("*-downstream-res.json"))
-    non_stream_files = sorted(session_dir.glob("*-non-stream-res.json"))
+    req_files = sorted(session_dir.glob("*-req-anthropic_messages.json"))
+    down_files = sorted(session_dir.glob("*-downstream-res-anthropic_messages.json"))
+    non_stream_files = sorted(session_dir.glob("*-non-stream-res-anthropic_messages.json"))
 
     assert req_files, "应生成 session 请求日志"
     assert down_files, "应生成 session 流式响应日志"
@@ -92,9 +92,10 @@ def test_messages_stream_writes_session_logs(client_with_logs: TestClient):
     assert non_stream_obj["usage"]["input_tokens"] == 2
     assert non_stream_obj["usage"]["output_tokens"] == 1
 
-    anthropic_log_dir = Path.cwd() / "logs" / "anthropic"
-    assert anthropic_log_dir.exists()
-    assert sorted(anthropic_log_dir.glob("*-req.json")), "应生成 anthropic 请求日志"
-    assert sorted(anthropic_log_dir.glob("*-headers.json")), "应生成 anthropic 请求头日志"
-    assert sorted(anthropic_log_dir.glob("*-upstream-res.json")), "应生成 anthropic 上游响应日志"
-    assert sorted(anthropic_log_dir.glob("*-downstream-res.json")), "应生成 anthropic 下游响应日志"
+    raw_log_dir = Path.cwd() / "logs" / "raw" / "openai_chat"
+    assert raw_log_dir.exists()
+    assert sorted(raw_log_dir.glob("*-req-anthropic_messages.json")), "应生成 raw 请求日志"
+    assert sorted(raw_log_dir.glob("*-upstream-req-anthropic_messages.json")), "应生成 raw 上游请求日志"
+    assert sorted(raw_log_dir.glob("*-headers-anthropic_messages.json")), "应生成 raw 请求头日志"
+    assert sorted(raw_log_dir.glob("*-upstream-res-anthropic_messages.json")), "应生成 raw 上游响应日志"
+    assert sorted(raw_log_dir.glob("*-downstream-res-anthropic_messages.json")), "应生成 raw 下游响应日志"

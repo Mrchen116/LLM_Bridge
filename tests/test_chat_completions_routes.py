@@ -1,4 +1,6 @@
 import httpx
+import json
+from pathlib import Path
 from fastapi.testclient import TestClient
 
 from tests.support import FakeAsyncClient, FakeStreamResponse
@@ -192,3 +194,43 @@ def test_chat_completions_codex_oauth_stream_bridge(client: TestClient):
     assert resp.status_code == 200
     assert "pong" in data
     assert "data: [DONE]" in data
+
+
+def test_chat_completions_with_session_writes_raw_and_session_logs(client_with_logs: TestClient):
+    """测试 chat/completions 带 session 时同时写 raw(5) 与 session(3) 日志。"""
+    upstream_body = {
+        "id": "chatcmpl_session_1",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+    }
+    FakeAsyncClient.post_response = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        json=upstream_body,
+    )
+
+    payload = {"model": "moonshot:kimi-k2.5", "messages": [{"role": "user", "content": "hello"}], "stream": False}
+    session_id = "chat-session-logs"
+    resp = client_with_logs.post("/v1/chat/completions", json=payload, headers={"X-Session-Id": session_id})
+    assert resp.status_code == 200
+
+    raw_dir = Path.cwd() / "logs" / "raw" / "openai_chat"
+    assert sorted(raw_dir.glob("*-req-openai_chat.json"))
+    assert sorted(raw_dir.glob("*-upstream-req-openai_chat.json"))
+    assert sorted(raw_dir.glob("*-headers-openai_chat.json"))
+    assert sorted(raw_dir.glob("*-upstream-res-openai_chat.json"))
+    assert sorted(raw_dir.glob("*-downstream-res-openai_chat.json"))
+
+    session_root = Path.cwd() / "logs" / "session"
+    session_dirs = sorted(session_root.glob(f"*_{session_id}"))
+    assert session_dirs
+    session_dir = session_dirs[-1]
+    req_files = sorted(session_dir.glob("*-req-openai_chat.json"))
+    down_files = sorted(session_dir.glob("*-downstream-res-openai_chat.json"))
+    non_stream_files = sorted(session_dir.glob("*-non-stream-res-openai_chat.json"))
+    assert req_files and down_files and non_stream_files
+
+    with non_stream_files[-1].open("r", encoding="utf-8") as f:
+        obj = json.load(f)
+    assert obj["usage"]["prompt_tokens"] == 2
+    assert obj["usage"]["completion_tokens"] == 1

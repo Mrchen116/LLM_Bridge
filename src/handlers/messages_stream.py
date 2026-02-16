@@ -18,14 +18,11 @@ from src.bridge.openai_codex import (
     codex_response_extract_tool_uses,
     codex_response_to_openai_chat_completion,
 )
+from src.observability.turn_logging import TurnLogPaths, log_response_phase
 from src.reasoning.reinject import _update_codex_reasoning_reinject_cache
 from proxy_logging import (
     _build_anthropic_non_stream_from_events,
-    _discard_session_req,
-    _dump_json,
-    _extract_usage_from_obj,
     _sse_event,
-    _usage_dict_has_tokens,
 )
 
 
@@ -43,11 +40,7 @@ def build_openai_bridge_streaming_response(
     trust_env: bool,
     expose_thinking: bool,
     codex_reinject_trace: Optional[Dict[str, Any]],
-    up_res_path: str,
-    down_res_path: str,
-    session_req_path: Optional[str],
-    session_down_res_path: Optional[str],
-    session_non_stream_path: Optional[str],
+    turn_logs: TurnLogPaths,
 ) -> StreamingResponse:
     async def sse() -> AsyncIterator[bytes]:
         up_chunks = []
@@ -374,16 +367,23 @@ def build_openai_bridge_streaming_response(
                     return
 
         finally:
-            _dump_json(up_res_path, {"type": "openai_sse_capture", "chunks": up_chunks})
-            _dump_json(down_res_path, {"type": "anthropic_sse_capture", "events": down_events})
-            if session_down_res_path:
-                if not usage_received:
-                    _discard_session_req(session_req_path)
-                else:
-                    _dump_json(session_down_res_path, {"type": "anthropic_sse_capture", "events": down_events})
-                    non_stream_resp = _build_anthropic_non_stream_from_events(down_events, model)
-                    usage = _extract_usage_from_obj(non_stream_resp) if non_stream_resp else None
-                    if session_non_stream_path and non_stream_resp and _usage_dict_has_tokens(usage):
-                        _dump_json(session_non_stream_path, non_stream_resp)
+            non_stream_resp = _build_anthropic_non_stream_from_events(down_events, model)
+            if non_stream_resp is None:
+                non_stream_resp = {
+                    "id": f"msg_{uuid.uuid4().hex}",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                }
+            log_response_phase(
+                turn_logs,
+                upstream_response_obj={"type": "openai_sse_capture", "chunks": up_chunks},
+                downstream_response_obj={"type": "anthropic_sse_capture", "events": down_events},
+                non_stream_response_obj=non_stream_resp,
+            )
 
     return StreamingResponse(sse(), media_type="text/event-stream")

@@ -25,8 +25,7 @@ EXPOSE_THINKING = os.getenv("EXPOSE_THINKING", "true").lower() == "true"
 UPSTREAM_CONFIG = load_and_validate_config()
 
 LOGS_ROOT_DIR = "logs"
-LOGS_OPENAI_DIR = os.path.join(LOGS_ROOT_DIR, "openai")
-LOGS_ANTHROPIC_DIR = os.path.join(LOGS_ROOT_DIR, "anthropic")
+LOGS_RAW_DIR = os.path.join(LOGS_ROOT_DIR, "raw")
 LOGS_SESSION_DIR = os.path.join(LOGS_ROOT_DIR, "session")
 LOGS_CODEAGENT_DIR = os.path.join(LOGS_ROOT_DIR, "codeagent")
 
@@ -51,7 +50,8 @@ async def openai_responses(req: Request):
         req,
         ban_explore=BAN_EXPLORE,
         upstream_config=UPSTREAM_CONFIG,
-        logs_openai_dir=LOGS_OPENAI_DIR,
+        logs_raw_dir=LOGS_RAW_DIR,
+        logs_session_dir=LOGS_SESSION_DIR,
     )
 
 
@@ -63,7 +63,7 @@ async def v1_messages(req: Request):
         ban_explore=BAN_EXPLORE,
         expose_thinking=EXPOSE_THINKING,
         upstream_config=UPSTREAM_CONFIG,
-        logs_anthropic_dir=LOGS_ANTHROPIC_DIR,
+        logs_raw_dir=LOGS_RAW_DIR,
         logs_session_dir=LOGS_SESSION_DIR,
     )
 @app.post("/v1/messages/count_tokens")
@@ -106,6 +106,6 @@ async def openai_chat_completions(req: Request):
         req,
         ban_explore=BAN_EXPLORE,
         upstream_config=UPSTREAM_CONFIG,
-        logs_openai_dir=LOGS_OPENAI_DIR,
-        logs_codeagent_dir=LOGS_CODEAGENT_DIR,
+        logs_raw_dir=LOGS_RAW_DIR,
+        logs_session_dir=LOGS_SESSION_DIR,
     )

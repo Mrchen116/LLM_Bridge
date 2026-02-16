@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
@@ -11,6 +9,14 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from src.adapters.http_retry import post_with_retry
 from src.adapters.upstream_executor import build_headers_by_profile, is_rate_limit_status
+from src.observability.turn_logging import (
+    DOWNSTREAM_FORMAT_OPENAI_RESPONSES,
+    build_openai_responses_non_stream_from_sse_chunks,
+    build_turn_log_paths,
+    log_request_phase,
+    log_response_phase,
+    resolve_raw_bucket,
+)
 from src.reasoning.reinject import (
     _extract_response_completed_object_from_sse_chunks,
     _extract_session_id_from_body_metadata,
@@ -18,7 +24,7 @@ from src.reasoning.reinject import (
     _update_codex_reasoning_reinject_cache_for_responses,
 )
 from proxy_converters import _extract_model_and_ban_explore
-from proxy_logging import _dump_json, _resp_to_obj
+from proxy_logging import _resp_to_obj
 from upstream_config import (
     PROTOCOL_OPENAI_RESPONSES,
     UpstreamCapabilityError,
@@ -35,7 +41,8 @@ async def run_responses_flow(
     *,
     ban_explore: bool,
     upstream_config: Dict[str, Any],
-    logs_openai_dir: str,
+    logs_raw_dir: str,
+    logs_session_dir: str,
 ):
     body = await req.json()
     body_model = body.get("model")
@@ -58,11 +65,6 @@ async def run_responses_flow(
     session_id = req.headers.get("X-Session-Id") or _extract_session_id_from_body_metadata(body)
     codex_reinject_trace: Optional[Dict[str, Any]] = None
 
-    os.makedirs(logs_openai_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-    req_path = os.path.join(logs_openai_dir, f"{ts}-responses-req.json")
-    res_path = os.path.join(logs_openai_dir, f"{ts}-responses-res.json")
-
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_RESPONSES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
     upstream_headers = await build_headers_by_profile(profile, model)
@@ -79,7 +81,21 @@ async def run_responses_flow(
     log_body = dict(body)
     log_body["_upstream_profile"] = profile_name
     log_body["_upstream_provider"] = profile.get("provider")
-    _dump_json(req_path, log_body)
+
+    turn_logs = build_turn_log_paths(
+        logs_raw_dir=logs_raw_dir,
+        logs_session_dir=logs_session_dir,
+        raw_bucket=resolve_raw_bucket(auth_type=auth_type, provider=str(profile.get("provider") or "")),
+        downstream_format=DOWNSTREAM_FORMAT_OPENAI_RESPONSES,
+        session_id=session_id,
+    )
+    log_request_phase(
+        turn_logs,
+        request_obj=log_body,
+        upstream_request_obj=body,
+        client_headers=req.headers,
+        upstream_headers=upstream_headers,
+    )
 
     if not stream:
         r = await post_with_retry(
@@ -94,7 +110,23 @@ async def run_responses_flow(
             trust_env=trust_env,
         )
 
-        _dump_json(res_path, _resp_to_obj(r))
+        upstream_obj = _resp_to_obj(r)
+        downstream_obj: Dict[str, Any] = {
+            "status_code": r.status_code,
+            "headers": dict(r.headers),
+        }
+        try:
+            downstream_obj["json"] = r.json()
+            non_stream_obj = downstream_obj["json"] if isinstance(downstream_obj["json"], dict) else downstream_obj
+        except Exception:
+            downstream_obj["text"] = r.text
+            non_stream_obj = downstream_obj
+        log_response_phase(
+            turn_logs,
+            upstream_response_obj=upstream_obj,
+            downstream_response_obj=downstream_obj,
+            non_stream_response_obj=non_stream_obj,
+        )
         if auth_type == "codex_oauth" and r.status_code < 400:
             try:
                 _update_codex_reasoning_reinject_cache_for_responses(codex_reinject_trace, r.json())
@@ -108,6 +140,12 @@ async def run_responses_flow(
 
     async def sse_passthrough() -> AsyncIterator[bytes]:
         chunks: List[Any] = []
+        down_chunks: List[Any] = []
+
+        def emit_bytes(raw: bytes) -> bytes:
+            down_chunks.append(raw.decode("utf-8", errors="replace"))
+            return raw
+
         try:
             async with httpx.AsyncClient(
                 verify=verify,
@@ -136,20 +174,28 @@ async def run_responses_flow(
                             err = await r.aread()
                             err_text = err.decode("utf-8", errors="replace")
                             chunks.append({"type": "error_body", "body": err_text})
-                            yield err
+                            yield emit_bytes(err)
                             return
 
                         async for raw in r.aiter_raw():
                             chunks.append(raw.decode("utf-8", errors="replace"))
-                            yield raw
+                            yield emit_bytes(raw)
                         break
 
                 if not connected and last_retry_status is not None and is_rate_limit_status(last_retry_status):
                     if last_retry_err_text is not None:
-                        yield last_retry_err_text.encode("utf-8", errors="replace")
+                        yield emit_bytes(last_retry_err_text.encode("utf-8", errors="replace"))
                     return
         finally:
-            _dump_json(res_path, {"type": "responses_passthrough_sse_capture", "chunks": chunks})
+            upstream_obj = {"type": "responses_passthrough_sse_capture", "chunks": chunks}
+            downstream_obj = {"type": "responses_sse_capture", "chunks": down_chunks}
+            non_stream_obj = build_openai_responses_non_stream_from_sse_chunks(down_chunks)
+            log_response_phase(
+                turn_logs,
+                upstream_response_obj=upstream_obj,
+                downstream_response_obj=downstream_obj,
+                non_stream_response_obj=non_stream_obj,
+            )
             if auth_type == "codex_oauth":
                 resp_obj = _extract_response_completed_object_from_sse_chunks(chunks)
                 if isinstance(resp_obj, dict):

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import glob
 import json
 import logging
-import os
 import time
 import uuid
-from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
@@ -25,7 +22,16 @@ from src.bridge.openai_codex import (
     codex_response_to_openai_chat_completion,
     openai_chat_body_to_codex_payload,
 )
+from src.observability.turn_logging import (
+    DOWNSTREAM_FORMAT_OPENAI_CHAT,
+    build_openai_chat_non_stream_from_sse_chunks,
+    build_turn_log_paths,
+    log_request_phase,
+    log_response_phase,
+    resolve_raw_bucket,
+)
 from src.reasoning.reinject import (
+    _extract_session_id_from_body_metadata,
     _maybe_reinject_codex_reasoning,
     _update_codex_reasoning_reinject_cache,
 )
@@ -33,7 +39,7 @@ from proxy_converters import (
     _extract_model_and_ban_explore,
     _strip_task_explore_line,
 )
-from proxy_logging import _dump_json, _resp_to_obj
+from proxy_logging import _resp_to_obj
 from upstream_config import (
     PROTOCOL_OPENAI_CHAT,
     UpstreamCapabilityError,
@@ -50,8 +56,8 @@ async def run_chat_completions_flow(
     *,
     ban_explore: bool,
     upstream_config: Dict[str, Any],
-    logs_openai_dir: str,
-    logs_codeagent_dir: str,
+    logs_raw_dir: str,
+    logs_session_dir: str,
 ):
     body = await req.json()
     stream = bool(body.get("stream", False))
@@ -72,21 +78,7 @@ async def run_chat_completions_flow(
     model = resolved.model
     auth_type = get_effective_auth_type(profile)
 
-    session_id = req.headers.get("X-Session-Id")
-
-    if session_id:
-        os.makedirs(logs_codeagent_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-        existing_dirs = sorted(glob.glob(os.path.join(logs_codeagent_dir, f"*_{session_id}")))
-        session_dir = existing_dirs[0] if existing_dirs else os.path.join(logs_codeagent_dir, f"{ts}_{session_id}")
-        os.makedirs(session_dir, exist_ok=True)
-        req_path = os.path.join(session_dir, f"{ts}-req.json")
-        res_path = os.path.join(session_dir, f"{ts}--res.json")
-    else:
-        os.makedirs(logs_openai_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-        req_path = os.path.join(logs_openai_dir, f"{ts}-req.json")
-        res_path = os.path.join(logs_openai_dir, f"{ts}--res.json")
+    session_id = req.headers.get("X-Session-Id") or _extract_session_id_from_body_metadata(body)
 
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_CHAT)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
@@ -118,7 +110,21 @@ async def run_chat_completions_flow(
     log_body["_upstream_provider"] = profile.get("provider")
     if auth_type == "codex_oauth":
         log_body["_upstream_payload_kind"] = "codex_responses"
-    _dump_json(req_path, log_body)
+
+    turn_logs = build_turn_log_paths(
+        logs_raw_dir=logs_raw_dir,
+        logs_session_dir=logs_session_dir,
+        raw_bucket=resolve_raw_bucket(auth_type=auth_type, provider=str(profile.get("provider") or "")),
+        downstream_format=DOWNSTREAM_FORMAT_OPENAI_CHAT,
+        session_id=session_id,
+    )
+    log_request_phase(
+        turn_logs,
+        request_obj=log_body,
+        upstream_request_obj=upstream_request_body,
+        client_headers=req.headers,
+        upstream_headers=upstream_headers,
+    )
 
     if not stream:
         if auth_type == "codex_oauth":
@@ -140,8 +146,19 @@ async def run_chat_completions_flow(
                     refresh_headers=lambda: build_headers_by_profile(profile, model),
                 )
 
-            _dump_json(res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
+            upstream_obj = {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []}
             if not bool(result.get("ok")):
+                downstream_obj = {
+                    "status_code": int(result.get("status_code") or 500),
+                    "media_type": "application/json",
+                    "body": str(result.get("error_text") or ""),
+                }
+                log_response_phase(
+                    turn_logs,
+                    upstream_response_obj=upstream_obj,
+                    downstream_response_obj=downstream_obj,
+                    non_stream_response_obj=downstream_obj,
+                )
                 return Response(
                     content=result.get("error_bytes") or b"",
                     status_code=int(result.get("status_code") or 500),
@@ -152,10 +169,23 @@ async def run_chat_completions_flow(
                 codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
                 _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_json)
                 converted = codex_response_to_openai_chat_completion(codex_json, model)
-                _dump_json(res_path, {"status_code": 200, "json": converted})
+                downstream_obj = {"status_code": 200, "json": converted}
+                log_response_phase(
+                    turn_logs,
+                    upstream_response_obj=upstream_obj,
+                    downstream_response_obj=downstream_obj,
+                    non_stream_response_obj=converted,
+                )
                 return JSONResponse(content=converted, status_code=200)
             except Exception:
                 fallback_obj = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+                downstream_obj = {"status_code": 200, "json": fallback_obj}
+                log_response_phase(
+                    turn_logs,
+                    upstream_response_obj=upstream_obj,
+                    downstream_response_obj=downstream_obj,
+                    non_stream_response_obj=fallback_obj,
+                )
                 return JSONResponse(content=fallback_obj, status_code=200)
 
         r = await post_with_retry(
@@ -170,16 +200,39 @@ async def run_chat_completions_flow(
             trust_env=trust_env,
         )
 
-        _dump_json(res_path, _resp_to_obj(r))
+        upstream_obj = _resp_to_obj(r)
 
         if auth_type == "codex_oauth" and r.status_code < 400:
             try:
                 codex_json = r.json()
                 converted = codex_response_to_openai_chat_completion(codex_json, model)
-                _dump_json(res_path, {"status_code": r.status_code, "headers": dict(r.headers), "json": converted})
+                downstream_obj = {"status_code": r.status_code, "headers": dict(r.headers), "json": converted}
+                log_response_phase(
+                    turn_logs,
+                    upstream_response_obj=upstream_obj,
+                    downstream_response_obj=downstream_obj,
+                    non_stream_response_obj=converted,
+                )
                 return JSONResponse(content=converted, status_code=200)
             except Exception:
                 pass
+
+        downstream_obj: Dict[str, Any] = {
+            "status_code": r.status_code,
+            "headers": dict(r.headers),
+        }
+        try:
+            downstream_obj["json"] = r.json()
+            non_stream_obj: Dict[str, Any] = downstream_obj["json"] if isinstance(downstream_obj["json"], dict) else downstream_obj
+        except Exception:
+            downstream_obj["text"] = r.text
+            non_stream_obj = downstream_obj
+        log_response_phase(
+            turn_logs,
+            upstream_response_obj=upstream_obj,
+            downstream_response_obj=downstream_obj,
+            non_stream_response_obj=non_stream_obj,
+        )
 
         return Response(
             content=r.content,
@@ -189,6 +242,12 @@ async def run_chat_completions_flow(
 
     async def sse_passthrough() -> AsyncIterator[bytes]:
         up_chunks: List[Any] = []
+        down_chunks: List[Any] = []
+
+        def emit_bytes(raw: bytes) -> bytes:
+            down_chunks.append(raw.decode("utf-8", errors="replace"))
+            return raw
+
         try:
             if auth_type == "codex_oauth":
                 async with httpx.AsyncClient(
@@ -217,8 +276,8 @@ async def run_chat_completions_flow(
                                 "code": int(result.get("status_code") or 500),
                             },
                         }
-                        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8")
-                        yield b"data: [DONE]\n\n"
+                        yield emit_bytes(f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8"))
+                        yield emit_bytes(b"data: [DONE]\n\n")
                         return
 
                     codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
@@ -239,7 +298,7 @@ async def run_chat_completions_flow(
                             "model": model,
                             "choices": [{"index": 0, "delta": {"content": content_text}, "finish_reason": None}],
                         }
-                        yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                        yield emit_bytes(f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
 
                     last_chunk = {
                         "id": chunk_id,
@@ -249,8 +308,8 @@ async def run_chat_completions_flow(
                         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                         "usage": converted.get("usage"),
                     }
-                    yield f"data: {json.dumps(last_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-                    yield b"data: [DONE]\n\n"
+                    yield emit_bytes(f"data: {json.dumps(last_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    yield emit_bytes(b"data: [DONE]\n\n")
                     return
 
             async with httpx.AsyncClient(
@@ -316,8 +375,8 @@ async def run_chat_completions_flow(
                                     "code": r.status_code
                                 }
 
-                            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8")
-                            yield b"data: [DONE]\n\n"
+                            yield emit_bytes(f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8"))
+                            yield emit_bytes(b"data: [DONE]\n\n")
                             return
 
                         async for line in r.aiter_lines():
@@ -331,7 +390,7 @@ async def run_chat_completions_flow(
 
                                 if data_part == "[DONE]":
                                     if has_valid_content:
-                                        yield b"data: [DONE]\n\n"
+                                        yield emit_bytes(b"data: [DONE]\n\n")
                                     break
 
                                 try:
@@ -389,7 +448,7 @@ async def run_chat_completions_flow(
                                         if tool_calls_flat or has_valid_content:
                                             should_emit_tool_calls = True
 
-                                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode("utf-8")
+                                    yield emit_bytes(f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode("utf-8"))
 
                                     if should_emit_tool_calls:
                                         if has_valid_content:
@@ -404,15 +463,16 @@ async def run_chat_completions_flow(
                                                     "finish_reason": "tool_calls"
                                                 }]
                                             }
-                                            yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n".encode(
-                                                "utf-8")
+                                            yield emit_bytes(
+                                                f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                                            )
 
-                                        yield b"data: [DONE]\n\n"
+                                        yield emit_bytes(b"data: [DONE]\n\n")
                                         return
                                 except json.JSONDecodeError:
-                                    yield line.encode("utf-8") + b"\n\n"
+                                    yield emit_bytes(line.encode("utf-8") + b"\n\n")
                             else:
-                                yield line.encode("utf-8") + b"\n"
+                                yield emit_bytes(line.encode("utf-8") + b"\n")
 
                     if connection_established:
                         if not has_valid_content:
@@ -427,9 +487,9 @@ async def run_chat_completions_flow(
                                     "finish_reason": "stop"
                                 }]
                             }
-                            yield f"data: {json.dumps(empty_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                            yield emit_bytes(f"data: {json.dumps(empty_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
 
-                        yield b"data: [DONE]\n\n"
+                        yield emit_bytes(b"data: [DONE]\n\n")
                         break
 
                     if not connection_established and attempt < max_retries - 1:
@@ -438,10 +498,18 @@ async def run_chat_completions_flow(
 
                 if not connection_established and last_retry_status is not None and is_rate_limit_status(last_retry_status):
                     if last_retry_err_text is not None:
-                        yield last_retry_err_text.encode("utf-8", errors="replace")
-                    yield b"data: [DONE]\n\n"
+                        yield emit_bytes(last_retry_err_text.encode("utf-8", errors="replace"))
+                    yield emit_bytes(b"data: [DONE]\n\n")
                     return
         finally:
-            _dump_json(res_path, {"type": "openai_passthrough_sse_capture", "chunks": up_chunks})
+            upstream_obj = {"type": "openai_passthrough_sse_capture", "chunks": up_chunks}
+            downstream_obj = {"type": "openai_chat_sse_capture", "chunks": down_chunks}
+            non_stream_obj = build_openai_chat_non_stream_from_sse_chunks(down_chunks, model)
+            log_response_phase(
+                turn_logs,
+                upstream_response_obj=upstream_obj,
+                downstream_response_obj=downstream_obj,
+                non_stream_response_obj=non_stream_obj,
+            )
 
     return StreamingResponse(sse_passthrough(), media_type="text/event-stream")

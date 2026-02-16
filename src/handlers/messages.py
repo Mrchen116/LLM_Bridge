@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import glob
 import json
-import os
 import uuid
-from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
@@ -29,6 +26,14 @@ from src.bridge.openai_codex import (
     openai_chat_body_to_codex_payload,
 )
 from src.handlers.messages_stream import build_openai_bridge_streaming_response
+from src.observability.turn_logging import (
+    DOWNSTREAM_FORMAT_ANTHROPIC_MESSAGES,
+    TurnLogPaths,
+    build_turn_log_paths,
+    log_request_phase,
+    log_response_phase,
+    resolve_raw_bucket,
+)
 from src.reasoning.reinject import (
     _extract_session_id_from_body_metadata,
     _maybe_reinject_codex_reasoning,
@@ -40,13 +45,8 @@ from proxy_converters import (
 )
 from proxy_logging import (
     _build_anthropic_non_stream_from_events,
-    _discard_session_req,
-    _dump_json,
-    _extract_usage_from_obj,
     _parse_anthropic_sse_chunks_to_events,
     _resp_to_obj,
-    _should_skip_session_logging,
-    _usage_dict_has_tokens,
 )
 
 from upstream_config import (
@@ -61,28 +61,24 @@ from upstream_config import (
 
 
 async def _forward_anthropic_native_messages(
-    body: Dict[str, Any],
+    *,
     stream: bool,
-    profile: Dict[str, Any],
     model: str,
-    req_path: str,
-    up_res_path: str,
-    down_res_path: str,
-    session_req_path: Optional[str],
-    session_down_res_path: Optional[str],
-    session_non_stream_path: Optional[str],
+    payload: Dict[str, Any],
+    upstream_url: str,
+    verify: bool,
+    timeout_seconds: float,
+    max_retries: int,
+    trust_env: bool,
+    upstream_headers: Dict[str, str],
+    profile: Dict[str, Any],
+    turn_logs: TurnLogPaths,
 ) -> Response:
-    upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
-    verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
-    payload = dict(body)
-    payload["model"] = model
-
     if not stream:
-        headers = await build_headers_by_profile(profile, model)
         r = await post_with_retry(
             upstream_url=upstream_url,
             request_body=payload,
-            headers=headers,
+            headers=upstream_headers,
             max_retries=max_retries,
             is_retryable=is_rate_limit_status,
             refresh_headers=lambda: build_headers_by_profile(profile, model),
@@ -91,7 +87,7 @@ async def _forward_anthropic_native_messages(
             trust_env=trust_env,
         )
 
-        _dump_json(up_res_path, _resp_to_obj(r))
+        upstream_obj = _resp_to_obj(r)
         down_obj = {
             "type": "anthropic_passthrough_response",
             "status_code": r.status_code,
@@ -99,15 +95,16 @@ async def _forward_anthropic_native_messages(
         }
         try:
             down_obj["json"] = r.json()
+            non_stream_obj = down_obj["json"] if isinstance(down_obj["json"], dict) else down_obj
         except Exception:
             down_obj["text"] = r.text
-        _dump_json(down_res_path, down_obj)
-        if session_down_res_path:
-            usage = _extract_usage_from_obj(down_obj)
-            if not _usage_dict_has_tokens(usage):
-                _discard_session_req(session_req_path)
-            else:
-                _dump_json(session_down_res_path, down_obj)
+            non_stream_obj = down_obj
+        log_response_phase(
+            turn_logs,
+            upstream_response_obj=upstream_obj,
+            downstream_response_obj=down_obj,
+            non_stream_response_obj=non_stream_obj,
+        )
 
         return Response(
             content=r.content,
@@ -157,18 +154,25 @@ async def _forward_anthropic_native_messages(
                         yield last_retry_err_text.encode("utf-8", errors="replace")
                     return
         finally:
-            _dump_json(up_res_path, {"type": "anthropic_native_sse_capture", "chunks": up_chunks})
-            _dump_json(down_res_path, {"type": "anthropic_native_sse_capture", "chunks": down_chunks})
-            if session_down_res_path:
-                events = _parse_anthropic_sse_chunks_to_events(down_chunks)
-                non_stream_resp = _build_anthropic_non_stream_from_events(events, model)
-                usage = _extract_usage_from_obj(non_stream_resp) if non_stream_resp else None
-                if not _usage_dict_has_tokens(usage):
-                    _discard_session_req(session_req_path)
-                else:
-                    _dump_json(session_down_res_path, {"type": "anthropic_native_sse_capture", "chunks": down_chunks})
-                    if session_non_stream_path and non_stream_resp:
-                        _dump_json(session_non_stream_path, non_stream_resp)
+            events = _parse_anthropic_sse_chunks_to_events(down_chunks)
+            non_stream_resp = _build_anthropic_non_stream_from_events(events, model)
+            if non_stream_resp is None:
+                non_stream_resp = {
+                    "id": f"msg_{uuid.uuid4().hex}",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                }
+            log_response_phase(
+                turn_logs,
+                upstream_response_obj={"type": "anthropic_native_sse_capture", "chunks": up_chunks},
+                downstream_response_obj={"type": "anthropic_native_sse_capture", "chunks": down_chunks},
+                non_stream_response_obj=non_stream_resp,
+            )
 
     return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
 
@@ -342,10 +346,7 @@ async def _handle_openai_bridge_non_stream(
     timeout_seconds: float,
     trust_env: bool,
     codex_reinject_trace: Optional[Dict[str, Any]],
-    up_res_path: str,
-    down_res_path: str,
-    session_req_path: Optional[str],
-    session_down_res_path: Optional[str],
+    turn_logs: TurnLogPaths,
     expose_thinking: bool,
 ) -> Response:
     if auth_type == "codex_oauth":
@@ -367,7 +368,7 @@ async def _handle_openai_bridge_non_stream(
                 refresh_headers=lambda: build_headers_by_profile(profile, model),
             )
 
-        _dump_json(up_res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
+        upstream_obj = {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []}
         if not bool(result.get("ok")):
             down_obj = {
                 "type": "passthrough_error",
@@ -375,9 +376,12 @@ async def _handle_openai_bridge_non_stream(
                 "media_type": "application/json",
                 "body": str(result.get("error_text") or ""),
             }
-            _dump_json(down_res_path, down_obj)
-            if session_down_res_path:
-                _discard_session_req(session_req_path)
+            log_response_phase(
+                turn_logs,
+                upstream_response_obj=upstream_obj,
+                downstream_response_obj=down_obj,
+                non_stream_response_obj=down_obj,
+            )
             return Response(
                 content=result.get("error_bytes") or b"",
                 status_code=int(result.get("status_code") or 500),
@@ -400,8 +404,7 @@ async def _handle_openai_bridge_non_stream(
             trust_env=trust_env,
         )
 
-        up_obj = _resp_to_obj(r)
-        _dump_json(up_res_path, up_obj)
+        upstream_obj = _resp_to_obj(r)
 
         if r.status_code >= 400:
             down_obj = {
@@ -410,20 +413,12 @@ async def _handle_openai_bridge_non_stream(
                 "media_type": r.headers.get("content-type", "application/json"),
                 "body": (r.text if r.text is not None else ""),
             }
-            _dump_json(down_res_path, down_obj)
-            if session_down_res_path:
-                has_usage = False
-                try:
-                    body_json = json.loads(down_obj["body"])
-                    if isinstance(body_json, dict) and "usage" in body_json:
-                        has_usage = True
-                except Exception:
-                    pass
-
-                if not has_usage:
-                    _discard_session_req(session_req_path)
-                else:
-                    _dump_json(session_down_res_path, down_obj)
+            log_response_phase(
+                turn_logs,
+                upstream_response_obj=upstream_obj,
+                downstream_response_obj=down_obj,
+                non_stream_response_obj=down_obj,
+            )
             return Response(
                 content=r.content,
                 status_code=r.status_code,
@@ -432,19 +427,17 @@ async def _handle_openai_bridge_non_stream(
 
         data = r.json()
 
-    usage = data.get("usage")
-    if session_down_res_path and usage is None:
-        _discard_session_req(session_req_path)
-        session_down_res_path = None
-
     resp = _build_anthropic_response_from_openai_chat(
         data=data,
         model=model,
         expose_thinking=expose_thinking,
     )
-    _dump_json(down_res_path, resp)
-    if session_down_res_path:
-        _dump_json(session_down_res_path, resp)
+    log_response_phase(
+        turn_logs,
+        upstream_response_obj=upstream_obj,
+        downstream_response_obj=resp,
+        non_stream_response_obj=resp,
+    )
     return JSONResponse(resp)
 
 
@@ -455,7 +448,7 @@ async def run_messages_flow(
     ban_explore: bool,
     expose_thinking: bool,
     upstream_config: Dict[str, Any],
-    logs_anthropic_dir: str,
+    logs_raw_dir: str,
     logs_session_dir: str,
 ):
     body = await req.json()
@@ -472,30 +465,7 @@ async def run_messages_flow(
             },
             status_code=400,
         )
-    os.makedirs(logs_anthropic_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-
-    session_id = _extract_session_id_from_body_metadata(body)
-    skip_session_logging = False
-    if session_id:
-        skip_session_logging = _should_skip_session_logging(body)
-
-    req_path = os.path.join(logs_anthropic_dir, f"{ts}-req.json")
-    up_res_path = os.path.join(logs_anthropic_dir, f"{ts}-upstream-res.json")
-    down_res_path = os.path.join(logs_anthropic_dir, f"{ts}-downstream-res.json")
-    headers_path = os.path.join(logs_anthropic_dir, f"{ts}-headers.json")
-
-    session_req_path = None
-    session_down_res_path = None
-    session_non_stream_path = None
-    if session_id and not skip_session_logging:
-        os.makedirs(logs_session_dir, exist_ok=True)
-        existing_dirs = sorted(glob.glob(os.path.join(logs_session_dir, f"*_{session_id}")))
-        session_dir = existing_dirs[0] if existing_dirs else os.path.join(logs_session_dir, f"{ts}_{session_id}")
-        os.makedirs(session_dir, exist_ok=True)
-        session_req_path = os.path.join(session_dir, f"{ts}-req.json")
-        session_down_res_path = os.path.join(session_dir, f"{ts}-downstream-res.json")
-        session_non_stream_path = os.path.join(session_dir, f"{ts}-non-stream-res.json")
+    session_id = req.headers.get("X-Session-Id") or _extract_session_id_from_body_metadata(body)
 
     body_model = body.get("model")
     model_from_body, ban_explore = _extract_model_and_ban_explore(body_model, ban_explore)
@@ -529,28 +499,43 @@ async def run_messages_flow(
     profile = resolved.profile
     model = resolved.model
     auth_type = get_effective_auth_type(profile)
+    upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
+    verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
+    upstream_headers = await build_headers_by_profile(profile, model)
+    turn_logs = build_turn_log_paths(
+        logs_raw_dir=logs_raw_dir,
+        logs_session_dir=logs_session_dir,
+        raw_bucket=resolve_raw_bucket(auth_type=auth_type, provider=str(profile.get("provider") or "")),
+        downstream_format=DOWNSTREAM_FORMAT_ANTHROPIC_MESSAGES,
+        session_id=session_id,
+    )
 
     log_body = dict(body)
     log_body["_upstream_profile"] = profile_name
     log_body["_upstream_provider"] = profile.get("provider")
 
-    _dump_json(headers_path, dict(req.headers))
-    _dump_json(req_path, log_body)
-    if session_req_path:
-        _dump_json(session_req_path, log_body)
-
     if profile.get("provider") == "anthropic":
+        upstream_payload = dict(body)
+        upstream_payload["model"] = model
+        log_request_phase(
+            turn_logs,
+            request_obj=log_body,
+            upstream_request_obj=upstream_payload,
+            client_headers=req.headers,
+            upstream_headers=upstream_headers,
+        )
         return await _forward_anthropic_native_messages(
-            body=body,
             stream=stream,
-            profile=profile,
             model=model,
-            req_path=req_path,
-            up_res_path=up_res_path,
-            down_res_path=down_res_path,
-            session_req_path=session_req_path,
-            session_down_res_path=session_down_res_path,
-            session_non_stream_path=session_non_stream_path,
+            payload=upstream_payload,
+            upstream_url=upstream_url,
+            verify=verify,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            trust_env=trust_env,
+            upstream_headers=upstream_headers,
+            profile=profile,
+            turn_logs=turn_logs,
         )
 
     upstream_payload, codex_reinject_trace = _build_openai_bridge_payload(
@@ -570,9 +555,13 @@ async def run_messages_flow(
         provider=str(profile.get("provider") or ""),
     )
 
-    upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
-    verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
-    upstream_headers = await build_headers_by_profile(profile, model)
+    log_request_phase(
+        turn_logs,
+        request_obj=log_body,
+        upstream_request_obj=upstream_payload,
+        client_headers=req.headers,
+        upstream_headers=upstream_headers,
+    )
 
     if not stream:
         return await _handle_openai_bridge_non_stream(
@@ -587,10 +576,7 @@ async def run_messages_flow(
             timeout_seconds=timeout_seconds,
             trust_env=trust_env,
             codex_reinject_trace=codex_reinject_trace,
-            up_res_path=up_res_path,
-            down_res_path=down_res_path,
-            session_req_path=session_req_path,
-            session_down_res_path=session_down_res_path,
+            turn_logs=turn_logs,
             expose_thinking=expose_thinking,
         )
 
@@ -607,9 +593,5 @@ async def run_messages_flow(
         trust_env=trust_env,
         expose_thinking=expose_thinking,
         codex_reinject_trace=codex_reinject_trace,
-        up_res_path=up_res_path,
-        down_res_path=down_res_path,
-        session_req_path=session_req_path,
-        session_down_res_path=session_down_res_path,
-        session_non_stream_path=session_non_stream_path,
+        turn_logs=turn_logs,
     )
