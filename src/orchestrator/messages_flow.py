@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import glob
 import json
-import logging
 import os
 import uuid
 from datetime import datetime
@@ -12,6 +11,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from src.adapters.codex_oauth_adapter import collect_with_retry
+from src.adapters.http_retry import post_with_retry
 from src.runtime.context import RuntimeContext
 
 from upstream_config import (
@@ -54,26 +55,18 @@ async def _forward_anthropic_native_messages(
     payload["model"] = model
 
     if not stream:
-        async with httpx.AsyncClient(
+        headers = await _build_headers_by_profile(profile, model)
+        r = await post_with_retry(
+            upstream_url=upstream_url,
+            request_body=payload,
+            headers=headers,
+            max_retries=max_retries,
+            is_retryable=is_rate_limit_status,
+            refresh_headers=lambda: _build_headers_by_profile(profile, model),
             verify=verify,
-            timeout=httpx.Timeout(timeout_seconds),
+            timeout_seconds=timeout_seconds,
             trust_env=trust_env,
-        ) as client:
-            r = None
-            last_retry_response = None
-            headers = await _build_headers_by_profile(profile, model)
-
-            for attempt in range(max_retries):
-                r = await client.post(upstream_url, headers=headers, json=payload)
-                if not is_rate_limit_status(r.status_code):
-                    break
-                last_retry_response = r
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1 * (2 ** attempt))
-                    headers = await _build_headers_by_profile(profile, model)
-
-            if is_rate_limit_status(r.status_code) and last_retry_response is not None:
-                r = last_retry_response
+        )
 
         _dump_json(up_res_path, _resp_to_obj(r))
         down_obj = {
@@ -354,27 +347,18 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
                 timeout=httpx.Timeout(timeout_seconds),
                 trust_env=trust_env,
             ) as client:
-                result: Dict[str, Any] = {}
-                last_retry_result: Optional[Dict[str, Any]] = None
-                retry_headers = upstream_headers
-                for attempt in range(max_retries):
-                    result = await _collect_codex_response_from_stream(
+                result = await collect_with_retry(
+                    collect_once=lambda hdrs: _collect_codex_response_from_stream(
                         client=client,
                         upstream_url=upstream_url,
-                        headers=retry_headers,
+                        headers=hdrs,
                         request_body=upstream_payload,
-                    )
-                    status_code = int(result.get("status_code") or 0)
-                    if not is_rate_limit_status(status_code):
-                        break
-                    last_retry_result = result
-                    err_msg = result.get("error_text") or ""
-                    logging.warning(f"{attempt} retryable response (messages codex non-stream): {status_code} {err_msg}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1 * (2 ** attempt))
-                        retry_headers = await _build_headers_by_profile(profile, model)
-                if is_rate_limit_status(int(result.get("status_code") or 0)) and last_retry_result is not None:
-                    result = last_retry_result
+                    ),
+                    headers=upstream_headers,
+                    max_retries=max_retries,
+                    is_retryable=is_rate_limit_status,
+                    refresh_headers=lambda: _build_headers_by_profile(profile, model),
+                )
 
             _dump_json(up_res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
             if not bool(result.get("ok")):
@@ -397,28 +381,17 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
             _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_resp_json)
             data = _codex_responses_to_chat_completion(codex_resp_json, model)
         else:
-            async with httpx.AsyncClient(
+            r = await post_with_retry(
+                upstream_url=upstream_url,
+                request_body=upstream_payload,
+                headers=upstream_headers,
+                max_retries=max_retries,
+                is_retryable=is_rate_limit_status,
+                refresh_headers=lambda: _build_headers_by_profile(profile, model),
                 verify=verify,
-                timeout=httpx.Timeout(timeout_seconds),
+                timeout_seconds=timeout_seconds,
                 trust_env=trust_env,
-            ) as client:
-                r = None
-                last_retry_response = None
-
-                for attempt in range(max_retries):
-                    r = await client.post(upstream_url, headers=upstream_headers, json=upstream_payload)
-
-                    if not is_rate_limit_status(r.status_code):
-                        break
-
-                    last_retry_response = r
-                    logging.warning(f"{attempt} retryable response: {r.status_code} {r.text}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1 * (2 ** attempt))
-                        upstream_headers = await _build_headers_by_profile(profile, model)
-
-                if is_rate_limit_status(r.status_code) and last_retry_response is not None:
-                    r = last_retry_response
+            )
 
             up_obj = _resp_to_obj(r)
             _dump_json(up_res_path, up_obj)
