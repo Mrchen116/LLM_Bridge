@@ -26,6 +26,8 @@ from upstream_config import (
 )
 load_dotenv(override=True)
 import logging
+import proxy_converters as converters_mod
+import proxy_logging as proxy_logging_mod
 
 from proxy_converters import (
     _build_codex_responses_payload_from_chat,
@@ -59,14 +61,17 @@ from src.orchestrator.reasoning_reinject import (
     _update_codex_reasoning_reinject_cache,
     _update_codex_reasoning_reinject_cache_for_responses,
 )
+import src.orchestrator.reasoning_reinject as reasoning_mod
 from src.adapters.upstream_executor import (
     build_headers_by_profile as _build_headers_by_profile,
     collect_codex_response_from_stream as _collect_codex_response_from_stream,
     is_rate_limit_status,
 )
+import src.adapters.upstream_executor as executor_mod
 from src.ingress.chat_completions import handle_openai_chat_completions
 from src.ingress.messages import handle_v1_messages
 from src.ingress.responses import handle_openai_responses
+from src.runtime.context import RuntimeContext
 
 # 全局默认：是否屏蔽 Task 工具里的 "- Explore:" 行
 BAN_EXPLORE = os.getenv("BAN_EXPLORE", "false").lower() == "true"
@@ -84,6 +89,23 @@ LOGS_CODEAGENT_DIR = os.path.join(LOGS_ROOT_DIR, "codeagent")
 app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)")
 
 
+def _build_runtime_context() -> RuntimeContext:
+    return RuntimeContext(
+        ban_explore=BAN_EXPLORE,
+        ban_stream=BAN_STREAM,
+        expose_thinking=EXPOSE_THINKING,
+        upstream_config=UPSTREAM_CONFIG,
+        logs_openai_dir=LOGS_OPENAI_DIR,
+        logs_anthropic_dir=LOGS_ANTHROPIC_DIR,
+        logs_session_dir=LOGS_SESSION_DIR,
+        logs_codeagent_dir=LOGS_CODEAGENT_DIR,
+        converters=converters_mod,
+        proxy_logging=proxy_logging_mod,
+        reasoning=reasoning_mod,
+        executor=executor_mod,
+    )
+
+
 # -----------------------------
 # Endpoints
 # -----------------------------
@@ -94,12 +116,12 @@ async def health():
 
 @app.post("/v1/responses")
 async def openai_responses(req: Request):
-    return await handle_openai_responses(req)
+    return await handle_openai_responses(req, _build_runtime_context())
 
 
 @app.post("/v1/messages")
 async def v1_messages(req: Request):
-    return await handle_v1_messages(req)
+    return await handle_v1_messages(req, _build_runtime_context())
 @app.post("/v1/messages/count_tokens")
 async def v1_messages_count_tokens(req: Request):
     try:
@@ -169,4 +191,4 @@ async def session_stats(session_id: str):
 # ---------- OpenAI Chat Completions ----------
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(req: Request):
-    return await handle_openai_chat_completions(req)
+    return await handle_openai_chat_completions(req, _build_runtime_context())

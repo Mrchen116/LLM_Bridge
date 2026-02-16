@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from src.runtime.context import RuntimeContext
 
 from upstream_config import (
     PROTOCOL_OPENAI_CHAT,
@@ -25,24 +26,22 @@ from upstream_config import (
 )
 
 
-async def handle_openai_chat_completions(req: Request):
-    import app as app_module
-
-    _extract_model_and_ban_explore = app_module._extract_model_and_ban_explore
-    BAN_EXPLORE = app_module.BAN_EXPLORE
-    UPSTREAM_CONFIG = app_module.UPSTREAM_CONFIG
-    LOGS_CODEAGENT_DIR = app_module.LOGS_CODEAGENT_DIR
-    LOGS_OPENAI_DIR = app_module.LOGS_OPENAI_DIR
-    _build_headers_by_profile = app_module._build_headers_by_profile
-    _strip_task_explore_line = app_module._strip_task_explore_line
-    _build_codex_responses_payload_from_chat = app_module._build_codex_responses_payload_from_chat
-    _maybe_reinject_codex_reasoning = app_module._maybe_reinject_codex_reasoning
-    _dump_json = app_module._dump_json
-    _collect_codex_response_from_stream = app_module._collect_codex_response_from_stream
-    is_rate_limit_status = app_module.is_rate_limit_status
-    _update_codex_reasoning_reinject_cache = app_module._update_codex_reasoning_reinject_cache
-    _codex_responses_to_chat_completion = app_module._codex_responses_to_chat_completion
-    _resp_to_obj = app_module._resp_to_obj
+async def handle_openai_chat_completions(req: Request, ctx: RuntimeContext):
+    _extract_model_and_ban_explore = ctx.converters._extract_model_and_ban_explore
+    BAN_EXPLORE = ctx.ban_explore
+    UPSTREAM_CONFIG = ctx.upstream_config
+    LOGS_CODEAGENT_DIR = ctx.logs_codeagent_dir
+    LOGS_OPENAI_DIR = ctx.logs_openai_dir
+    _build_headers_by_profile = ctx.executor.build_headers_by_profile
+    _strip_task_explore_line = ctx.converters._strip_task_explore_line
+    _build_codex_responses_payload_from_chat = ctx.converters._build_codex_responses_payload_from_chat
+    _maybe_reinject_codex_reasoning = ctx.reasoning._maybe_reinject_codex_reasoning
+    _dump_json = ctx.proxy_logging._dump_json
+    _collect_codex_response_from_stream = ctx.executor.collect_codex_response_from_stream
+    is_rate_limit_status = ctx.executor.is_rate_limit_status
+    _update_codex_reasoning_reinject_cache = ctx.reasoning._update_codex_reasoning_reinject_cache
+    _codex_responses_to_chat_completion = ctx.converters._codex_responses_to_chat_completion
+    _resp_to_obj = ctx.proxy_logging._resp_to_obj
 
     body = await req.json()
     stream = bool(body.get("stream", False))
