@@ -6,8 +6,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from upstream_config import load_and_validate_config
 load_dotenv(override=True)
-import proxy_converters as converters_mod
-import proxy_logging as proxy_logging_mod
+from proxy_converters import calculate_token_count
+from proxy_logging import _collect_usage_tokens, _dump_json as _proxy_dump_json
 
 from src.handlers.chat_completions import run_chat_completions_flow
 from src.handlers.messages import run_messages_flow
@@ -30,7 +30,7 @@ LOGS_CODEAGENT_DIR = os.path.join(LOGS_ROOT_DIR, "codeagent")
 app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)")
 
 # Backward-compat test hooks
-_dump_json = proxy_logging_mod._dump_json
+_dump_json = _proxy_dump_json
 
 
 # -----------------------------
@@ -73,7 +73,7 @@ async def v1_messages_count_tokens(req: Request):
     system = body.get("system")
     tools = body.get("tools")
 
-    token_count = converters_mod.calculate_token_count(messages, system, tools)
+    token_count = calculate_token_count(messages, system, tools)
 
     return {"input_tokens": token_count}
 
@@ -84,7 +84,7 @@ async def session_stats(session_id: str):
         session_id=session_id,
         logs_session_dir=LOGS_SESSION_DIR,
         logs_codeagent_dir=LOGS_CODEAGENT_DIR,
-        collect_usage_tokens=proxy_logging_mod._collect_usage_tokens,
+        collect_usage_tokens=_collect_usage_tokens,
     )
     if not stats:
         return JSONResponse(
