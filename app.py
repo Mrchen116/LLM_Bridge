@@ -5,7 +5,9 @@ import uuid
 import asyncio
 import re
 import glob
-from typing import Any, Dict, List, Optional, AsyncIterator
+import copy
+import hashlib
+from typing import Any, Dict, List, Optional, AsyncIterator, Tuple
 
 import httpx
 from datetime import datetime
@@ -69,6 +71,177 @@ LOGS_CODEAGENT_DIR = os.path.join(LOGS_ROOT_DIR, "codeagent")
 
 
 app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)")
+
+# session + provider + model 维度的严格上下文命中缓存：
+# key -> canonical context fingerprint
+# value -> 已插入 reasoning(encrypted_content) 的 input 前缀
+_CODEX_REASONING_REINJECT_CACHE: Dict[Tuple[str, str, str], Dict[str, List[Dict[str, Any]]]] = {}
+
+
+def _split_trailing_user_suffix_oai_messages(
+    messages: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if not isinstance(messages, list) or not messages:
+        return [], []
+    idx = len(messages)
+    while idx > 0 and isinstance(messages[idx - 1], dict) and str(messages[idx - 1].get("role") or "") == "user":
+        idx -= 1
+    return messages[:idx], messages[idx:]
+
+
+def _build_codex_chat_body_with_messages(base_body: Dict[str, Any], messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    cloned = dict(base_body)
+    cloned["messages"] = messages
+    return cloned
+
+
+def _codex_context_fingerprint(payload: Dict[str, Any]) -> str:
+    # 匹配维度只保留“上下文语义相关”字段；忽略 stream/store 等传输控制字段
+    key_obj = {
+        "instructions": payload.get("instructions"),
+        "input": payload.get("input") or [],
+        "tools": payload.get("tools"),
+        "tool_choice": payload.get("tool_choice"),
+        "reasoning": payload.get("reasoning"),
+        "include": payload.get("include"),
+    }
+    canonical = json.dumps(key_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _extract_codex_reasoning_encrypted_items(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out = resp_json.get("output")
+    if not isinstance(out, list):
+        return []
+    items: List[Dict[str, Any]] = []
+    for item in out:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") != "reasoning":
+            continue
+        enc = item.get("encrypted_content")
+        if isinstance(enc, str) and enc:
+            entry: Dict[str, Any] = {"type": "reasoning", "encrypted_content": enc}
+            rid = item.get("id")
+            if isinstance(rid, str) and rid:
+                entry["id"] = rid
+            items.append(entry)
+    return items
+
+
+def _build_assistant_message_from_codex_response(resp_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    chat_obj = _codex_responses_to_chat_completion(resp_json, str(resp_json.get("model") or ""))
+    text = ""
+    choices = chat_obj.get("choices")
+    if isinstance(choices, list) and choices:
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if isinstance(msg, dict):
+            text = str(msg.get("content") or "")
+
+    tool_uses = _extract_codex_output_tool_uses(resp_json)
+    if not text and not tool_uses:
+        return None
+
+    assistant: Dict[str, Any] = {"role": "assistant", "content": text}
+    if tool_uses:
+        assistant["tool_calls"] = [
+            {
+                "id": str(t.get("id") or f"toolu_{uuid.uuid4().hex}"),
+                "type": "function",
+                "function": {
+                    "name": str(t.get("name") or "unknown"),
+                    "arguments": json.dumps(t.get("input") or {}, ensure_ascii=False),
+                },
+            }
+            for t in tool_uses
+        ]
+    return assistant
+
+
+def _maybe_reinject_codex_reasoning(
+    *,
+    session_id: Optional[str],
+    provider: str,
+    model: str,
+    codex_chat_body: Dict[str, Any],
+    codex_payload: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    if not session_id:
+        return codex_payload, None
+    messages = codex_chat_body.get("messages")
+    if not isinstance(messages, list):
+        return codex_payload, None
+
+    prefix_msgs, suffix_user_msgs = _split_trailing_user_suffix_oai_messages(messages)
+    prefix_body = _build_codex_chat_body_with_messages(codex_chat_body, prefix_msgs)
+    prefix_payload = _build_codex_responses_payload_from_chat(prefix_body, model)
+    fp = _codex_context_fingerprint(prefix_payload)
+
+    cache_bucket = _CODEX_REASONING_REINJECT_CACHE.get((session_id, provider, model)) or {}
+    decorated_prefix_input = cache_bucket.get(fp)
+
+    payload = dict(codex_payload)
+    if decorated_prefix_input is not None:
+        suffix_input_payload = _build_codex_responses_payload_from_chat(
+            _build_codex_chat_body_with_messages(codex_chat_body, suffix_user_msgs),
+            model,
+        )
+        suffix_input = suffix_input_payload.get("input") if isinstance(suffix_input_payload.get("input"), list) else []
+        payload["input"] = copy.deepcopy(decorated_prefix_input) + list(suffix_input)
+
+    trace = {
+        "session_id": session_id,
+        "provider": provider,
+        "model": model,
+        "codex_chat_body": copy.deepcopy(codex_chat_body),
+        "sent_input": copy.deepcopy(payload.get("input") if isinstance(payload.get("input"), list) else []),
+    }
+    return payload, trace
+
+
+def _update_codex_reasoning_reinject_cache(trace: Optional[Dict[str, Any]], resp_json: Dict[str, Any]) -> None:
+    if not trace:
+        return
+    session_id = trace.get("session_id")
+    provider = trace.get("provider")
+    model = trace.get("model")
+    codex_chat_body = trace.get("codex_chat_body")
+    sent_input = trace.get("sent_input")
+    if not (isinstance(session_id, str) and session_id and isinstance(provider, str) and isinstance(model, str)):
+        return
+    if not isinstance(codex_chat_body, dict) or not isinstance(sent_input, list):
+        return
+
+    assistant_msg = _build_assistant_message_from_codex_response(resp_json)
+    visible_messages = codex_chat_body.get("messages")
+    if not isinstance(visible_messages, list):
+        return
+    next_visible_messages = list(visible_messages)
+    if assistant_msg is not None:
+        next_visible_messages.append(assistant_msg)
+
+    next_visible_payload = _build_codex_responses_payload_from_chat(
+        _build_codex_chat_body_with_messages(codex_chat_body, next_visible_messages),
+        model,
+    )
+    next_fp = _codex_context_fingerprint(next_visible_payload)
+
+    assistant_input_items: List[Dict[str, Any]] = []
+    if assistant_msg is not None:
+        assistant_payload = _build_codex_responses_payload_from_chat(
+            _build_codex_chat_body_with_messages(codex_chat_body, [assistant_msg]),
+            model,
+        )
+        raw_assistant_input = assistant_payload.get("input")
+        if isinstance(raw_assistant_input, list):
+            assistant_input_items = [x for x in raw_assistant_input if isinstance(x, dict)]
+
+    reasoning_items = _extract_codex_reasoning_encrypted_items(resp_json)
+    decorated_next_input = copy.deepcopy(sent_input) + reasoning_items + assistant_input_items
+
+    bucket_key = (session_id, provider, model)
+    cache_bucket = _CODEX_REASONING_REINJECT_CACHE.setdefault(bucket_key, {})
+    cache_bucket[next_fp] = decorated_next_input
 
 async def _build_headers_by_profile(profile: Dict[str, Any], model: str) -> Dict[str, str]:
     auth_type = get_effective_auth_type(profile)
@@ -595,6 +768,15 @@ async def v1_messages(req: Request):
         if stop_sequences is not None:
             codex_chat_body["stop"] = stop_sequences
         upstream_payload = _build_codex_responses_payload_from_chat(codex_chat_body, model)
+        upstream_payload, codex_reinject_trace = _maybe_reinject_codex_reasoning(
+            session_id=session_id,
+            provider=str(profile.get("provider") or ""),
+            model=model,
+            codex_chat_body=codex_chat_body,
+            codex_payload=upstream_payload,
+        )
+    else:
+        codex_reinject_trace = None
 
 
     upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
@@ -649,6 +831,7 @@ async def v1_messages(req: Request):
                 )
 
             codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+            _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_resp_json)
             data = _codex_responses_to_chat_completion(codex_resp_json, model)
         else:
             async with httpx.AsyncClient(
@@ -886,6 +1069,7 @@ async def v1_messages(req: Request):
                         return
 
                     codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+                    _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_resp_json)
                     chat_obj = _codex_responses_to_chat_completion(codex_resp_json, model)
                     usage_obj = chat_obj.get("usage") if isinstance(chat_obj.get("usage"), dict) else {}
                     # codex_oauth 分支同样要标记 usage 已收到，否则 finally 会误判为异常并清空 session 请求日志。
@@ -1306,10 +1490,20 @@ async def openai_chat_completions(req: Request):
         body.pop("tools", None)
 
     upstream_request_body = body
+    codex_chat_body: Optional[Dict[str, Any]] = None
+    codex_reinject_trace: Optional[Dict[str, Any]] = None
     if auth_type == "codex_oauth":
         # OpenAI Chat -> Codex Responses 桥接入口：
         # 在转换函数里会处理 reasoning_effort 映射与 include(encrypted_content) 合并。
-        upstream_request_body = _build_codex_responses_payload_from_chat(body, model)
+        codex_chat_body = dict(body)
+        upstream_request_body = _build_codex_responses_payload_from_chat(codex_chat_body, model)
+        upstream_request_body, codex_reinject_trace = _maybe_reinject_codex_reasoning(
+            session_id=session_id,
+            provider=str(profile.get("provider") or ""),
+            model=model,
+            codex_chat_body=codex_chat_body,
+            codex_payload=upstream_request_body,
+        )
 
     log_body = dict(body)
     log_body["_upstream_profile"] = profile_name
@@ -1360,6 +1554,7 @@ async def openai_chat_completions(req: Request):
 
             try:
                 codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+                _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_json)
                 converted = _codex_responses_to_chat_completion(codex_json, model)
                 _dump_json(res_path, {"status_code": 200, "json": converted})
                 return JSONResponse(content=converted, status_code=200)
@@ -1460,6 +1655,7 @@ async def openai_chat_completions(req: Request):
                         return
 
                     codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+                    _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_json)
                     converted = _codex_responses_to_chat_completion(codex_json, model)
                     content_text = (
                         converted.get("choices", [{}])[0].get("message", {}).get("content", "")
