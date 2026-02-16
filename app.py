@@ -78,6 +78,17 @@ app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)")
 _CODEX_REASONING_REINJECT_CACHE: Dict[Tuple[str, str, str], Dict[str, List[Dict[str, Any]]]] = {}
 
 
+def _extract_session_id_from_body_metadata(body: Dict[str, Any]) -> Optional[str]:
+    metadata = body.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    user_id = metadata.get("user_id") or ""
+    m = re.search(r"session_([A-Za-z0-9-]+)", str(user_id))
+    if m:
+        return m.group(1)
+    return None
+
+
 def _split_trailing_user_suffix_oai_messages(
     messages: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -93,6 +104,17 @@ def _build_codex_chat_body_with_messages(base_body: Dict[str, Any], messages: Li
     cloned = dict(base_body)
     cloned["messages"] = messages
     return cloned
+
+
+def _split_trailing_user_suffix_responses_input(
+    input_items: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if not isinstance(input_items, list) or not input_items:
+        return [], []
+    idx = len(input_items)
+    while idx > 0 and isinstance(input_items[idx - 1], dict) and str(input_items[idx - 1].get("role") or "") == "user":
+        idx -= 1
+    return input_items[:idx], input_items[idx:]
 
 
 def _codex_context_fingerprint(payload: Dict[str, Any]) -> str:
@@ -242,6 +264,119 @@ def _update_codex_reasoning_reinject_cache(trace: Optional[Dict[str, Any]], resp
     bucket_key = (session_id, provider, model)
     cache_bucket = _CODEX_REASONING_REINJECT_CACHE.setdefault(bucket_key, {})
     cache_bucket[next_fp] = decorated_next_input
+
+
+def _extract_codex_visible_output_items_for_next_input(resp_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out = resp_json.get("output")
+    if not isinstance(out, list):
+        return []
+    items: List[Dict[str, Any]] = []
+    for item in out:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") == "reasoning":
+            continue
+        if str(item.get("type") or "") == "message":
+            content = item.get("content")
+            if isinstance(content, list):
+                normalized_content = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    p_type = str(part.get("type") or "")
+                    if p_type in {"output_text", "text"}:
+                        normalized_content.append({"type": "output_text", "text": str(part.get("text") or "")})
+                if normalized_content:
+                    items.append({"role": "assistant", "content": normalized_content})
+            continue
+        # 其他 output item（如 function_call）按原样保留到下一轮上下文
+        items.append(copy.deepcopy(item))
+    return items
+
+
+def _maybe_reinject_codex_reasoning_for_responses(
+    *,
+    session_id: Optional[str],
+    provider: str,
+    model: str,
+    payload: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    if not session_id:
+        return payload, None
+    input_items = payload.get("input")
+    if not isinstance(input_items, list):
+        return payload, None
+
+    prefix_items, suffix_user_items = _split_trailing_user_suffix_responses_input(input_items)
+    prefix_payload = dict(payload)
+    prefix_payload["input"] = prefix_items
+    fp = _codex_context_fingerprint(prefix_payload)
+
+    cache_bucket = _CODEX_REASONING_REINJECT_CACHE.get((session_id, provider, model)) or {}
+    decorated_prefix_input = cache_bucket.get(fp)
+
+    out_payload = dict(payload)
+    if decorated_prefix_input is not None:
+        out_payload["input"] = copy.deepcopy(decorated_prefix_input) + copy.deepcopy(suffix_user_items)
+
+    trace = {
+        "session_id": session_id,
+        "provider": provider,
+        "model": model,
+        "sent_payload": copy.deepcopy(out_payload),
+        "sent_input": copy.deepcopy(out_payload.get("input") if isinstance(out_payload.get("input"), list) else []),
+    }
+    return out_payload, trace
+
+
+def _update_codex_reasoning_reinject_cache_for_responses(trace: Optional[Dict[str, Any]], resp_json: Dict[str, Any]) -> None:
+    if not trace:
+        return
+    session_id = trace.get("session_id")
+    provider = trace.get("provider")
+    model = trace.get("model")
+    sent_payload = trace.get("sent_payload")
+    sent_input = trace.get("sent_input")
+    if not (isinstance(session_id, str) and session_id and isinstance(provider, str) and isinstance(model, str)):
+        return
+    if not isinstance(sent_payload, dict) or not isinstance(sent_input, list):
+        return
+
+    assistant_items = _extract_codex_visible_output_items_for_next_input(resp_json)
+    reasoning_items = _extract_codex_reasoning_encrypted_items(resp_json)
+
+    next_payload = dict(sent_payload)
+    next_payload["input"] = copy.deepcopy(sent_input) + copy.deepcopy(assistant_items)
+    next_fp = _codex_context_fingerprint(next_payload)
+
+    decorated_next_input = copy.deepcopy(sent_input) + reasoning_items + assistant_items
+    bucket_key = (session_id, provider, model)
+    cache_bucket = _CODEX_REASONING_REINJECT_CACHE.setdefault(bucket_key, {})
+    cache_bucket[next_fp] = decorated_next_input
+
+
+def _extract_response_completed_object_from_sse_chunks(chunks: List[Any]) -> Optional[Dict[str, Any]]:
+    completed: Optional[Dict[str, Any]] = None
+    for chunk in chunks:
+        if not isinstance(chunk, str):
+            continue
+        for line in chunk.splitlines():
+            if not line.startswith("data:"):
+                continue
+            data_part = line[5:].strip()
+            if not data_part or data_part == "[DONE]":
+                continue
+            try:
+                obj = json.loads(data_part)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if str(obj.get("type") or "") == "response.completed":
+                resp = obj.get("response")
+                if isinstance(resp, dict):
+                    completed = resp
+    return completed
 
 async def _build_headers_by_profile(profile: Dict[str, Any], model: str) -> Dict[str, str]:
     auth_type = get_effective_auth_type(profile)
@@ -517,6 +652,9 @@ async def openai_responses(req: Request):
     profile_name = resolved.profile_name
     profile = resolved.profile
     model = resolved.model
+    auth_type = get_effective_auth_type(profile)
+    session_id = req.headers.get("X-Session-Id") or _extract_session_id_from_body_metadata(body)
+    codex_reinject_trace: Optional[Dict[str, Any]] = None
 
     os.makedirs(LOGS_OPENAI_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
@@ -527,9 +665,15 @@ async def openai_responses(req: Request):
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
     upstream_headers = await _build_headers_by_profile(profile, model)
     body["model"] = model
-    if get_effective_auth_type(profile) == "codex_oauth":
+    if auth_type == "codex_oauth":
         # 对齐 opencode：Codex 要求 store=false，用户传 true 时也要覆盖
         body["store"] = False
+        body, codex_reinject_trace = _maybe_reinject_codex_reasoning_for_responses(
+            session_id=session_id,
+            provider=str(profile.get("provider") or ""),
+            model=model,
+            payload=body,
+        )
 
     log_body = dict(body)
     log_body["_upstream_profile"] = profile_name
@@ -557,6 +701,11 @@ async def openai_responses(req: Request):
                 r = last_retry_response
 
         _dump_json(res_path, _resp_to_obj(r))
+        if auth_type == "codex_oauth" and r.status_code < 400:
+            try:
+                _update_codex_reasoning_reinject_cache_for_responses(codex_reinject_trace, r.json())
+            except Exception:
+                pass
         return Response(
             content=r.content,
             status_code=r.status_code,
@@ -607,6 +756,10 @@ async def openai_responses(req: Request):
                     return
         finally:
             _dump_json(res_path, {"type": "responses_passthrough_sse_capture", "chunks": chunks})
+            if auth_type == "codex_oauth":
+                resp_obj = _extract_response_completed_object_from_sse_chunks(chunks)
+                if isinstance(resp_obj, dict):
+                    _update_codex_reasoning_reinject_cache_for_responses(codex_reinject_trace, resp_obj)
 
     return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
 
@@ -632,12 +785,7 @@ async def v1_messages(req: Request):
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]  # 带毫秒，避免并发重名
 
     session_id = None
-    session_metadata = body.get("metadata")
-    if isinstance(session_metadata, dict):
-        user_id = session_metadata.get("user_id") or ""
-        m = re.search(r"session_([A-Za-z0-9-]+)", str(user_id))
-        if m:
-            session_id = m.group(1)
+    session_id = _extract_session_id_from_body_metadata(body)
     skip_session_logging = False
     if session_id:
         skip_session_logging = _should_skip_session_logging(body)
