@@ -79,7 +79,12 @@ async def health():
 
 @app.post("/v1/responses")
 async def openai_responses(req: Request):
-    return await run_responses_flow(req, _build_runtime_context())
+    return await run_responses_flow(
+        req,
+        ban_explore=BAN_EXPLORE,
+        upstream_config=UPSTREAM_CONFIG,
+        logs_openai_dir=LOGS_OPENAI_DIR,
+    )
 
 
 @app.post("/v1/messages")
