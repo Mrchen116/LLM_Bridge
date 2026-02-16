@@ -12,9 +12,9 @@ import proxy_logging as proxy_logging_mod
 
 import src.orchestrator.reasoning_reinject as reasoning_mod
 import src.adapters.upstream_executor as executor_mod
-from src.ingress.chat_completions import handle_openai_chat_completions
-from src.ingress.messages import handle_v1_messages
-from src.ingress.responses import handle_openai_responses
+from src.orchestrator.chat_flow import run_chat_completions_flow
+from src.orchestrator.messages_flow import run_messages_flow
+from src.orchestrator.responses_flow import run_responses_flow
 from src.observability.session_metrics import get_session_stats
 from src.runtime.context import RuntimeContext
 
@@ -79,12 +79,12 @@ async def health():
 
 @app.post("/v1/responses")
 async def openai_responses(req: Request):
-    return await handle_openai_responses(req, _build_runtime_context())
+    return await run_responses_flow(req, _build_runtime_context())
 
 
 @app.post("/v1/messages")
 async def v1_messages(req: Request):
-    return await handle_v1_messages(req, _build_runtime_context())
+    return await run_messages_flow(req, _build_runtime_context())
 @app.post("/v1/messages/count_tokens")
 async def v1_messages_count_tokens(req: Request):
     try:
@@ -126,4 +126,4 @@ async def session_stats(session_id: str):
 # ---------- OpenAI Chat Completions ----------
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(req: Request):
-    return await handle_openai_chat_completions(req, _build_runtime_context())
+    return await run_chat_completions_flow(req, _build_runtime_context())
