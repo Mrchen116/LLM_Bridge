@@ -10,6 +10,7 @@ import token_auth
 
 
 def test_ensure_codex_login_for_startup_skip_when_authorized(monkeypatch):
+    """测试启动检查在已授权状态下跳过设备登录流程。"""
     async def fake_status():
         return {"authorized": True}
 
@@ -27,6 +28,7 @@ def test_ensure_codex_login_for_startup_skip_when_authorized(monkeypatch):
 
 
 def test_ensure_codex_login_for_startup_device_flow(monkeypatch):
+    """测试启动检查在未授权状态下会完整执行设备登录流程。"""
     async def fake_status():
         return {"authorized": False}
 

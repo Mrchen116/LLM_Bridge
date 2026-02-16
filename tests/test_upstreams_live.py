@@ -103,6 +103,7 @@ LIVE_CASES = _iter_profile_ingress_cases(LIVE_CFG)
 
 @pytest.mark.parametrize("profile_name,protocol", LIVE_CASES)
 def test_live_upstream_reachable(profile_name: str, protocol: str):
+    """测试真实上游在给定 profile/protocol 下链路可达。"""
     profile = LIVE_CFG["profiles"][profile_name]
     model = str((profile.get("defaults") or {}).get("model") or "")
 
@@ -131,4 +132,3 @@ def test_live_upstream_reachable(profile_name: str, protocol: str):
     assert resp.status_code < 500, (
         f"profile={profile_name}, protocol={protocol}, url={url}, status={resp.status_code}, body={resp.text[:400]}"
     )
-

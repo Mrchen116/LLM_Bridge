@@ -9,6 +9,7 @@ from start_proxy import _has_codex_oauth_profile
 
 
 def test_has_codex_oauth_profile_true():
+    """测试配置包含 codex_oauth profile 时识别结果为真。"""
     cfg = {
         "defaultProfile": "codexOAuth",
         "profiles": {
@@ -25,6 +26,7 @@ def test_has_codex_oauth_profile_true():
 
 
 def test_has_codex_oauth_profile_false():
+    """测试配置不包含 codex_oauth profile 时识别结果为假。"""
     cfg = {
         "defaultProfile": "moonshot",
         "profiles": {

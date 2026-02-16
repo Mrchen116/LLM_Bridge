@@ -1,0 +1,194 @@
+import httpx
+from fastapi.testclient import TestClient
+
+from tests.support import FakeAsyncClient, FakeStreamResponse
+
+
+def test_chat_completions_non_stream_passthrough(client_with_logs: TestClient):
+    """测试 /v1/chat/completions 非流式透传并落盘日志。"""
+    upstream_body = {
+        "id": "chatcmpl_1",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    FakeAsyncClient.post_response = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        json=upstream_body,
+    )
+    payload = {"model": "moonshot:kimi-k2.5", "messages": [{"role": "user", "content": "hello"}]}
+    resp = client_with_logs.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    assert resp.json() == upstream_body
+
+
+def test_chat_completions_stream_passthrough(client: TestClient):
+    """测试 /v1/chat/completions 流式透传 DONE 结束标记。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"id":"chatcmpl_1","choices":[{"delta":{"content":"ok"}}]}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "moonshot:kimi-k2.5",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": True,
+    }
+    with client.stream("POST", "/v1/chat/completions", json=payload) as resp:
+        data = "".join(resp.iter_text())
+    assert resp.status_code == 200
+    assert "data: [DONE]" in data
+
+
+def test_chat_completions_codex_oauth_uses_codex_endpoint_and_headers(client: TestClient):
+    """测试 codex_oauth 下 chat 接口改写到 codex endpoint 且携带鉴权头。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "messages": [{"role": "user", "content": "hello"}]}
+    resp = client.post("/v1/chat/completions", json=payload)
+
+    assert resp.status_code == 200
+    assert FakeAsyncClient.last_stream_args["url"] == "https://chatgpt.com/backend-api/codex/responses"
+    assert FakeAsyncClient.last_stream_args["headers"]["Authorization"] == "Bearer codex-access-token"
+    assert FakeAsyncClient.last_stream_args["headers"]["ChatGPT-Account-Id"] == "org-test-account"
+    assert FakeAsyncClient.last_stream_args["json"]["instructions"] == "You are a helpful assistant."
+    assert FakeAsyncClient.last_stream_args["json"]["input"][0]["role"] == "user"
+    assert FakeAsyncClient.last_stream_args["json"]["input"][0]["content"][0]["text"] == "hello"
+    assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
+    assert resp.json()["choices"][0]["message"]["content"] == "ok"
+
+
+def test_chat_completions_codex_oauth_mapping_matches_opencode_style(client: TestClient):
+    """测试 chat 请求字段向 codex responses 的映射行为。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_map_1","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":6,"output_tokens":2}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [
+            {"role": "system", "content": "你是系统提示"},
+            {"role": "developer", "content": "你是开发者提示"},
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "正在调用工具",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "tool_a", "arguments": "{\"x\":1}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool result"},
+        ],
+        "max_tokens": 12,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "tool_a",
+                    "description": "demo",
+                    "parameters": {"type": "object", "properties": {"x": {"type": "number"}}},
+                },
+            }
+        ],
+        "tool_choice": {"type": "function", "function": {"name": "tool_a"}},
+    }
+
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert "max_tokens" not in up
+    assert up["instructions"] == "You are a helpful assistant."
+    assert up["input"][0]["role"] == "system"
+    assert up["input"][0]["content"] == "你是系统提示"
+    assert up["input"][1]["role"] == "developer"
+    assert up["input"][1]["content"] == "你是开发者提示"
+    assert any(isinstance(item, dict) and item.get("type") == "function_call" for item in up["input"])
+    assert any(isinstance(item, dict) and item.get("type") == "function_call_output" for item in up["input"])
+    assert up["tool_choice"]["name"] == "tool_a"
+    assert up["tools"][0]["type"] == "function"
+    assert up["tools"][0]["name"] == "tool_a"
+    assert up["reasoning"]["effort"] == "medium"
+    assert "reasoning.encrypted_content" in up["include"]
+
+
+def test_chat_completions_codex_oauth_reasoning_effort_and_include_merge(client: TestClient):
+    """测试 reasoning_effort 映射及 include 字段并集合并。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_map_2","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":4,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hello"}],
+        "reasoning_effort": "high",
+        "include": ["foo.bar"],
+    }
+
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert up["reasoning"]["effort"] == "high"
+    assert "foo.bar" in up["include"]
+    assert "reasoning.encrypted_content" in up["include"]
+
+
+def test_chat_completions_codex_oauth_strip_sampling_params(client: TestClient):
+    """测试 codex_oauth 场景下移除不支持的采样参数。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_map_3","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":4,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 1,
+        "top_p": 0.9,
+    }
+
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert "temperature" not in up
+    assert "top_p" not in up
+
+
+def test_chat_completions_codex_oauth_stream_bridge(client: TestClient):
+    """测试 codex_oauth 下 chat 流式桥接返回文本与 DONE。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.output_text.delta","delta":"pong"}',
+            'data: {"type":"response.completed","response":{"id":"resp_stream_1","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}],"usage":{"input_tokens":2,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "只回复 pong"}],
+        "stream": True,
+    }
+    with client.stream("POST", "/v1/chat/completions", json=payload) as resp:
+        data = "".join(resp.iter_text())
+    assert resp.status_code == 200
+    assert "pong" in data
+    assert "data: [DONE]" in data
