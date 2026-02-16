@@ -6,13 +6,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from upstream_config import load_and_validate_config
 load_dotenv(override=True)
-from proxy_converters import calculate_token_count
-from proxy_logging import _collect_usage_tokens, _dump_json as _proxy_dump_json
+from proxy_logging import _dump_json as _proxy_dump_json
 
 from src.handlers.chat_completions import run_chat_completions_flow
 from src.handlers.messages import run_messages_flow
 from src.handlers.responses import run_responses_flow
 from src.observability.session_metrics import get_session_stats
+from src.observability.token_stats import (
+    TOKEN_FORMAT_ANTHROPIC,
+    collect_usage_tokens_for_stats,
+    count_input_tokens_for_request,
+)
 
 # 全局默认：是否屏蔽 Task 工具里的 "- Explore:" 行
 BAN_EXPLORE = os.getenv("BAN_EXPLORE", "false").lower() == "true"
@@ -68,14 +72,8 @@ async def v1_messages_count_tokens(req: Request):
         body = await req.json()
     except Exception:
         return JSONResponse({"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}}, status_code=400)
-
-    messages = body.get("messages", [])
-    system = body.get("system")
-    tools = body.get("tools")
-
-    token_count = calculate_token_count(messages, system, tools)
-
-    return {"input_tokens": token_count}
+    fmt, token_count = count_input_tokens_for_request(body, default_format=TOKEN_FORMAT_ANTHROPIC)
+    return {"format": fmt, "input_tokens": token_count}
 
 
 @app.get("/session/{session_id}/stats")
@@ -84,7 +82,7 @@ async def session_stats(session_id: str):
         session_id=session_id,
         logs_session_dir=LOGS_SESSION_DIR,
         logs_codeagent_dir=LOGS_CODEAGENT_DIR,
-        collect_usage_tokens=_collect_usage_tokens,
+        collect_usage_tokens=collect_usage_tokens_for_stats,
     )
     if not stats:
         return JSONResponse(
@@ -97,6 +95,7 @@ async def session_stats(session_id: str):
         "input_tokens": stats.get("input_tokens", 0),
         "output_tokens": stats.get("output_tokens", 0),
         "num_turns": stats.get("num_turns", 0),
+        "by_format": stats.get("by_format", {}),
     }
 
 
