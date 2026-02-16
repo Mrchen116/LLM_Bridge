@@ -18,21 +18,25 @@ from src.adapters.upstream_executor import (
     collect_codex_response_from_stream,
     is_rate_limit_status,
 )
+from src.bridge.anthropic_openai import (
+    anthropic_messages_to_openai_chat_messages,
+    anthropic_tool_choice_to_openai_chat_tool_choice,
+    anthropic_tools_to_openai_chat_tools,
+    openai_chat_finish_reason_to_anthropic_stop_reason,
+)
+from src.bridge.openai_codex import (
+    codex_response_extract_tool_uses,
+    codex_response_to_openai_chat_completion,
+    openai_chat_body_to_codex_payload,
+)
 from src.orchestrator.reasoning_reinject import (
     _extract_session_id_from_body_metadata,
     _maybe_reinject_codex_reasoning,
     _update_codex_reasoning_reinject_cache,
 )
 from proxy_converters import (
-    _build_codex_responses_payload_from_chat,
-    _codex_responses_to_chat_completion,
-    _extract_codex_output_tool_uses,
     _extract_model_and_ban_explore,
     _strip_task_explore_line,
-    anthropic_messages_to_openai,
-    anthropic_tool_choice_to_openai,
-    anthropic_tools_to_openai_tools,
-    oai_finish_reason_to_stop_reason,
 )
 from proxy_logging import (
     _build_anthropic_non_stream_from_events,
@@ -275,7 +279,7 @@ async def run_messages_flow(
             session_non_stream_path=session_non_stream_path,
         )
 
-    oai_messages = anthropic_messages_to_openai(messages, system)
+    oai_messages = anthropic_messages_to_openai_chat_messages(messages, system)
 
     upstream_payload: Dict[str, Any] = {
         "model": model,
@@ -286,11 +290,11 @@ async def run_messages_flow(
     if thinking is not None:
         upstream_payload["thinking"] = thinking
 
-    oai_tools = anthropic_tools_to_openai_tools(tools)
+    oai_tools = anthropic_tools_to_openai_chat_tools(tools)
     if oai_tools:
         upstream_payload["tools"] = oai_tools
 
-    oai_tool_choice = anthropic_tool_choice_to_openai(tool_choice)
+    oai_tool_choice = anthropic_tool_choice_to_openai_chat_tool_choice(tool_choice)
     if oai_tool_choice is not None:
         upstream_payload["tool_choice"] = oai_tool_choice
 
@@ -322,7 +326,7 @@ async def run_messages_flow(
             codex_chat_body["top_p"] = top_p
         if stop_sequences is not None:
             codex_chat_body["stop"] = stop_sequences
-        upstream_payload = _build_codex_responses_payload_from_chat(codex_chat_body, model)
+        upstream_payload = openai_chat_body_to_codex_payload(codex_chat_body, model)
         upstream_payload, codex_reinject_trace = _maybe_reinject_codex_reasoning(
             session_id=session_id,
             provider=str(profile.get("provider") or ""),
@@ -376,7 +380,7 @@ async def run_messages_flow(
 
             codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
             _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_resp_json)
-            data = _codex_responses_to_chat_completion(codex_resp_json, model)
+            data = codex_response_to_openai_chat_completion(codex_resp_json, model)
         else:
             r = await post_with_retry(
                 upstream_url=upstream_url,
@@ -477,7 +481,7 @@ async def run_messages_flow(
                 "input": tool_input,
             })
 
-        anthropic_stop_reason = oai_finish_reason_to_stop_reason(finish_reason)
+        anthropic_stop_reason = openai_chat_finish_reason_to_anthropic_stop_reason(finish_reason)
         if tool_calls and anthropic_stop_reason != "tool_use":
             anthropic_stop_reason = "tool_use"
 
@@ -579,7 +583,7 @@ async def run_messages_flow(
 
                     codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
                     _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_resp_json)
-                    chat_obj = _codex_responses_to_chat_completion(codex_resp_json, model)
+                    chat_obj = codex_response_to_openai_chat_completion(codex_resp_json, model)
                     usage_obj = chat_obj.get("usage") if isinstance(chat_obj.get("usage"), dict) else {}
                     usage_received = bool(usage_obj)
                     prompt_tokens = int(usage_obj.get("prompt_tokens") or 0)
@@ -589,7 +593,7 @@ async def run_messages_flow(
                         if isinstance(chat_obj.get("choices"), list)
                         else ""
                     )
-                    tool_uses = _extract_codex_output_tool_uses(codex_resp_json)
+                    tool_uses = codex_response_extract_tool_uses(codex_resp_json)
 
                     yield emit("message_start", {
                         "message": {
@@ -810,7 +814,7 @@ async def run_messages_flow(
                             if current_block_type is not None:
                                 yield emit("content_block_stop", {"index": current_block_index})
 
-                            stop_reason = oai_finish_reason_to_stop_reason(final_finish_reason) or "end_turn"
+                            stop_reason = openai_chat_finish_reason_to_anthropic_stop_reason(final_finish_reason) or "end_turn"
                             if tool_map and stop_reason != "tool_use":
                                 if final_finish_reason == "tool_calls":
                                     stop_reason = "tool_use"

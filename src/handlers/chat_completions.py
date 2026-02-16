@@ -21,13 +21,15 @@ from src.adapters.upstream_executor import (
     collect_codex_response_from_stream,
     is_rate_limit_status,
 )
+from src.bridge.openai_codex import (
+    codex_response_to_openai_chat_completion,
+    openai_chat_body_to_codex_payload,
+)
 from src.orchestrator.reasoning_reinject import (
     _maybe_reinject_codex_reasoning,
     _update_codex_reasoning_reinject_cache,
 )
 from proxy_converters import (
-    _build_codex_responses_payload_from_chat,
-    _codex_responses_to_chat_completion,
     _extract_model_and_ban_explore,
     _strip_task_explore_line,
 )
@@ -102,7 +104,7 @@ async def run_chat_completions_flow(
     codex_reinject_trace: Optional[Dict[str, Any]] = None
     if auth_type == "codex_oauth":
         codex_chat_body = dict(body)
-        upstream_request_body = _build_codex_responses_payload_from_chat(codex_chat_body, model)
+        upstream_request_body = openai_chat_body_to_codex_payload(codex_chat_body, model)
         upstream_request_body, codex_reinject_trace = _maybe_reinject_codex_reasoning(
             session_id=session_id,
             provider=str(profile.get("provider") or ""),
@@ -149,7 +151,7 @@ async def run_chat_completions_flow(
             try:
                 codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
                 _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_json)
-                converted = _codex_responses_to_chat_completion(codex_json, model)
+                converted = codex_response_to_openai_chat_completion(codex_json, model)
                 _dump_json(res_path, {"status_code": 200, "json": converted})
                 return JSONResponse(content=converted, status_code=200)
             except Exception:
@@ -173,7 +175,7 @@ async def run_chat_completions_flow(
         if auth_type == "codex_oauth" and r.status_code < 400:
             try:
                 codex_json = r.json()
-                converted = _codex_responses_to_chat_completion(codex_json, model)
+                converted = codex_response_to_openai_chat_completion(codex_json, model)
                 _dump_json(res_path, {"status_code": r.status_code, "headers": dict(r.headers), "json": converted})
                 return JSONResponse(content=converted, status_code=200)
             except Exception:
@@ -221,7 +223,7 @@ async def run_chat_completions_flow(
 
                     codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
                     _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_json)
-                    converted = _codex_responses_to_chat_completion(codex_json, model)
+                    converted = codex_response_to_openai_chat_completion(codex_json, model)
                     content_text = (
                         converted.get("choices", [{}])[0].get("message", {}).get("content", "")
                         if isinstance(converted.get("choices"), list)
