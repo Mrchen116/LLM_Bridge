@@ -14,6 +14,8 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from src.adapters.codex_oauth_adapter import collect_with_retry
+from src.adapters.http_retry import post_with_retry
 from src.runtime.context import RuntimeContext
 from upstream_config import (
     PROTOCOL_OPENAI_CHAT,
@@ -117,29 +119,18 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
                 timeout=httpx.Timeout(timeout_seconds),
                 trust_env=trust_env,
             ) as client:
-                result: Dict[str, Any] = {}
-                last_retry_result: Optional[Dict[str, Any]] = None
-                retry_headers = upstream_headers
-                for attempt in range(max_retries):
-                    result = await _collect_codex_response_from_stream(
+                result = await collect_with_retry(
+                    collect_once=lambda hdrs: _collect_codex_response_from_stream(
                         client=client,
                         upstream_url=upstream_url,
-                        headers=retry_headers,
+                        headers=hdrs,
                         request_body=upstream_request_body,
-                    )
-                    status_code = int(result.get("status_code") or 0)
-                    if not is_rate_limit_status(status_code):
-                        break
-                    last_retry_result = result
-                    err_msg = result.get("error_text") or ""
-                    logging.warning(
-                        f"{attempt} retryable response (chat/completions codex non-stream): {status_code} {err_msg}"
-                    )
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1 * (2 ** attempt))
-                        retry_headers = await _build_headers_by_profile(profile, model)
-                if is_rate_limit_status(int(result.get("status_code") or 0)) and last_retry_result is not None:
-                    result = last_retry_result
+                    ),
+                    headers=upstream_headers,
+                    max_retries=max_retries,
+                    is_retryable=is_rate_limit_status,
+                    refresh_headers=lambda: _build_headers_by_profile(profile, model),
+                )
 
             _dump_json(res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
             if not bool(result.get("ok")):
@@ -159,31 +150,17 @@ async def run_chat_completions_flow(req: Request, ctx: RuntimeContext):
                 fallback_obj = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
                 return JSONResponse(content=fallback_obj, status_code=200)
 
-        async with httpx.AsyncClient(
+        r = await post_with_retry(
+            upstream_url=upstream_url,
+            request_body=upstream_request_body if auth_type == "codex_oauth" else body,
+            headers=upstream_headers,
+            max_retries=max_retries,
+            is_retryable=is_rate_limit_status,
+            refresh_headers=lambda: _build_headers_by_profile(profile, model),
             verify=verify,
-            timeout=httpx.Timeout(timeout_seconds),
+            timeout_seconds=timeout_seconds,
             trust_env=trust_env,
-        ) as client:
-            r = None
-            last_retry_response = None
-
-            for attempt in range(max_retries):
-                if auth_type == "codex_oauth":
-                    r = await client.post(upstream_url, headers=upstream_headers, json=upstream_request_body)
-                else:
-                    r = await client.post(upstream_url, headers=upstream_headers, json=body)
-
-                if not is_rate_limit_status(r.status_code):
-                    break
-
-                last_retry_response = r
-                logging.warning(f"{attempt} retryable response (chat/completions non-stream): {r.status_code} {r.text}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1 * (2 ** attempt))
-                    upstream_headers = await _build_headers_by_profile(profile, model)
-
-            if is_rate_limit_status(r.status_code) and last_retry_response is not None:
-                r = last_retry_response
+        )
 
         _dump_json(res_path, _resp_to_obj(r))
 
