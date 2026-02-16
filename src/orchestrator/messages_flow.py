@@ -13,7 +13,38 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.http_retry import post_with_retry
-from src.runtime.context import RuntimeContext
+from src.adapters.upstream_executor import (
+    build_headers_by_profile,
+    collect_codex_response_from_stream,
+    is_rate_limit_status,
+)
+from src.orchestrator.reasoning_reinject import (
+    _extract_session_id_from_body_metadata,
+    _maybe_reinject_codex_reasoning,
+    _update_codex_reasoning_reinject_cache,
+)
+from proxy_converters import (
+    _build_codex_responses_payload_from_chat,
+    _codex_responses_to_chat_completion,
+    _extract_codex_output_tool_uses,
+    _extract_model_and_ban_explore,
+    _strip_task_explore_line,
+    anthropic_messages_to_openai,
+    anthropic_tool_choice_to_openai,
+    anthropic_tools_to_openai_tools,
+    oai_finish_reason_to_stop_reason,
+)
+from proxy_logging import (
+    _build_anthropic_non_stream_from_events,
+    _discard_session_req,
+    _dump_json,
+    _extract_usage_from_obj,
+    _parse_anthropic_sse_chunks_to_events,
+    _resp_to_obj,
+    _should_skip_session_logging,
+    _sse_event,
+    _usage_dict_has_tokens,
+)
 
 from upstream_config import (
     PROTOCOL_ANTHROPIC_MESSAGES,
@@ -27,7 +58,6 @@ from upstream_config import (
 
 
 async def _forward_anthropic_native_messages(
-    ctx: RuntimeContext,
     body: Dict[str, Any],
     stream: bool,
     profile: Dict[str, Any],
@@ -39,30 +69,20 @@ async def _forward_anthropic_native_messages(
     session_down_res_path: Optional[str],
     session_non_stream_path: Optional[str],
 ) -> Response:
-    _build_headers_by_profile = ctx.executor.build_headers_by_profile
-    _dump_json = ctx.proxy_logging._dump_json
-    _resp_to_obj = ctx.proxy_logging._resp_to_obj
-    _extract_usage_from_obj = ctx.proxy_logging._extract_usage_from_obj
-    _usage_dict_has_tokens = ctx.proxy_logging._usage_dict_has_tokens
-    _discard_session_req = ctx.proxy_logging._discard_session_req
-    _parse_anthropic_sse_chunks_to_events = ctx.proxy_logging._parse_anthropic_sse_chunks_to_events
-    _build_anthropic_non_stream_from_events = ctx.proxy_logging._build_anthropic_non_stream_from_events
-    is_rate_limit_status = ctx.executor.is_rate_limit_status
-
     upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
     payload = dict(body)
     payload["model"] = model
 
     if not stream:
-        headers = await _build_headers_by_profile(profile, model)
+        headers = await build_headers_by_profile(profile, model)
         r = await post_with_retry(
             upstream_url=upstream_url,
             request_body=payload,
             headers=headers,
             max_retries=max_retries,
             is_retryable=is_rate_limit_status,
-            refresh_headers=lambda: _build_headers_by_profile(profile, model),
+            refresh_headers=lambda: build_headers_by_profile(profile, model),
             verify=verify,
             timeout_seconds=timeout_seconds,
             trust_env=trust_env,
@@ -104,7 +124,7 @@ async def _forward_anthropic_native_messages(
                 last_retry_err_text = None
                 last_retry_status = None
                 connection_established = False
-                retry_headers = await _build_headers_by_profile(profile, model)
+                retry_headers = await build_headers_by_profile(profile, model)
 
                 for attempt in range(max_retries):
                     async with client.stream("POST", upstream_url, headers=retry_headers, json=payload) as r:
@@ -116,7 +136,7 @@ async def _forward_anthropic_native_messages(
                             up_chunks.append({"type": "error_body", "text": last_retry_err_text})
                             if attempt < max_retries - 1:
                                 await asyncio.sleep(1 * (2 ** attempt))
-                                retry_headers = await _build_headers_by_profile(profile, model)
+                                retry_headers = await build_headers_by_profile(profile, model)
                             continue
 
                         connection_established = True
@@ -127,7 +147,7 @@ async def _forward_anthropic_native_messages(
 
                     if not connection_established and attempt < max_retries - 1:
                         await asyncio.sleep(1 * (2 ** attempt))
-                        retry_headers = await _build_headers_by_profile(profile, model)
+                        retry_headers = await build_headers_by_profile(profile, model)
 
                 if (not connection_established) and (last_retry_status is not None):
                     if last_retry_err_text:
@@ -150,43 +170,21 @@ async def _forward_anthropic_native_messages(
     return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
 
 
-async def run_messages_flow(req: Request, ctx: RuntimeContext):
-    _extract_session_id_from_body_metadata = ctx.reasoning._extract_session_id_from_body_metadata
-    _should_skip_session_logging = ctx.proxy_logging._should_skip_session_logging
-    _extract_model_and_ban_explore = ctx.converters._extract_model_and_ban_explore
-    _strip_task_explore_line = ctx.converters._strip_task_explore_line
-    anthropic_messages_to_openai = ctx.converters.anthropic_messages_to_openai
-    anthropic_tools_to_openai_tools = ctx.converters.anthropic_tools_to_openai_tools
-    anthropic_tool_choice_to_openai = ctx.converters.anthropic_tool_choice_to_openai
-    _build_codex_responses_payload_from_chat = ctx.converters._build_codex_responses_payload_from_chat
-    _maybe_reinject_codex_reasoning = ctx.reasoning._maybe_reinject_codex_reasoning
-    _build_headers_by_profile = ctx.executor.build_headers_by_profile
-    _collect_codex_response_from_stream = ctx.executor.collect_codex_response_from_stream
-    is_rate_limit_status = ctx.executor.is_rate_limit_status
-    _update_codex_reasoning_reinject_cache = ctx.reasoning._update_codex_reasoning_reinject_cache
-    _codex_responses_to_chat_completion = ctx.converters._codex_responses_to_chat_completion
-    _resp_to_obj = ctx.proxy_logging._resp_to_obj
-    _extract_usage_from_obj = ctx.proxy_logging._extract_usage_from_obj
-    _usage_dict_has_tokens = ctx.proxy_logging._usage_dict_has_tokens
-    _discard_session_req = ctx.proxy_logging._discard_session_req
-    oai_finish_reason_to_stop_reason = ctx.converters.oai_finish_reason_to_stop_reason
-    _sse_event = ctx.proxy_logging._sse_event
-    _extract_codex_output_tool_uses = ctx.converters._extract_codex_output_tool_uses
-    _parse_anthropic_sse_chunks_to_events = ctx.proxy_logging._parse_anthropic_sse_chunks_to_events
-    _build_anthropic_non_stream_from_events = ctx.proxy_logging._build_anthropic_non_stream_from_events
-    _dump_json = ctx.proxy_logging._dump_json
-    BAN_STREAM = ctx.ban_stream
-    BAN_EXPLORE = ctx.ban_explore
-    EXPOSE_THINKING = ctx.expose_thinking
-    UPSTREAM_CONFIG = ctx.upstream_config
-    LOGS_ANTHROPIC_DIR = ctx.logs_anthropic_dir
-    LOGS_SESSION_DIR = ctx.logs_session_dir
-
+async def run_messages_flow(
+    req: Request,
+    *,
+    ban_stream: bool,
+    ban_explore: bool,
+    expose_thinking: bool,
+    upstream_config: Dict[str, Any],
+    logs_anthropic_dir: str,
+    logs_session_dir: str,
+):
     body = await req.json()
     body_stream = bool(body.get("stream", False))
     header_stream = req.headers.get("x-stainless-helper-method", "").lower() == "stream"
     stream = body_stream or header_stream
-    if stream and BAN_STREAM:
+    if stream and ban_stream:
         return JSONResponse(
             {
                 "error": {
@@ -196,7 +194,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
             },
             status_code=400,
         )
-    os.makedirs(LOGS_ANTHROPIC_DIR, exist_ok=True)
+    os.makedirs(logs_anthropic_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
 
     session_id = _extract_session_id_from_body_metadata(body)
@@ -204,25 +202,25 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
     if session_id:
         skip_session_logging = _should_skip_session_logging(body)
 
-    req_path = os.path.join(LOGS_ANTHROPIC_DIR, f"{ts}-req.json")
-    up_res_path = os.path.join(LOGS_ANTHROPIC_DIR, f"{ts}-upstream-res.json")
-    down_res_path = os.path.join(LOGS_ANTHROPIC_DIR, f"{ts}-downstream-res.json")
-    headers_path = os.path.join(LOGS_ANTHROPIC_DIR, f"{ts}-headers.json")
+    req_path = os.path.join(logs_anthropic_dir, f"{ts}-req.json")
+    up_res_path = os.path.join(logs_anthropic_dir, f"{ts}-upstream-res.json")
+    down_res_path = os.path.join(logs_anthropic_dir, f"{ts}-downstream-res.json")
+    headers_path = os.path.join(logs_anthropic_dir, f"{ts}-headers.json")
 
     session_req_path = None
     session_down_res_path = None
     session_non_stream_path = None
     if session_id and not skip_session_logging:
-        os.makedirs(LOGS_SESSION_DIR, exist_ok=True)
-        existing_dirs = sorted(glob.glob(os.path.join(LOGS_SESSION_DIR, f"*_{session_id}")))
-        session_dir = existing_dirs[0] if existing_dirs else os.path.join(LOGS_SESSION_DIR, f"{ts}_{session_id}")
+        os.makedirs(logs_session_dir, exist_ok=True)
+        existing_dirs = sorted(glob.glob(os.path.join(logs_session_dir, f"*_{session_id}")))
+        session_dir = existing_dirs[0] if existing_dirs else os.path.join(logs_session_dir, f"{ts}_{session_id}")
         os.makedirs(session_dir, exist_ok=True)
         session_req_path = os.path.join(session_dir, f"{ts}-req.json")
         session_down_res_path = os.path.join(session_dir, f"{ts}-downstream-res.json")
         session_non_stream_path = os.path.join(session_dir, f"{ts}-non-stream-res.json")
 
     body_model = body.get("model")
-    model_from_body, ban_explore = _extract_model_and_ban_explore(body_model, BAN_EXPLORE)
+    model_from_body, ban_explore = _extract_model_and_ban_explore(body_model, ban_explore)
     if model_from_body is not None:
         body["model"] = model_from_body
 
@@ -243,7 +241,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
         body.pop("tools", None)
 
     try:
-        resolved = resolve_profile(UPSTREAM_CONFIG, body, PROTOCOL_ANTHROPIC_MESSAGES)
+        resolved = resolve_profile(upstream_config, body, PROTOCOL_ANTHROPIC_MESSAGES)
     except UpstreamCapabilityError as e:
         return JSONResponse({"error": {"message": str(e), "type": "unsupported_for_upstream"}}, status_code=404)
     except UpstreamConfigError as e:
@@ -265,7 +263,6 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
 
     if profile.get("provider") == "anthropic":
         return await _forward_anthropic_native_messages(
-            ctx=ctx,
             body=body,
             stream=stream,
             profile=profile,
@@ -338,7 +335,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
 
     upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
-    upstream_headers = await _build_headers_by_profile(profile, model)
+    upstream_headers = await build_headers_by_profile(profile, model)
 
     if not stream:
         if auth_type == "codex_oauth":
@@ -348,7 +345,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
                 trust_env=trust_env,
             ) as client:
                 result = await collect_with_retry(
-                    collect_once=lambda hdrs: _collect_codex_response_from_stream(
+                    collect_once=lambda hdrs: collect_codex_response_from_stream(
                         client=client,
                         upstream_url=upstream_url,
                         headers=hdrs,
@@ -357,7 +354,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
                     headers=upstream_headers,
                     max_retries=max_retries,
                     is_retryable=is_rate_limit_status,
-                    refresh_headers=lambda: _build_headers_by_profile(profile, model),
+                    refresh_headers=lambda: build_headers_by_profile(profile, model),
                 )
 
             _dump_json(up_res_path, {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []})
@@ -387,7 +384,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
                 headers=upstream_headers,
                 max_retries=max_retries,
                 is_retryable=is_rate_limit_status,
-                refresh_headers=lambda: _build_headers_by_profile(profile, model),
+                refresh_headers=lambda: build_headers_by_profile(profile, model),
                 verify=verify,
                 timeout_seconds=timeout_seconds,
                 trust_env=trust_env,
@@ -455,7 +452,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
 
         content_blocks = []
 
-        if EXPOSE_THINKING:
+        if expose_thinking:
             rc = msg.get("reasoning_content")
             if rc:
                 content_blocks.append({"type": "thinking", "thinking": rc})
@@ -567,7 +564,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
                     timeout=httpx.Timeout(timeout_seconds),
                     trust_env=trust_env,
                 ) as client:
-                    result = await _collect_codex_response_from_stream(
+                    result = await collect_codex_response_from_stream(
                         client=client,
                         upstream_url=upstream_url,
                         headers=upstream_headers,
@@ -714,7 +711,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
                                 final_finish_reason = fr
 
                             rc = delta.get("reasoning_content")
-                            if rc and EXPOSE_THINKING:
+                            if rc and expose_thinking:
                                 if text_started:
                                     continue
                                 if current_block_type is not None and current_block_type != "thinking":
@@ -827,7 +824,7 @@ async def run_messages_flow(req: Request, ctx: RuntimeContext):
 
                     if not connection_established and attempt < max_retries - 1:
                         await asyncio.sleep(0.1 * (2 ** attempt))
-                        retry_headers = await _build_headers_by_profile(profile, model)
+                        retry_headers = await build_headers_by_profile(profile, model)
 
                 if not connection_established and last_retry_status is not None and is_rate_limit_status(last_retry_status):
                     yield emit("error", {"upstream_status": last_retry_status, "upstream_body": last_retry_err_text})

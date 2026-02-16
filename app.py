@@ -1,6 +1,5 @@
 import os
 import httpx
-from types import SimpleNamespace
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -10,13 +9,10 @@ load_dotenv(override=True)
 import proxy_converters as converters_mod
 import proxy_logging as proxy_logging_mod
 
-import src.orchestrator.reasoning_reinject as reasoning_mod
-import src.adapters.upstream_executor as executor_mod
 from src.orchestrator.chat_flow import run_chat_completions_flow
 from src.orchestrator.messages_flow import run_messages_flow
 from src.orchestrator.responses_flow import run_responses_flow
 from src.observability.session_metrics import get_session_stats
-from src.runtime.context import RuntimeContext
 
 # 全局默认：是否屏蔽 Task 工具里的 "- Explore:" 行
 BAN_EXPLORE = os.getenv("BAN_EXPLORE", "false").lower() == "true"
@@ -35,38 +31,6 @@ app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)")
 
 # Backward-compat test hooks
 _dump_json = proxy_logging_mod._dump_json
-
-
-def _build_proxy_logging_context() -> SimpleNamespace:
-    return SimpleNamespace(
-        _build_anthropic_non_stream_from_events=proxy_logging_mod._build_anthropic_non_stream_from_events,
-        _collect_usage_tokens=proxy_logging_mod._collect_usage_tokens,
-        _discard_session_req=proxy_logging_mod._discard_session_req,
-        _dump_json=_dump_json,
-        _extract_usage_from_obj=proxy_logging_mod._extract_usage_from_obj,
-        _parse_anthropic_sse_chunks_to_events=proxy_logging_mod._parse_anthropic_sse_chunks_to_events,
-        _resp_to_obj=proxy_logging_mod._resp_to_obj,
-        _should_skip_session_logging=proxy_logging_mod._should_skip_session_logging,
-        _sse_event=proxy_logging_mod._sse_event,
-        _usage_dict_has_tokens=proxy_logging_mod._usage_dict_has_tokens,
-    )
-
-
-def _build_runtime_context() -> RuntimeContext:
-    return RuntimeContext(
-        ban_explore=BAN_EXPLORE,
-        ban_stream=BAN_STREAM,
-        expose_thinking=EXPOSE_THINKING,
-        upstream_config=UPSTREAM_CONFIG,
-        logs_openai_dir=LOGS_OPENAI_DIR,
-        logs_anthropic_dir=LOGS_ANTHROPIC_DIR,
-        logs_session_dir=LOGS_SESSION_DIR,
-        logs_codeagent_dir=LOGS_CODEAGENT_DIR,
-        converters=converters_mod,
-        proxy_logging=_build_proxy_logging_context(),
-        reasoning=reasoning_mod,
-        executor=executor_mod,
-    )
 
 
 # -----------------------------
@@ -89,7 +53,15 @@ async def openai_responses(req: Request):
 
 @app.post("/v1/messages")
 async def v1_messages(req: Request):
-    return await run_messages_flow(req, _build_runtime_context())
+    return await run_messages_flow(
+        req,
+        ban_stream=BAN_STREAM,
+        ban_explore=BAN_EXPLORE,
+        expose_thinking=EXPOSE_THINKING,
+        upstream_config=UPSTREAM_CONFIG,
+        logs_anthropic_dir=LOGS_ANTHROPIC_DIR,
+        logs_session_dir=LOGS_SESSION_DIR,
+    )
 @app.post("/v1/messages/count_tokens")
 async def v1_messages_count_tokens(req: Request):
     try:
