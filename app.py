@@ -9,9 +9,9 @@ load_dotenv(override=True)
 import proxy_converters as converters_mod
 import proxy_logging as proxy_logging_mod
 
-from src.orchestrator.chat_flow import run_chat_completions_flow
-from src.orchestrator.messages_flow import run_messages_flow
-from src.orchestrator.responses_flow import run_responses_flow
+from src.handlers.chat_completions import run_chat_completions_flow
+from src.handlers.messages import run_messages_flow
+from src.handlers.responses import run_responses_flow
 from src.observability.session_metrics import get_session_stats
 
 # 全局默认：是否屏蔽 Task 工具里的 "- Explore:" 行
