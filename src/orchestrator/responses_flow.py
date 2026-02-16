@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -10,6 +9,7 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from src.adapters.http_retry import post_with_retry
 from src.runtime.context import RuntimeContext
 from upstream_config import (
     PROTOCOL_OPENAI_RESPONSES,
@@ -68,24 +68,17 @@ async def run_responses_flow(req: Request, ctx: RuntimeContext):
     ctx.proxy_logging._dump_json(req_path, log_body)
 
     if not stream:
-        async with httpx.AsyncClient(
+        r = await post_with_retry(
+            upstream_url=upstream_url,
+            request_body=body,
+            headers=upstream_headers,
+            max_retries=max_retries,
+            is_retryable=ctx.executor.is_rate_limit_status,
+            refresh_headers=lambda: ctx.executor.build_headers_by_profile(profile, model),
             verify=verify,
-            timeout=httpx.Timeout(timeout_seconds),
+            timeout_seconds=timeout_seconds,
             trust_env=trust_env,
-        ) as client:
-            r = None
-            last_retry_response = None
-            for attempt in range(max_retries):
-                r = await client.post(upstream_url, headers=upstream_headers, json=body)
-                if not ctx.executor.is_rate_limit_status(r.status_code):
-                    break
-                last_retry_response = r
-                logging.warning(f"{attempt} retryable response (responses non-stream): {r.status_code} {r.text}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1 * (2 ** attempt))
-                    upstream_headers = await ctx.executor.build_headers_by_profile(profile, model)
-            if ctx.executor.is_rate_limit_status(r.status_code) and last_retry_response is not None:
-                r = last_retry_response
+        )
 
         ctx.proxy_logging._dump_json(res_path, ctx.proxy_logging._resp_to_obj(r))
         if auth_type == "codex_oauth" and r.status_code < 400:
