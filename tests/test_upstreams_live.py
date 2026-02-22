@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -21,6 +22,7 @@ from upstream_config import (
     get_runtime_options,
     load_and_validate_config,
 )
+from src.adapters.upstream_executor import build_headers_by_profile
 
 
 # 真实上游联通性测试，默认不跑，避免影响日常单测与 CI。
@@ -82,12 +84,6 @@ def _required_envs_for_profile(profile: Dict[str, Any]) -> List[str]:
     auth_type = get_effective_auth_type(profile)
     if auth_type in {"bearer", "anthropic_key"}:
         return [str(auth.get("apiKeyEnv") or "")]
-    if auth_type == "codex_oauth":
-        required = [str(auth.get("accessTokenEnv") or "CODEX_ACCESS_TOKEN")]
-        account_env = str(auth.get("accountIdEnv") or "CODEX_ACCOUNT_ID")
-        if account_env:
-            required.append(account_env)
-        return required
     if auth_type == "internal_hw":
         return [
             str(auth.get("apiKeyEnv") or ""),
@@ -95,6 +91,14 @@ def _required_envs_for_profile(profile: Dict[str, Any]) -> List[str]:
             str(auth.get("hwAppKeyEnv") or ""),
         ]
     return []
+
+
+def _build_live_headers(profile: Dict[str, Any], model: str) -> Dict[str, str]:
+    auth_type = get_effective_auth_type(profile)
+    if auth_type == "codex_oauth":
+        # 与运行时保持一致：codex_oauth 支持环境变量或 .codex_oauth.json 凭证
+        return asyncio.run(build_headers_by_profile(profile, model))
+    return build_auth_headers(profile, model)
 
 
 LIVE_CFG = load_and_validate_config(str(UPSTREAMS_PATH))
@@ -117,7 +121,12 @@ def test_live_upstream_reachable(profile_name: str, protocol: str):
         pytest.skip("internal_hw 依赖动态 token_auth，实现就绪后再开启此用例")
 
     url = build_upstream_url(profile, protocol)
-    headers = build_auth_headers(profile, model)
+    try:
+        headers = _build_live_headers(profile, model)
+    except Exception as e:
+        if get_effective_auth_type(profile) == "codex_oauth":
+            pytest.skip(f"profile={profile_name} codex 凭证不可用: {e}")
+        raise
     verify, timeout_seconds, _, trust_env = get_runtime_options(profile)
     payload = _minimal_payload(profile, protocol, model)
 
