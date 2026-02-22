@@ -7,8 +7,13 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.http_retry import post_with_retry
-from src.adapters.upstream_executor import build_headers_by_profile, is_rate_limit_status
+from src.adapters.upstream_executor import (
+    build_headers_by_profile,
+    collect_codex_response_from_stream,
+    is_rate_limit_status,
+)
 from src.observability.turn_logging import (
     DOWNSTREAM_FORMAT_OPENAI_RESPONSES,
     build_openai_responses_non_stream_from_sse_chunks,
@@ -81,6 +86,10 @@ async def run_responses_flow(
     log_body = dict(body)
     log_body["_upstream_profile"] = profile_name
     log_body["_upstream_provider"] = profile.get("provider")
+    upstream_request_body = dict(body)
+    if auth_type == "codex_oauth" and not stream:
+        # codex upstream currently requires stream=true; we collect internally and return JSON downstream.
+        upstream_request_body["stream"] = True
 
     turn_logs = build_turn_log_paths(
         logs_raw_dir=logs_raw_dir,
@@ -92,15 +101,64 @@ async def run_responses_flow(
     log_request_phase(
         turn_logs,
         request_obj=log_body,
-        upstream_request_obj=body,
+        upstream_request_obj=upstream_request_body,
         client_headers=req.headers,
         upstream_headers=upstream_headers,
     )
 
     if not stream:
+        if auth_type == "codex_oauth":
+            async with httpx.AsyncClient(
+                verify=verify,
+                timeout=httpx.Timeout(timeout_seconds),
+                trust_env=trust_env,
+            ) as client:
+                result = await collect_with_retry(
+                    collect_once=lambda hdrs: collect_codex_response_from_stream(
+                        client=client,
+                        upstream_url=upstream_url,
+                        headers=hdrs,
+                        request_body=upstream_request_body,
+                    ),
+                    headers=upstream_headers,
+                    max_retries=max_retries,
+                    is_retryable=is_rate_limit_status,
+                    refresh_headers=lambda: build_headers_by_profile(profile, model),
+                )
+
+            upstream_obj = {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []}
+            if not bool(result.get("ok")):
+                downstream_obj = {
+                    "status_code": int(result.get("status_code") or 500),
+                    "media_type": "application/json",
+                    "body": str(result.get("error_text") or ""),
+                }
+                log_response_phase(
+                    turn_logs,
+                    upstream_response_obj=upstream_obj,
+                    downstream_response_obj=downstream_obj,
+                    non_stream_response_obj=downstream_obj,
+                )
+                return Response(
+                    content=result.get("error_bytes") or b"",
+                    status_code=int(result.get("status_code") or 500),
+                    media_type="application/json",
+                )
+
+            response_obj = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
+            _update_codex_reasoning_reinject_cache_for_responses(codex_reinject_trace, response_obj)
+            downstream_obj = {"status_code": 200, "json": response_obj}
+            log_response_phase(
+                turn_logs,
+                upstream_response_obj=upstream_obj,
+                downstream_response_obj=downstream_obj,
+                non_stream_response_obj=response_obj,
+            )
+            return JSONResponse(content=response_obj, status_code=200)
+
         r = await post_with_retry(
             upstream_url=upstream_url,
-            request_body=body,
+            request_body=upstream_request_body,
             headers=upstream_headers,
             max_retries=max_retries,
             is_retryable=is_rate_limit_status,

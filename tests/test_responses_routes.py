@@ -1,9 +1,8 @@
-import httpx
 import json
 from pathlib import Path
 from fastapi.testclient import TestClient
 
-from tests.support import FakeAsyncClient
+from tests.support import FakeAsyncClient, FakeStreamResponse
 
 
 def test_responses_profile_unsupported_for_protocol(client: TestClient):
@@ -21,17 +20,22 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
         "object": "response",
         "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
     }
-    FakeAsyncClient.post_response = httpx.Response(
+    FakeAsyncClient.last_post_args = {}
+    FakeAsyncClient.stream_response = FakeStreamResponse(
         200,
-        headers={"content-type": "application/json"},
-        json=upstream_body,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
     )
     payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello", "store": True}
     resp = client.post("/v1/responses", json=payload)
     assert resp.status_code == 200
     assert resp.json() == upstream_body
-    assert FakeAsyncClient.last_post_args["url"] == "https://chatgpt.com/backend-api/codex/responses"
-    assert FakeAsyncClient.last_post_args["json"]["store"] is False
+    assert FakeAsyncClient.last_stream_args["url"] == "https://chatgpt.com/backend-api/codex/responses"
+    assert FakeAsyncClient.last_stream_args["json"]["store"] is False
+    assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
+    assert FakeAsyncClient.last_post_args == {}
 
 
 def test_responses_with_session_writes_raw_and_session_logs(client_with_logs: TestClient):
@@ -42,10 +46,12 @@ def test_responses_with_session_writes_raw_and_session_logs(client_with_logs: Te
         "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
         "usage": {"input_tokens": 3, "output_tokens": 2},
     }
-    FakeAsyncClient.post_response = httpx.Response(
+    FakeAsyncClient.stream_response = FakeStreamResponse(
         200,
-        headers={"content-type": "application/json"},
-        json=upstream_body,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
     )
 
     payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello", "stream": False}
