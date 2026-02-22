@@ -88,19 +88,20 @@ def _proxy_payload(profile_name: str, profile: Dict[str, Any], protocol: str) ->
             "model": route_model,
             "max_tokens": 16,
             "messages": [{"role": "user", "content": "ping"}],
+            "stream": True,
         }
     if protocol == PROTOCOL_OPENAI_CHAT:
         return {
             "model": route_model,
             "messages": [{"role": "user", "content": "ping"}],
             "max_tokens": 16,
-            "stream": False,
+            "stream": True,
         }
     return {
         "model": route_model,
         "instructions": "You are a concise assistant.",
         "input": [{"role": "user", "content": [{"type": "input_text", "text": "ping"}]}],
-        "stream": False,
+        "stream": True,
     }
 
 
@@ -166,18 +167,22 @@ def test_proxy_live_e2e_profile_ingress(profile_name: str, protocol: str, live_p
     path = _proxy_path_for_protocol(protocol)
     session_id = f"livee2e-{profile_name}-{protocol}-{uuid.uuid4().hex[:10]}"
 
+    body_text = ""
     with httpx.Client(timeout=60.0, trust_env=False) as client:
-        resp = client.post(
+        with client.stream(
+            "POST",
             f"{live_proxy_base_url}{path}",
             json=payload,
             headers={"X-Session-Id": session_id},
-        )
+        ) as resp:
+            # Fully consume the stream so proxy side can finish finalizers and flush session logs.
+            body_text = "".join(resp.iter_text())
 
     assert resp.status_code not in {404, 405}, (
-        f"profile={profile_name}, protocol={protocol}, path={path}, status={resp.status_code}, body={resp.text[:400]}"
+        f"profile={profile_name}, protocol={protocol}, path={path}, status={resp.status_code}, body={body_text[:400]}"
     )
     assert resp.status_code < 500, (
-        f"profile={profile_name}, protocol={protocol}, path={path}, status={resp.status_code}, body={resp.text[:400]}"
+        f"profile={profile_name}, protocol={protocol}, path={path}, status={resp.status_code}, body={body_text[:400]}"
     )
 
     downstream_format = {
