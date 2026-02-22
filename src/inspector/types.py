@@ -36,6 +36,7 @@ class TimelineEvent:
     tool_name: Optional[str] = None
     tool_args: Optional[Any] = None
     tool_def: Optional[Dict[str, Any]] = None
+    source_files: Optional[Dict[str, Optional[str]]] = None
 
 
 def session_summary_to_dict(item: SessionSummary) -> Dict[str, Any]:
@@ -70,6 +71,7 @@ def timeline_event_to_dict(item: TimelineEvent) -> Dict[str, Any]:
         "tool_name": item.tool_name,
         "tool_args": item.tool_args,
         "tool_def": item.tool_def,
+        "source_files": item.source_files,
         "turn_ts": item.turn_ts,
         "format": item.format,
     }

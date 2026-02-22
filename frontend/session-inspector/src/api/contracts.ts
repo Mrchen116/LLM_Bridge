@@ -37,6 +37,12 @@ export interface TimelineEvent {
   tool_name?: string | null
   tool_args?: unknown
   tool_def?: ToolDefinition | null
+  source_files?: {
+    request?: string | null
+    response?: string | null
+    non_stream_response?: string | null
+    downstream_response?: string | null
+  } | null
   turn_ts: string
   format: string
 }

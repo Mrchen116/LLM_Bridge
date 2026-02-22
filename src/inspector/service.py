@@ -32,10 +32,20 @@ class _TurnRecord:
     ts: str
     downstream_format: str
     req_obj: Dict[str, Any]
+    req_file: str
     non_stream_obj: Optional[Dict[str, Any]]
+    non_stream_file: Optional[str]
     downstream_obj: Optional[Dict[str, Any]]
+    downstream_file: Optional[str]
     lane_key: str
     lane: AssignedLane
+
+
+def _to_workspace_relative(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path.cwd())).replace("\\", "/")
+    except Exception:
+        return str(path).replace("\\", "/")
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -146,8 +156,8 @@ def _build_turn_records(
 
     warnings: List[str] = []
     index = build_turn_file_index(session_dir)
-    turns_meta: List[Tuple[str, str, Dict[str, Any], str, str]] = []
-    # tuple: ts, fmt, req_obj, lane_key, label_hint
+    turns_meta: List[Tuple[str, str, Dict[str, Any], str, str, str]] = []
+    # tuple: ts, fmt, req_obj, lane_key, label_hint, req_file
 
     for ts in sorted(index.keys()):
         slots = index[ts]
@@ -157,6 +167,7 @@ def _build_turn_records(
         req_format, req_path = req_entry
         req_obj = _read_json(req_path)
         fmt = infer_downstream_format(req_obj, req_format)
+        req_file = _to_workspace_relative(req_path)
 
         provider = str(req_obj.get("_upstream_provider") or "unknown")
         try:
@@ -175,28 +186,32 @@ def _build_turn_records(
             lane_key = f"{provider}|fallback|{fp}"
 
         label_hint = first_user_text_for_label(req_obj, fmt)
-        turns_meta.append((ts, fmt, req_obj, lane_key, label_hint))
+        turns_meta.append((ts, fmt, req_obj, lane_key, label_hint, req_file))
 
     lane_map = assign_lanes(
         TurnLaneInput(ts=ts, lane_key=lane_key, label_hint=label_hint)
-        for ts, _fmt, _req, lane_key, label_hint in turns_meta
+        for ts, _fmt, _req, lane_key, label_hint, _req_file in turns_meta
     )
 
     records: List[_TurnRecord] = []
-    for ts, fmt, req_obj, lane_key, _label_hint in turns_meta:
+    for ts, fmt, req_obj, lane_key, _label_hint, req_file in turns_meta:
         slots = index[ts]
         non_stream_obj = None
+        non_stream_file = None
         downstream_obj = None
+        downstream_file = None
 
         non_stream_entry = slots.get("non_stream")
         if non_stream_entry:
-            _, non_stream_path = non_stream_entry
+            _non_stream_format, non_stream_path = non_stream_entry
             non_stream_obj = _read_json(non_stream_path)
+            non_stream_file = _to_workspace_relative(non_stream_path)
 
         downstream_entry = slots.get("downstream")
         if downstream_entry:
-            _, downstream_path = downstream_entry
+            _downstream_format, downstream_path = downstream_entry
             downstream_obj = _read_json(downstream_path)
+            downstream_file = _to_workspace_relative(downstream_path)
 
         lane = lane_map.get(lane_key)
         if lane is None:
@@ -211,8 +226,11 @@ def _build_turn_records(
                 ts=ts,
                 downstream_format=fmt,
                 req_obj=req_obj,
+                req_file=req_file,
                 non_stream_obj=non_stream_obj,
+                non_stream_file=non_stream_file,
                 downstream_obj=downstream_obj,
+                downstream_file=downstream_file,
                 lane_key=lane_key,
                 lane=lane,
             )
@@ -255,6 +273,12 @@ def get_timeline(
     seq = 0
     for rec in sorted(records, key=lambda x: x.ts):
         tool_defs = extract_tool_definitions(rec.req_obj)
+        source_files = {
+            "request": rec.req_file,
+            "response": rec.non_stream_file or rec.downstream_file,
+            "non_stream_response": rec.non_stream_file,
+            "downstream_response": rec.downstream_file,
+        }
 
         req_event = build_request_event(
             turn_ts=rec.ts,
@@ -265,6 +289,7 @@ def get_timeline(
         )
         if req_event is not None:
             req_event["_seq"] = seq
+            req_event["source_files"] = source_files
             raw_events.append(req_event)
             seq += 1
 
@@ -278,6 +303,7 @@ def get_timeline(
             summary_chars=summary_chars,
         ):
             ev["_seq"] = seq
+            ev["source_files"] = source_files
             raw_events.append(ev)
             seq += 1
 
@@ -354,6 +380,7 @@ def get_timeline(
                 tool_name=ev.get("tool_name"),
                 tool_args=ev.get("tool_args"),
                 tool_def=ev.get("tool_def"),
+                source_files=ev.get("source_files"),
                 turn_ts=str(ev.get("turn_ts") or ""),
                 format=str(ev.get("format") or ""),
             )
@@ -386,6 +413,7 @@ def get_timeline(
                 "tool_name": x.tool_name,
                 "tool_args": x.tool_args,
                 "tool_def": x.tool_def,
+                "source_files": x.source_files,
                 "turn_ts": x.turn_ts,
                 "format": x.format,
             }

@@ -116,6 +116,12 @@ def test_session_inspector_sessions_and_timeline(client: TestClient, monkeypatch
     assert tool_events[0]["tool_name"] == "Bash"
     assert isinstance(tool_events[0]["tool_args"], dict)
     assert tool_events[0]["tool_def"]["name"] == "Bash"
+    assert tool_events[0]["source_files"]["request"].endswith(
+        "2026-02-22_12-34-56_789-req-openai_chat.json"
+    )
+    assert tool_events[0]["source_files"]["response"].endswith(
+        "2026-02-22_12-34-56_789-non-stream-res-openai_chat.json"
+    )
 
     resp_tool_only = client.get(
         "/api/session-inspector/sessions/demo-session/timeline",

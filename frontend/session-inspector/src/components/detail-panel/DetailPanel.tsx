@@ -94,6 +94,18 @@ export function DetailPanel({ event }: DetailPanelProps) {
               copied={copiedKey === 'summary'}
               onCopy={(text) => void onCopy('summary', text)}
             />
+            <DetailBlock
+              title="日志文件"
+              value={{
+                request: event.source_files?.request || null,
+                response: event.source_files?.response || null,
+                non_stream_response: event.source_files?.non_stream_response || null,
+                downstream_response: event.source_files?.downstream_response || null,
+              }}
+              copyLabel="复制"
+              copied={copiedKey === 'source_files'}
+              onCopy={(text) => void onCopy('source_files', text)}
+            />
 
             {event.kind === 'tool_call' ? (
               <>
