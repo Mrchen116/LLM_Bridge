@@ -211,9 +211,15 @@ def _usage_pair_for_format(usage: Any, fmt: str) -> Tuple[int, int]:
         return 0, 0
     try:
         if fmt == TOKEN_FORMAT_OPENAI_CHAT:
-            return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+            return (
+                int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+                int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+            )
         if fmt in {TOKEN_FORMAT_ANTHROPIC, TOKEN_FORMAT_OPENAI_RESPONSES}:
-            return int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0)
+            return (
+                int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
+                int(usage.get("output_tokens") or usage.get("completion_tokens") or 0),
+            )
     except Exception:
         return 0, 0
     return 0, 0
@@ -334,4 +340,3 @@ def collect_usage_tokens_for_stats(obj: Any, path: str = "") -> Tuple[int, int, 
             return last_in, last_out, (fmt or TOKEN_FORMAT_UNKNOWN)
 
     return 0, 0, (fmt or TOKEN_FORMAT_UNKNOWN)
-

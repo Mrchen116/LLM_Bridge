@@ -141,7 +141,227 @@ def log_response_phase(
     if paths.session_downstream_res_path:
         _dump_json(paths.session_downstream_res_path, downstream_response_obj)
     if paths.session_non_stream_res_path:
-        _dump_json(paths.session_non_stream_res_path, non_stream_response_obj or downstream_response_obj)
+        source_obj = non_stream_response_obj or downstream_response_obj
+        _dump_json(
+            paths.session_non_stream_res_path,
+            build_session_non_stream_openai_chat(source_obj, paths.downstream_format),
+        )
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _usage_to_openai_chat(usage: Any) -> Dict[str, int]:
+    usage_obj = usage if isinstance(usage, dict) else {}
+    prompt_tokens = _safe_int(usage_obj.get("prompt_tokens") or usage_obj.get("input_tokens"))
+    completion_tokens = _safe_int(usage_obj.get("completion_tokens") or usage_obj.get("output_tokens"))
+    total_tokens = _safe_int(usage_obj.get("total_tokens") or (prompt_tokens + completion_tokens))
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _new_empty_chat_completion(model: str, resp_id: str = "") -> Dict[str, Any]:
+    return {
+        "id": resp_id or f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": ""},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _coerce_openai_chat_non_stream(value: Any, fallback_model: str = "unknown") -> Dict[str, Any]:
+    obj = value if isinstance(value, dict) else {}
+    if isinstance(obj.get("json"), dict):
+        obj = obj.get("json") or {}
+
+    model = str(obj.get("model") or fallback_model)
+    out = _new_empty_chat_completion(model=model, resp_id=str(obj.get("id") or ""))
+    out["usage"] = _usage_to_openai_chat(obj.get("usage"))
+
+    choices = obj.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        c0 = choices[0]
+        msg = c0.get("message") if isinstance(c0.get("message"), dict) else {}
+        role = str(msg.get("role") or "assistant")
+        content = msg.get("content")
+        if not isinstance(content, str):
+            content = ""
+        message: Dict[str, Any] = {"role": role, "content": content}
+        if isinstance(msg.get("tool_calls"), list):
+            message["tool_calls"] = msg.get("tool_calls")
+        if isinstance(msg.get("reasoning_content"), str) and msg.get("reasoning_content"):
+            message["reasoning_content"] = msg.get("reasoning_content")
+        out["choices"][0]["message"] = message
+        finish_reason = c0.get("finish_reason")
+        out["choices"][0]["finish_reason"] = str(finish_reason or "stop")
+        c0_usage = c0.get("usage")
+        if isinstance(c0_usage, dict):
+            out["usage"] = _usage_to_openai_chat(c0_usage)
+
+    return out
+
+
+def _map_anthropic_stop_reason(stop_reason: Any) -> str:
+    value = str(stop_reason or "")
+    if value == "max_tokens":
+        return "length"
+    if value == "tool_use":
+        return "tool_calls"
+    return "stop"
+
+
+def _coerce_anthropic_message_to_openai_chat(value: Any) -> Dict[str, Any]:
+    obj = value if isinstance(value, dict) else {}
+    model = str(obj.get("model") or "unknown")
+    out = _new_empty_chat_completion(model=model, resp_id=str(obj.get("id") or ""))
+    out["usage"] = _usage_to_openai_chat(obj.get("usage"))
+    out["choices"][0]["finish_reason"] = _map_anthropic_stop_reason(obj.get("stop_reason"))
+
+    blocks = obj.get("content")
+    if not isinstance(blocks, list):
+        return out
+
+    text_parts: List[str] = []
+    thinking_parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "")
+        if block_type == "text":
+            text_parts.append(str(block.get("text") or ""))
+            continue
+        if block_type == "thinking":
+            thinking_parts.append(str(block.get("thinking") or ""))
+            continue
+        if block_type != "tool_use":
+            continue
+
+        name = str(block.get("name") or "unknown_tool")
+        tool_call_id = str(block.get("id") or f"call_{uuid.uuid4().hex}")
+        arguments_obj = block.get("input")
+        if isinstance(arguments_obj, str):
+            arguments = arguments_obj
+        else:
+            try:
+                arguments = json.dumps(arguments_obj if arguments_obj is not None else {}, ensure_ascii=False)
+            except Exception:
+                arguments = "{}"
+        tool_calls.append(
+            {
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments,
+                },
+            }
+        )
+
+    message = out["choices"][0]["message"]
+    message["content"] = "".join(text_parts)
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    if thinking_parts:
+        message["reasoning_content"] = "".join(thinking_parts)
+    return out
+
+
+def _extract_text_from_responses_output(output: Any) -> str:
+    if not isinstance(output, list):
+        return ""
+    text_parts: List[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "")
+        if item_type in {"output_text", "text"}:
+            text_parts.append(str(item.get("text") or ""))
+            continue
+        if item_type != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type in {"output_text", "text"}:
+                text_parts.append(str(part.get("text") or ""))
+    return "".join(text_parts)
+
+
+def _extract_tool_calls_from_responses_output(output: Any) -> List[Dict[str, Any]]:
+    if not isinstance(output, list):
+        return []
+    tool_calls: List[Dict[str, Any]] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") != "function_call":
+            continue
+        name = str(item.get("name") or "unknown_tool")
+        tool_call_id = str(item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex}")
+        arguments = item.get("arguments")
+        if not isinstance(arguments, str):
+            try:
+                arguments = json.dumps(arguments if arguments is not None else {}, ensure_ascii=False)
+            except Exception:
+                arguments = "{}"
+        tool_calls.append(
+            {
+                "id": tool_call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        )
+    return tool_calls
+
+
+def _coerce_openai_responses_to_openai_chat(value: Any) -> Dict[str, Any]:
+    obj = value if isinstance(value, dict) else {}
+    if isinstance(obj.get("json"), dict):
+        obj = obj.get("json") or {}
+
+    model = str(obj.get("model") or "unknown")
+    out = _new_empty_chat_completion(model=model, resp_id=str(obj.get("id") or ""))
+    out["usage"] = _usage_to_openai_chat(obj.get("usage"))
+
+    output = obj.get("output")
+    if not isinstance(output, list):
+        return out
+
+    text = _extract_text_from_responses_output(output)
+    tool_calls = _extract_tool_calls_from_responses_output(output)
+    message = out["choices"][0]["message"]
+    message["content"] = text
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+        out["choices"][0]["finish_reason"] = "tool_calls"
+    return out
+
+
+def build_session_non_stream_openai_chat(value: Any, downstream_format: str) -> Dict[str, Any]:
+    if downstream_format == DOWNSTREAM_FORMAT_ANTHROPIC_MESSAGES:
+        return _coerce_anthropic_message_to_openai_chat(value)
+    if downstream_format == DOWNSTREAM_FORMAT_OPENAI_RESPONSES:
+        return _coerce_openai_responses_to_openai_chat(value)
+    return _coerce_openai_chat_non_stream(value)
 
 
 def build_openai_chat_non_stream_from_sse_chunks(chunks: List[Any], fallback_model: str) -> Dict[str, Any]:

@@ -42,8 +42,9 @@ def test_messages_codex_oauth_stream_writes_session_logs(client_with_logs: TestC
     with non_stream_files[-1].open("r", encoding="utf-8") as f:
         non_stream_obj = json.load(f)
     usage = non_stream_obj.get("usage") or {}
-    assert usage.get("input_tokens") == 7
-    assert usage.get("output_tokens") == 3
+    assert non_stream_obj["object"] == "chat.completion"
+    assert usage.get("prompt_tokens") == 7
+    assert usage.get("completion_tokens") == 3
 
 
 def test_messages_stream_writes_session_logs(client_with_logs: TestClient):
@@ -88,9 +89,9 @@ def test_messages_stream_writes_session_logs(client_with_logs: TestClient):
         non_stream_obj = json.load(f)
 
     assert req_obj["model"] == "moonshot:kimi-k2.5"
-    assert non_stream_obj["type"] == "message"
-    assert non_stream_obj["usage"]["input_tokens"] == 2
-    assert non_stream_obj["usage"]["output_tokens"] == 1
+    assert non_stream_obj["object"] == "chat.completion"
+    assert non_stream_obj["usage"]["prompt_tokens"] == 2
+    assert non_stream_obj["usage"]["completion_tokens"] == 1
 
     raw_log_dir = Path.cwd() / "logs" / "raw" / "openai_chat"
     assert raw_log_dir.exists()

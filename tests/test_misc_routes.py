@@ -66,7 +66,7 @@ def test_session_stats_aggregates_three_formats(client: TestClient):
     session_dir.mkdir(parents=True, exist_ok=True)
 
     (session_dir / "2026-02-16_15-00-00_001-non-stream-res-anthropic_messages.json").write_text(
-        json.dumps({"usage": {"input_tokens": 2, "output_tokens": 3}}, ensure_ascii=False),
+        json.dumps({"usage": {"prompt_tokens": 2, "completion_tokens": 3}}, ensure_ascii=False),
         encoding="utf-8",
     )
     (session_dir / "2026-02-16_15-00-00_002-non-stream-res-openai_chat.json").write_text(
@@ -74,7 +74,7 @@ def test_session_stats_aggregates_three_formats(client: TestClient):
         encoding="utf-8",
     )
     (session_dir / "2026-02-16_15-00-00_003-non-stream-res-openai_responses.json").write_text(
-        json.dumps({"usage": {"input_tokens": 11, "output_tokens": 13}}, ensure_ascii=False),
+        json.dumps({"usage": {"prompt_tokens": 11, "completion_tokens": 13}}, ensure_ascii=False),
         encoding="utf-8",
     )
 

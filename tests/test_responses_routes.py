@@ -71,5 +71,6 @@ def test_responses_with_session_writes_raw_and_session_logs(client_with_logs: Te
 
     with non_stream_files[-1].open("r", encoding="utf-8") as f:
         obj = json.load(f)
-    assert obj["usage"]["input_tokens"] == 3
-    assert obj["usage"]["output_tokens"] == 2
+    assert obj["object"] == "chat.completion"
+    assert obj["usage"]["prompt_tokens"] == 3
+    assert obj["usage"]["completion_tokens"] == 2
