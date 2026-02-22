@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -163,9 +164,14 @@ def test_proxy_live_e2e_profile_ingress(profile_name: str, protocol: str, live_p
 
     payload = _proxy_payload(profile_name, profile, protocol)
     path = _proxy_path_for_protocol(protocol)
+    session_id = f"livee2e-{profile_name}-{protocol}-{uuid.uuid4().hex[:10]}"
 
     with httpx.Client(timeout=60.0, trust_env=False) as client:
-        resp = client.post(f"{live_proxy_base_url}{path}", json=payload)
+        resp = client.post(
+            f"{live_proxy_base_url}{path}",
+            json=payload,
+            headers={"X-Session-Id": session_id},
+        )
 
     assert resp.status_code not in {404, 405}, (
         f"profile={profile_name}, protocol={protocol}, path={path}, status={resp.status_code}, body={resp.text[:400]}"
@@ -173,3 +179,16 @@ def test_proxy_live_e2e_profile_ingress(profile_name: str, protocol: str, live_p
     assert resp.status_code < 500, (
         f"profile={profile_name}, protocol={protocol}, path={path}, status={resp.status_code}, body={resp.text[:400]}"
     )
+
+    downstream_format = {
+        PROTOCOL_ANTHROPIC_MESSAGES: "anthropic_messages",
+        PROTOCOL_OPENAI_CHAT: "openai_chat",
+        PROTOCOL_OPENAI_RESPONSES: "openai_responses",
+    }[protocol]
+    session_root = ROOT_DIR / "logs" / "session"
+    session_dirs = sorted(session_root.glob(f"*_{session_id}"))
+    assert session_dirs, f"profile={profile_name}, protocol={protocol} 未生成 session 目录: {session_id}"
+    session_dir = session_dirs[-1]
+    assert list(session_dir.glob(f"*-req-{downstream_format}.json")), "缺少 session req 日志"
+    assert list(session_dir.glob(f"*-downstream-res-{downstream_format}.json")), "缺少 session downstream-res 日志"
+    assert list(session_dir.glob(f"*-non-stream-res-{downstream_format}.json")), "缺少 session non-stream-res 日志"
