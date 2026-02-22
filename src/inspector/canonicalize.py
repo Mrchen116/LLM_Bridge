@@ -63,10 +63,18 @@ def _extract_text_from_content(content: Any) -> str:
             if "text" in part and part.get("text") is not None:
                 parts.append(str(part.get("text") or ""))
                 continue
+            # anthropic tool_result style: {type: tool_result, content: [...]}
+            if part.get("content") is not None:
+                nested = _extract_text_from_content(part.get("content"))
+                if nested:
+                    parts.append(nested)
+                    continue
         return "".join(parts)
     if isinstance(content, dict):
         if content.get("text") is not None:
             return str(content.get("text") or "")
+        if content.get("content") is not None:
+            return _extract_text_from_content(content.get("content"))
     return ""
 
 

@@ -41,11 +41,22 @@ class _TurnRecord:
     lane: AssignedLane
 
 
+@dataclass
+class _LaneMatchState:
+    lane_key: str
+    static_key: str
+    last_prefix_tokens: Tuple[str, ...]
+
+
 def _to_workspace_relative(path: Path) -> str:
     try:
         return str(path.relative_to(Path.cwd())).replace("\\", "/")
     except Exception:
         return str(path).replace("\\", "/")
+
+
+def _serialize_token(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -156,8 +167,9 @@ def _build_turn_records(
 
     warnings: List[str] = []
     index = build_turn_file_index(session_dir)
-    turns_meta: List[Tuple[str, str, Dict[str, Any], str, str, str]] = []
-    # tuple: ts, fmt, req_obj, lane_key, label_hint, req_file
+    turns_meta: List[Tuple[str, str, Dict[str, Any], str, str, str, str, Tuple[str, ...]]] = []
+    # tuple:
+    # ts, fmt, req_obj, lane_key_or_hint, label_hint, req_file, static_key, prefix_tokens
 
     for ts in sorted(index.keys()):
         slots = index[ts]
@@ -172,29 +184,76 @@ def _build_turn_records(
         provider = str(req_obj.get("_upstream_provider") or "unknown")
         try:
             context_key, model = canonical_context_from_req(req_obj, fmt)
-            fp = context_fingerprint(context_key)
-            # Lane identity must come from the full canonical prefix context
-            # (instructions/input/tools/tool_choice/reasoning/include), not
-            # from any truncated text prefix.
-            lane_key = f"{provider}|{model}|ctx:{fp}"
+            input_items = context_key.get("input")
+            if not isinstance(input_items, list):
+                input_items = []
+            prefix_tokens = tuple(_serialize_token(item) for item in input_items)
+
+            static_ctx = {k: v for k, v in context_key.items() if k != "input"}
+            static_key = f"{provider}|{model}|static:{context_fingerprint(static_ctx)}"
+            lane_key_or_hint = ""
         except Exception as exc:
             # Fallback: still keep turn visible.
             warnings.append(f"turn {ts}: context fingerprint fallback due to {exc}")
             text_hint = first_user_text_for_label(req_obj, fmt)
             fallback_base = f"{provider}|{req_obj.get('model')}|{text_hint}" if text_hint else f"{provider}|unknown"
             fp = context_fingerprint({"fallback": fallback_base})
-            lane_key = f"{provider}|fallback|{fp}"
+            static_key = f"{provider}|fallback|{fp}"
+            prefix_tokens = tuple()
+            lane_key_or_hint = f"{provider}|fallback|{fp}"
 
         label_hint = first_user_text_for_label(req_obj, fmt)
-        turns_meta.append((ts, fmt, req_obj, lane_key, label_hint, req_file))
+        turns_meta.append(
+            (ts, fmt, req_obj, lane_key_or_hint, label_hint, req_file, static_key, prefix_tokens)
+        )
+
+    # Prefix-chain lane matching:
+    # same static config (instructions/tools/tool_choice/etc.) + previous prefix
+    # being a prefix of current prefix => same lane.
+    lane_states: List[_LaneMatchState] = []
+    next_lane_idx = 1
+    resolved_meta: List[Tuple[str, str, Dict[str, Any], str, str, str]] = []
+    for ts, fmt, req_obj, lane_key_or_hint, label_hint, req_file, static_key, prefix_tokens in turns_meta:
+        lane_key = lane_key_or_hint
+        if not lane_key:
+            best_idx = -1
+            best_prefix_len = -1
+            for idx, lane_state in enumerate(lane_states):
+                if lane_state.static_key != static_key:
+                    continue
+                prior = lane_state.last_prefix_tokens
+                if len(prior) > len(prefix_tokens):
+                    continue
+                if prefix_tokens[: len(prior)] != prior:
+                    continue
+                if len(prior) > best_prefix_len:
+                    best_idx = idx
+                    best_prefix_len = len(prior)
+
+            if best_idx >= 0:
+                lane_key = lane_states[best_idx].lane_key
+                if len(prefix_tokens) > len(lane_states[best_idx].last_prefix_tokens):
+                    lane_states[best_idx].last_prefix_tokens = prefix_tokens
+            else:
+                lane_key = f"{static_key}|lane:{next_lane_idx}"
+                lane_states.append(
+                    _LaneMatchState(
+                        lane_key=lane_key,
+                        static_key=static_key,
+                        last_prefix_tokens=prefix_tokens,
+                    )
+                )
+                next_lane_idx += 1
+
+        resolved_meta.append((ts, fmt, req_obj, lane_key, label_hint, req_file))
 
     lane_map = assign_lanes(
         TurnLaneInput(ts=ts, lane_key=lane_key, label_hint=label_hint)
-        for ts, _fmt, _req, lane_key, label_hint, _req_file in turns_meta
+        for ts, _fmt, _req, lane_key, label_hint, _req_file in resolved_meta
     )
 
     records: List[_TurnRecord] = []
-    for ts, fmt, req_obj, lane_key, _label_hint, req_file in turns_meta:
+    for ts, fmt, req_obj, lane_key, _label_hint, req_file in resolved_meta:
         slots = index[ts]
         non_stream_obj = None
         non_stream_file = None

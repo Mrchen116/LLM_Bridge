@@ -224,6 +224,42 @@ def test_session_inspector_lane_grouping_uses_full_context(client: TestClient, m
         },
     )
 
+    # turn-4 keeps static config of turn-1/2 but with a longer conversation prefix.
+    # It should still map to the same lane by prefix-chain matching.
+    _write_json(
+        session_dir / "2026-02-22_12-40-00_004-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "instructions": "system A",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "ok-1"},
+                {"role": "user", "content": "next"},
+                {"role": "assistant", "content": "ok-2"},
+                {"role": "user", "content": "more"},
+            ],
+            "tools": [{"type": "function", "function": {"name": "Bash", "parameters": {}}}],
+            "tool_choice": "auto",
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-40-00_004-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_a3",
+            "object": "chat.completion",
+            "model": "gpt-5.2-codex",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok-4"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    )
+
     resp_timeline = client.get(
         "/api/session-inspector/sessions/grouping-session/timeline",
         params={"include_non_tool": "true"},
@@ -239,10 +275,67 @@ def test_session_inspector_lane_grouping_uses_full_context(client: TestClient, m
     assert len(lane_by_turn["2026-02-22_12-40-00_001"]) == 1
     assert len(lane_by_turn["2026-02-22_12-40-00_002"]) == 1
     assert len(lane_by_turn["2026-02-22_12-40-00_003"]) == 1
+    assert len(lane_by_turn["2026-02-22_12-40-00_004"]) == 1
 
     lane_1 = next(iter(lane_by_turn["2026-02-22_12-40-00_001"]))
     lane_2 = next(iter(lane_by_turn["2026-02-22_12-40-00_002"]))
     lane_3 = next(iter(lane_by_turn["2026-02-22_12-40-00_003"]))
+    lane_4 = next(iter(lane_by_turn["2026-02-22_12-40-00_004"]))
 
     assert lane_1 == lane_2
+    assert lane_1 == lane_4
     assert lane_3 != lane_1
+
+
+def test_session_inspector_request_summary_uses_last_user_payload(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-41-00_000_summary-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-41-00_001-req-anthropic_messages.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "initial question"}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "call_1", "name": "Task", "input": {"x": 1}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_1",
+                            "content": [{"type": "text", "text": "LAST_USER_TOOL_RESULT_TEXT"}],
+                        }
+                    ],
+                },
+            ],
+            "system": [{"type": "text", "text": "system"}],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-41-00_001-non-stream-res-anthropic_messages.json",
+        {
+            "id": "dummy",
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+        },
+    )
+
+    resp_timeline = client.get(
+        "/api/session-inspector/sessions/summary-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp_timeline.status_code == 200
+    payload = resp_timeline.json()
+    request_events = [ev for ev in payload["events"] if ev["event_id"].endswith(":request:0")]
+    assert request_events
+    assert "LAST_USER_TOOL_RESULT_TEXT" in request_events[0]["summary"]
