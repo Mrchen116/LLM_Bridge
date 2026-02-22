@@ -125,3 +125,118 @@ def test_session_inspector_sessions_and_timeline(client: TestClient, monkeypatch
     tool_only_payload = resp_tool_only.json()
     assert tool_only_payload["events"]
     assert all(ev["kind"] == "tool_call" for ev in tool_only_payload["events"])
+
+
+def test_session_inspector_lane_grouping_uses_full_context(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-40-00_000_grouping-session"
+
+    # turn-1 and turn-2 share the same canonical prefix context:
+    # same instructions + same tools + same tool_choice.
+    _write_json(
+        session_dir / "2026-02-22_12-40-00_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "instructions": "system A",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "function": {"name": "Bash", "parameters": {}}}],
+            "tool_choice": "auto",
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-40-00_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_a1",
+            "object": "chat.completion",
+            "model": "gpt-5.2-codex",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok-1"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-40-00_002-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "instructions": "system A",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "function": {"name": "Bash", "parameters": {}}}],
+            "tool_choice": "auto",
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-40-00_002-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_a2",
+            "object": "chat.completion",
+            "model": "gpt-5.2-codex",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok-2"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    )
+
+    # turn-3 changes tools -> must become a new lane.
+    _write_json(
+        session_dir / "2026-02-22_12-40-00_003-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "instructions": "system A",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "function": {"name": "Read", "parameters": {}}}],
+            "tool_choice": "auto",
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-40-00_003-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_b1",
+            "object": "chat.completion",
+            "model": "gpt-5.2-codex",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok-3"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        },
+    )
+
+    resp_timeline = client.get(
+        "/api/session-inspector/sessions/grouping-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp_timeline.status_code == 200
+    payload = resp_timeline.json()
+    assert payload["stats"]["lane_count"] == 2
+
+    lane_by_turn = {}
+    for ev in payload["events"]:
+        lane_by_turn.setdefault(ev["turn_ts"], set()).add(ev["lane_id"])
+
+    assert len(lane_by_turn["2026-02-22_12-40-00_001"]) == 1
+    assert len(lane_by_turn["2026-02-22_12-40-00_002"]) == 1
+    assert len(lane_by_turn["2026-02-22_12-40-00_003"]) == 1
+
+    lane_1 = next(iter(lane_by_turn["2026-02-22_12-40-00_001"]))
+    lane_2 = next(iter(lane_by_turn["2026-02-22_12-40-00_002"]))
+    lane_3 = next(iter(lane_by_turn["2026-02-22_12-40-00_003"]))
+
+    assert lane_1 == lane_2
+    assert lane_3 != lane_1

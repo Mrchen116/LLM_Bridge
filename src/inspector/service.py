@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.inspector.canonicalize import (
-    agent_prefix_from_context_key,
     canonical_context_from_req,
     context_fingerprint,
     first_user_text_for_label,
@@ -163,12 +162,10 @@ def _build_turn_records(
         try:
             context_key, model = canonical_context_from_req(req_obj, fmt)
             fp = context_fingerprint(context_key)
-            agent_prefix = agent_prefix_from_context_key(context_key, prefix_len=180)
-            lane_key = (
-                f"prefix:{agent_prefix}"
-                if agent_prefix
-                else f"{provider}|{model}|fp:{fp}"
-            )
+            # Lane identity must come from the full canonical prefix context
+            # (instructions/input/tools/tool_choice/reasoning/include), not
+            # from any truncated text prefix.
+            lane_key = f"{provider}|{model}|ctx:{fp}"
         except Exception as exc:
             # Fallback: still keep turn visible.
             warnings.append(f"turn {ts}: context fingerprint fallback due to {exc}")
