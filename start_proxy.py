@@ -2,6 +2,8 @@
 import os
 import argparse
 import asyncio
+import threading
+import webbrowser
 from dotenv import load_dotenv
 from token_auth import ensure_codex_login_for_startup
 from upstream_config import load_and_validate_config, UpstreamConfigError, get_effective_auth_type
@@ -24,9 +26,7 @@ def _has_codex_oauth_profile(cfg: dict) -> bool:
     return False
 
 
-if __name__ == "__main__":
-    import uvicorn
-
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start the LLM proxy")
     parser.add_argument(
         "--ban_explore",
@@ -38,13 +38,41 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable stream requests for anthropic api /v1/messages",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="Enable built-in session inspector web UI and API",
+    )
+    parser.add_argument(
+        "--open-ui",
+        action="store_true",
+        help="Enable UI and open browser automatically",
+    )
+    return parser
 
+
+def _apply_startup_env_flags(args: argparse.Namespace) -> None:
     if args.ban_explore:
         os.environ["BAN_EXPLORE"] = "true"
-
     if args.ban_stream:
         os.environ["BAN_STREAM"] = "true"
+    if args.ui or args.open_ui:
+        os.environ["ENABLE_SESSION_INSPECTOR_UI"] = "true"
+
+
+def _schedule_ui_open(host: str, port: int) -> None:
+    url = f"http://{host}:{port}/ui/session-inspector"
+    timer = threading.Timer(0.8, lambda: webbrowser.open(url))
+    timer.daemon = True
+    timer.start()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    parser = _build_parser()
+    args = parser.parse_args()
+    _apply_startup_env_flags(args)
 
     try:
         cfg = load_and_validate_config()
@@ -61,4 +89,6 @@ if __name__ == "__main__":
 
     host = os.getenv("PROXY_HOST", "127.0.0.1")
     port = int(os.getenv("PROXY_PORT", "4000"))
+    if args.open_ui:
+        _schedule_ui_open(host, port)
     uvicorn.run("app:app", host=host, port=port, log_level="info")

@@ -1,11 +1,15 @@
 from pathlib import Path
 import sys
+import argparse
+import os
+
+import pytest
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from start_proxy import _has_codex_oauth_profile
+from start_proxy import _apply_startup_env_flags, _has_codex_oauth_profile
 
 
 def test_has_codex_oauth_profile_true():
@@ -40,3 +44,18 @@ def test_has_codex_oauth_profile_false():
         },
     }
     assert _has_codex_oauth_profile(cfg) is False
+
+
+def test_apply_startup_env_flags_sets_ui_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ENABLE_SESSION_INSPECTOR_UI", raising=False)
+    args = argparse.Namespace(ban_explore=False, ban_stream=False, ui=True, open_ui=False)
+    _apply_startup_env_flags(args)
+    assert "ENABLE_SESSION_INSPECTOR_UI" in os.environ
+    assert os.environ["ENABLE_SESSION_INSPECTOR_UI"] == "true"
+
+
+def test_apply_startup_env_flags_open_ui_implies_ui_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ENABLE_SESSION_INSPECTOR_UI", raising=False)
+    args = argparse.Namespace(ban_explore=False, ban_stream=False, ui=False, open_ui=True)
+    _apply_startup_env_flags(args)
+    assert os.environ.get("ENABLE_SESSION_INSPECTOR_UI") == "true"

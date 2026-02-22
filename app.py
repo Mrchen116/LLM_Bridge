@@ -3,6 +3,7 @@ import httpx
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from upstream_config import load_and_validate_config
 load_dotenv(override=True)
@@ -11,6 +12,7 @@ from proxy_logging import _dump_json as _proxy_dump_json
 from src.handlers.chat_completions import run_chat_completions_flow
 from src.handlers.messages import run_messages_flow
 from src.handlers.responses import run_responses_flow
+from src.inspector.api import ROUTER as SESSION_INSPECTOR_ROUTER, UI_DIR as SESSION_INSPECTOR_UI_DIR
 from src.observability.session_metrics import get_session_stats
 from src.observability.token_stats import (
     TOKEN_FORMAT_ANTHROPIC,
@@ -22,6 +24,7 @@ from src.observability.token_stats import (
 BAN_EXPLORE = os.getenv("BAN_EXPLORE", "false").lower() == "true"
 BAN_STREAM = os.getenv("BAN_STREAM", "false").lower() == "true"
 EXPOSE_THINKING = os.getenv("EXPOSE_THINKING", "true").lower() == "true"
+ENABLE_SESSION_INSPECTOR_UI = os.getenv("ENABLE_SESSION_INSPECTOR_UI", "false").lower() == "true"
 UPSTREAM_CONFIG = load_and_validate_config()
 
 LOGS_ROOT_DIR = "logs"
@@ -31,6 +34,12 @@ LOGS_CODEAGENT_DIR = os.path.join(LOGS_ROOT_DIR, "codeagent")
 
 
 app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)")
+app.include_router(SESSION_INSPECTOR_ROUTER)
+app.mount(
+    "/ui/session-inspector/assets",
+    StaticFiles(directory=str(SESSION_INSPECTOR_UI_DIR)),
+    name="session_inspector_assets",
+)
 
 # Backward-compat test hooks
 _dump_json = _proxy_dump_json
