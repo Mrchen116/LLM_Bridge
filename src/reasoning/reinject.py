@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from proxy_converters import (
     _build_codex_responses_payload_from_chat,
@@ -31,6 +31,18 @@ def _extract_session_id_from_body_metadata(body: Dict[str, Any]) -> Optional[str
     m = re.search(r"session_([A-Za-z0-9-]+)", str(user_id))
     if m:
         return m.group(1)
+    return None
+
+
+def _extract_session_id_from_headers(headers: Mapping[str, Any]) -> Optional[str]:
+    # Keep backward compatibility with existing X-Session-Id while accepting Codex's session_id header.
+    for key in ("X-Session-Id", "x-session-id", "session_id"):
+        value = headers.get(key)
+        if value is None:
+            continue
+        session_id = str(value).strip()
+        if session_id:
+            return session_id
     return None
 
 

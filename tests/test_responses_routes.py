@@ -80,3 +80,28 @@ def test_responses_with_session_writes_raw_and_session_logs(client_with_logs: Te
     assert obj["object"] == "chat.completion"
     assert obj["usage"]["prompt_tokens"] == 3
     assert obj["usage"]["completion_tokens"] == 2
+
+
+def test_responses_with_underscore_session_header_writes_session_logs(client_with_logs: TestClient):
+    """测试 responses 支持 session_id 下划线请求头写入 session 日志。"""
+    upstream_body = {
+        "id": "resp_session_header_underscore",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello", "stream": False}
+    session_id = "responses-session-underscore-header"
+    resp = client_with_logs.post("/v1/responses", json=payload, headers={"session_id": session_id})
+    assert resp.status_code == 200
+
+    session_root = Path.cwd() / "logs" / "session"
+    session_dirs = sorted(session_root.glob(f"*_{session_id}"))
+    assert session_dirs
