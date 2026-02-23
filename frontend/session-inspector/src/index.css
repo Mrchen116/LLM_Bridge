@@ -734,10 +734,46 @@ select {
   gap: 10px;
 }
 
+.file-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .file-viewer-title {
   font-size: 15px;
   font-weight: 620;
   color: #243549;
+}
+
+.viewer-mode-group {
+  display: inline-flex;
+  border: 1px solid #c6d5e5;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #eef4fb;
+}
+
+.viewer-mode-btn {
+  border: 0;
+  border-right: 1px solid #c6d5e5;
+  background: transparent;
+  color: #4c6278;
+  font-size: 12px;
+  line-height: 1;
+  min-height: 28px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.viewer-mode-btn:last-child {
+  border-right: 0;
+}
+
+.viewer-mode-btn.active {
+  background: #dce9f7;
+  color: #25425d;
+  font-weight: 600;
 }
 
 .file-viewer-path {
@@ -856,6 +892,16 @@ select {
   .filters {
     grid-template-columns: 1fr;
     padding: var(--space-2) var(--space-3);
+  }
+
+  .file-viewer-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .file-viewer-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .panel-actions {

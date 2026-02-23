@@ -4,6 +4,7 @@ import { fetchLogFileContent } from '../../api/session-inspector-client'
 import {
   extractEventMainText,
   formatCodeValue,
+  normalizeEscapedText,
   normalizeReadableText,
 } from '../../lib/event-display'
 
@@ -12,6 +13,7 @@ interface DetailPanelProps {
 }
 
 type BlockVariant = 'text' | 'code'
+type FileViewerMode = 'rendered' | 'raw'
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -155,11 +157,18 @@ export function DetailPanel({ event }: DetailPanelProps) {
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerPath, setViewerPath] = useState('')
   const [viewerContent, setViewerContent] = useState('')
+  const [viewerMode, setViewerMode] = useState<FileViewerMode>('rendered')
   const [viewerTruncated, setViewerTruncated] = useState(false)
   const [viewerLoading, setViewerLoading] = useState(false)
   const [viewerError, setViewerError] = useState('')
   const mainText = useMemo(() => (event ? extractEventMainText(event) : ''), [event])
   const toolDefFields = useMemo(() => extractToolDefinitionFields(event?.tool_def), [event])
+  const viewerDisplayContent = useMemo(() => {
+    if (viewerMode === 'raw') {
+      return viewerContent
+    }
+    return normalizeEscapedText(viewerContent)
+  }, [viewerContent, viewerMode])
 
   useEffect(() => {
     if (!copiedKey) {
@@ -332,9 +341,27 @@ export function DetailPanel({ event }: DetailPanelProps) {
           <div className="file-viewer-modal" onClick={(event) => event.stopPropagation()}>
             <div className="file-viewer-head">
               <div className="file-viewer-title">日志文件内容</div>
-              <button className="btn ghost" type="button" onClick={() => setViewerOpen(false)}>
-                关闭
-              </button>
+              <div className="file-viewer-actions">
+                <div className="viewer-mode-group" role="group" aria-label="日志内容显示模式">
+                  <button
+                    className={`viewer-mode-btn${viewerMode === 'rendered' ? ' active' : ''}`}
+                    type="button"
+                    onClick={() => setViewerMode('rendered')}
+                  >
+                    渲染换行
+                  </button>
+                  <button
+                    className={`viewer-mode-btn${viewerMode === 'raw' ? ' active' : ''}`}
+                    type="button"
+                    onClick={() => setViewerMode('raw')}
+                  >
+                    原始文本
+                  </button>
+                </div>
+                <button className="btn ghost" type="button" onClick={() => setViewerOpen(false)}>
+                  关闭
+                </button>
+              </div>
             </div>
             <div className="file-viewer-path">{viewerPath}</div>
             {viewerLoading ? <div className="subtle">加载中...</div> : null}
@@ -342,7 +369,7 @@ export function DetailPanel({ event }: DetailPanelProps) {
               <div className="subtle">读取失败：{viewerError}</div>
             ) : null}
             {!viewerLoading && !viewerError ? (
-              <pre className="code file-viewer-content">{viewerContent}</pre>
+              <pre className="code file-viewer-content">{viewerDisplayContent}</pre>
             ) : null}
             {!viewerLoading && !viewerError && viewerTruncated ? (
               <div className="subtle">文件过大，已截断展示。</div>
