@@ -63,3 +63,10 @@ export interface TimelineResponse {
     summary_chars: number
   }
 }
+
+export interface LogFileContentResponse {
+  path: string
+  content: string
+  size_bytes: number
+  truncated: boolean
+}

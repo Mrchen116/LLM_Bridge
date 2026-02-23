@@ -328,7 +328,7 @@ select {
 
 .filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(150px, max-content) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(150px, max-content);
   align-items: center;
   gap: 10px;
   padding: 12px var(--space-4);
@@ -356,17 +356,6 @@ select {
 
 .check-line input[type='checkbox'] {
   accent-color: var(--accent);
-}
-
-.dense-toggle {
-  justify-self: end;
-  min-width: 66px;
-}
-
-.dense-toggle.active {
-  color: #1f4b74;
-  border-color: #8fb0cf;
-  background: #e7f1fb;
 }
 
 .timeline-scroll {
@@ -674,6 +663,13 @@ select {
   gap: 8px;
 }
 
+.source-file-main {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
 .source-file-label {
   color: #607185;
   font-size: 12px;
@@ -687,6 +683,79 @@ select {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
+  flex: 1;
+}
+
+.link-btn {
+  border: 1px solid #c7d6e5;
+  border-radius: var(--radius-sm);
+  background: #edf4fb;
+  color: #365a79;
+  font-size: 11px;
+  line-height: 1;
+  min-height: 22px;
+  padding: 0 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.link-btn:hover {
+  background: #e2edf8;
+}
+
+.file-viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(18, 30, 44, 0.46);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 26px;
+  z-index: 30;
+}
+
+.file-viewer-modal {
+  width: min(1200px, 96vw);
+  max-height: min(88vh, 980px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: #f8fbff;
+  box-shadow: 0 14px 36px rgba(25, 40, 58, 0.28);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.file-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.file-viewer-title {
+  font-size: 15px;
+  font-weight: 620;
+  color: #243549;
+}
+
+.file-viewer-path {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #4f647a;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: #f1f6fb;
+  padding: 8px 10px;
+  word-break: break-all;
+}
+
+.file-viewer-content {
+  flex: 1;
+  min-height: 200px;
+  overflow: auto;
 }
 
 .raw-event {
@@ -768,10 +837,6 @@ select {
     justify-content: center;
   }
 
-  .dense-toggle {
-    grid-column: 1 / -1;
-    justify-self: start;
-  }
 }
 
 @media (max-width: 640px) {

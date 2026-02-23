@@ -13,7 +13,6 @@ interface TimelineLanesProps {
   toolOptions: SelectOption[]
   grid: TimelineGrid
   selectedEventId: string
-  dense: boolean
   onRefresh: () => void
   onFilterChange: {
     agent: (value: string) => void
@@ -21,13 +20,12 @@ interface TimelineLanesProps {
     q: (value: string) => void
     includeNonTool: (value: boolean) => void
   }
-  onToggleDense: () => void
   onSelectEvent: (eventId: string) => void
 }
 
-function buildSwimlaneTemplate(laneCount: number, dense: boolean): string {
-  const timeColumn = dense ? 88 : 104
-  const laneMinWidth = dense ? 210 : 248
+function buildSwimlaneTemplate(laneCount: number): string {
+  const timeColumn = 88
+  const laneMinWidth = 210
   return `${timeColumn}px repeat(${laneCount}, minmax(${laneMinWidth}px, 1fr))`
 }
 
@@ -42,14 +40,12 @@ export function TimelineLanes({
   toolOptions,
   grid,
   selectedEventId,
-  dense,
   onRefresh,
   onFilterChange,
-  onToggleDense,
   onSelectEvent,
 }: TimelineLanesProps) {
   return (
-    <main className={`panel timeline-panel ${dense ? 'timeline-panel-dense' : ''}`}>
+    <main className="panel timeline-panel timeline-panel-dense">
       <header className="panel-header">
         <div className="panel-title-group">
           <h2>{title}</h2>
@@ -104,13 +100,6 @@ export function TimelineLanes({
           <span>显示非工具事件</span>
         </label>
 
-        <button
-          className={`btn ghost dense-toggle ${dense ? 'active' : ''}`}
-          type="button"
-          onClick={onToggleDense}
-        >
-          Dense
-        </button>
       </div>
 
       <section className="panel-scroll timeline-scroll">
@@ -127,7 +116,7 @@ export function TimelineLanes({
           <div className="swimlane-board">
             <div
               className="swimlane-header"
-              style={{ gridTemplateColumns: buildSwimlaneTemplate(grid.laneOrder.length, dense) }}
+              style={{ gridTemplateColumns: buildSwimlaneTemplate(grid.laneOrder.length) }}
             >
               <div className="swimlane-time-head">时间</div>
               {grid.laneOrder.map((lane) => (
@@ -145,7 +134,7 @@ export function TimelineLanes({
                 <div
                   className="swimlane-row"
                   key={`row-${row.eventId}`}
-                  style={{ gridTemplateColumns: buildSwimlaneTemplate(grid.laneOrder.length, dense) }}
+                  style={{ gridTemplateColumns: buildSwimlaneTemplate(grid.laneOrder.length) }}
                 >
                   <div className="swimlane-time-cell">{row.timestampLabel}</div>
                   {row.cells.map((cell) => (
@@ -157,7 +146,6 @@ export function TimelineLanes({
                         <EventCard
                           event={cell.event}
                           selected={selectedEventId === cell.event.eventId}
-                          dense={dense}
                           onSelect={onSelectEvent}
                         />
                       ) : null}

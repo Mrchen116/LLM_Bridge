@@ -4,7 +4,6 @@ import { formatToolArgsHint, normalizeReadableText } from '../../lib/event-displ
 interface EventCardProps {
   event: ParsedTimelineEvent
   selected: boolean
-  dense: boolean
   onSelect: (eventId: string) => void
 }
 
@@ -36,14 +35,14 @@ function buildSummary(event: ParsedTimelineEvent, toolHint: string): string {
   return shortLine(candidate)
 }
 
-export function EventCard({ event, selected, dense, onSelect }: EventCardProps) {
+export function EventCard({ event, selected, onSelect }: EventCardProps) {
   const toolHint = event.kind === 'tool_call' ? formatToolArgsHint(event.raw) : ''
   const title = buildCardTitle(event)
   const summary = buildSummary(event, toolHint)
 
   return (
     <article
-      className={`event-card ${selected ? 'active' : ''} ${dense ? 'dense' : ''}`}
+      className={`event-card dense ${selected ? 'active' : ''}`}
       role="button"
       tabIndex={0}
       onClick={() => onSelect(event.eventId)}

@@ -133,6 +133,28 @@ def test_session_inspector_sessions_and_timeline(client: TestClient, monkeypatch
     assert all(ev["kind"] == "tool_call" for ev in tool_only_payload["events"])
 
 
+def test_session_inspector_log_file_endpoint(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-35-00_000_file-view-session"
+    log_path = session_dir / "2026-02-22_12-35-00_000-downstream-res-openai_chat.json"
+    raw_content = '{"ok": true, "text": "line1\\nline2"}\n'
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(raw_content, encoding="utf-8")
+
+    resp = client.get(
+        "/api/session-inspector/log-file",
+        params={"path": "logs/session/2026-02-22_12-35-00_000_file-view-session/2026-02-22_12-35-00_000-downstream-res-openai_chat.json"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["path"].endswith("2026-02-22_12-35-00_000-downstream-res-openai_chat.json")
+    assert payload["content"] == raw_content
+    assert payload["truncated"] is False
+
+    blocked = client.get("/api/session-inspector/log-file", params={"path": "../README.md"})
+    assert blocked.status_code == 400
+
+
 def test_session_inspector_lane_grouping_uses_full_context(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
 

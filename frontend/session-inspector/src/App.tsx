@@ -11,7 +11,6 @@ function buildTimelineSubtitle(totalEvents: number, laneCount: number): string {
 export default function App() {
   const { state, timelineGrid, filterOptions, selectedEvent, actions } = useSessionInspectorController()
   const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false)
-  const [denseMode, setDenseMode] = useState(true)
 
   const timelineTitle = state.selectedSessionId || '请选择 Session'
   const timelineSubtitle = state.timeline
@@ -19,9 +18,7 @@ export default function App() {
     : ''
 
   return (
-    <div
-      className={`app-shell ${sidePanelCollapsed ? 'side-panel-collapsed' : ''} ${denseMode ? 'dense-mode' : ''}`}
-    >
+    <div className={`app-shell ${sidePanelCollapsed ? 'side-panel-collapsed' : ''}`}>
       <SessionList
         query={state.sessionQuery}
         sessions={state.sessions}
@@ -46,7 +43,6 @@ export default function App() {
         toolOptions={filterOptions.toolOptions}
         grid={timelineGrid}
         selectedEventId={state.selectedEventId}
-        dense={denseMode}
         onRefresh={actions.refreshTimeline}
         onFilterChange={{
           agent: (value) => actions.setFilter('agent', value),
@@ -54,7 +50,6 @@ export default function App() {
           q: (value) => actions.setFilter('q', value),
           includeNonTool: (value) => actions.setFilter('includeNonTool', value),
         }}
-        onToggleDense={() => setDenseMode((previous) => !previous)}
         onSelectEvent={actions.selectEvent}
       />
 

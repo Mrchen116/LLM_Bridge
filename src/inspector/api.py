@@ -25,6 +25,35 @@ def _require_enabled() -> None:
         raise HTTPException(status_code=404, detail="session inspector is disabled")
 
 
+def _workspace_relative(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path.cwd())).replace("\\", "/")
+    except Exception:
+        return str(path).replace("\\", "/")
+
+
+def _resolve_log_file_path(path_value: str) -> Path:
+    raw = (path_value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="path is required")
+
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (Path.cwd() / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    logs_root = (Path.cwd() / DEFAULT_LOGS_SESSION_DIR).resolve()
+    try:
+        candidate.relative_to(logs_root)
+    except Exception:
+        raise HTTPException(status_code=400, detail="path must be under logs/session")
+
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="log file not found")
+    return candidate
+
+
 @ROUTER.get("/ui/session-inspector")
 async def session_inspector_page():
     _require_enabled()
@@ -70,3 +99,17 @@ async def session_inspector_timeline(
     if not payload:
         raise HTTPException(status_code=404, detail=f"session_id {session_id} not found")
     return payload
+
+
+@ROUTER.get("/api/session-inspector/log-file")
+async def session_inspector_log_file(path: str = Query(...)):
+    _require_enabled()
+    log_path = _resolve_log_file_path(path)
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+
+    return {
+        "path": _workspace_relative(log_path),
+        "content": content,
+        "size_bytes": log_path.stat().st_size,
+        "truncated": False,
+    }

@@ -1,4 +1,4 @@
-import type { SessionsResponse, TimelineResponse } from './contracts'
+import type { LogFileContentResponse, SessionsResponse, TimelineResponse } from './contracts'
 import type { TimelineFilters } from '../state/types'
 
 const API_BASE = '/api/session-inspector'
@@ -52,4 +52,10 @@ export async function fetchTimeline(
   return requestJson<TimelineResponse>(
     `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/timeline?${params.toString()}`,
   )
+}
+
+export async function fetchLogFileContent(path: string): Promise<LogFileContentResponse> {
+  const params = new URLSearchParams()
+  params.set('path', path)
+  return requestJson<LogFileContentResponse>(`${API_BASE}/log-file?${params.toString()}`)
 }
