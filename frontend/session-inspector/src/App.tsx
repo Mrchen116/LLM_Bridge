@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useSessionInspectorController } from './business/use-session-inspector-controller'
 import { SessionList } from './components/session-list/SessionList'
 import { TimelineLanes } from './components/timeline-lanes/TimelineLanes'
@@ -9,6 +10,8 @@ function buildTimelineSubtitle(totalEvents: number, laneCount: number): string {
 
 export default function App() {
   const { state, timelineGrid, filterOptions, selectedEvent, actions } = useSessionInspectorController()
+  const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false)
+  const [denseMode, setDenseMode] = useState(true)
 
   const timelineTitle = state.selectedSessionId || '请选择 Session'
   const timelineSubtitle = state.timeline
@@ -16,16 +19,20 @@ export default function App() {
     : ''
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell ${sidePanelCollapsed ? 'side-panel-collapsed' : ''} ${denseMode ? 'dense-mode' : ''}`}
+    >
       <SessionList
         query={state.sessionQuery}
         sessions={state.sessions}
         selectedSessionId={state.selectedSessionId}
         loading={state.sessionsLoading}
         error={state.sessionsError}
+        collapsed={sidePanelCollapsed}
         onQueryChange={actions.setSessionQuery}
         onRefresh={actions.refreshSessions}
         onSelectSession={actions.selectSession}
+        onToggleCollapse={() => setSidePanelCollapsed((previous) => !previous)}
       />
 
       <TimelineLanes
@@ -39,6 +46,7 @@ export default function App() {
         toolOptions={filterOptions.toolOptions}
         grid={timelineGrid}
         selectedEventId={state.selectedEventId}
+        dense={denseMode}
         onRefresh={actions.refreshTimeline}
         onFilterChange={{
           agent: (value) => actions.setFilter('agent', value),
@@ -46,6 +54,7 @@ export default function App() {
           q: (value) => actions.setFilter('q', value),
           includeNonTool: (value) => actions.setFilter('includeNonTool', value),
         }}
+        onToggleDense={() => setDenseMode((previous) => !previous)}
         onSelectEvent={actions.selectEvent}
       />
 

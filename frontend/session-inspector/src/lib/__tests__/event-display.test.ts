@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { TimelineEvent } from '../../api/contracts'
-import { extractEventMainText, formatCodeValue, formatToolArgsPreview } from '../event-display'
+import {
+  extractEventMainText,
+  formatCodeValue,
+  formatToolArgsHint,
+  formatToolArgsPreview,
+} from '../event-display'
 
 function buildEvent(partial: Partial<TimelineEvent>): TimelineEvent {
   return {
@@ -43,6 +48,25 @@ describe('event-display', () => {
     expect(text).toContain('"cmd"')
     expect(text).toContain('printf')
     expect(text).toContain('\n')
+  })
+
+  it('builds tool hint from meaningful prioritized keys', () => {
+    const event = buildEvent({
+      kind: 'tool_call',
+      tool_args: {
+        meta: { ignore: true },
+        team_name: 'ops',
+      },
+    })
+    expect(formatToolArgsHint(event)).toBe('team_name=ops')
+  })
+
+  it('skips isolated braces when deriving tool hint', () => {
+    const event = buildEvent({
+      kind: 'tool_call',
+      tool_args: '{\n}',
+    })
+    expect(formatToolArgsHint(event)).toBe('')
   })
 
   it('renders structured value with decoded escaped newline', () => {

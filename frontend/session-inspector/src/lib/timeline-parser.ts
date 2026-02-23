@@ -40,8 +40,7 @@ export function parseTimelineResponse(timeline: TimelineResponse | null): Parsed
 export function parseTimelineEvent(event: TimelineEvent): ParsedTimelineEvent {
   const kindClass = event.kind === 'tool_call' ? 'tool' : 'message'
   const kindLabel = kindClass === 'tool' ? 'Tool' : 'Message'
-  const fallbackPreview = event.summary || event.kind
-  const preview = kindClass === 'tool' ? event.tool_name || fallbackPreview : fallbackPreview
+  const preview = event.summary || (kindClass === 'tool' ? event.tool_name || event.kind : event.kind)
 
   return {
     eventId: event.event_id,

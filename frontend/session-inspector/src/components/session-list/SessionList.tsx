@@ -6,9 +6,11 @@ interface SessionListProps {
   selectedSessionId: string
   loading: boolean
   error: string
+  collapsed: boolean
   onQueryChange: (value: string) => void
   onRefresh: () => void
   onSelectSession: (sessionId: string, sessionDir: string) => void
+  onToggleCollapse: () => void
 }
 
 export function SessionList({
@@ -17,10 +19,33 @@ export function SessionList({
   selectedSessionId,
   loading,
   error,
+  collapsed,
   onQueryChange,
   onRefresh,
   onSelectSession,
+  onToggleCollapse,
 }: SessionListProps) {
+  if (collapsed) {
+    return (
+      <aside className="panel sessions-panel sessions-panel-collapsed">
+        <div className="sessions-collapsed-rail">
+          <button
+            className="btn ghost icon-btn"
+            type="button"
+            title="展开会话列表"
+            aria-label="展开会话列表"
+            onClick={onToggleCollapse}
+          >
+            &gt;
+          </button>
+          <span className="sessions-collapsed-tag" title={selectedSessionId || '未选择 Session'}>
+            SI
+          </span>
+        </div>
+      </aside>
+    )
+  }
+
   return (
     <aside className="panel sessions-panel">
       <header className="panel-header">
@@ -29,6 +54,15 @@ export function SessionList({
           <p className="subtle">会话总览</p>
         </div>
         <div className="panel-actions">
+          <button
+            className="btn ghost icon-btn"
+            type="button"
+            title="折叠会话列表"
+            aria-label="折叠会话列表"
+            onClick={onToggleCollapse}
+          >
+            &lt;
+          </button>
           <button className="btn ghost" type="button" onClick={onRefresh}>
             刷新
           </button>

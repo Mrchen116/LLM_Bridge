@@ -38,6 +38,7 @@ body,
 body {
   margin: 0;
   min-width: 320px;
+  overflow: hidden;
   color: var(--text);
   font-family: 'Avenir Next', 'PingFang SC', 'Noto Sans CJK SC', 'Source Han Sans SC',
     'Helvetica Neue', sans-serif;
@@ -61,13 +62,20 @@ select {
 }
 
 .app-shell {
+  --left-panel-width: 280px;
+  --right-panel-width: 360px;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 360px;
+  grid-template-columns: var(--left-panel-width) minmax(0, 1fr) var(--right-panel-width);
   gap: var(--space-3);
   height: 100%;
   max-width: 1840px;
   margin: 0 auto;
   padding: var(--space-4);
+  overflow: hidden;
+}
+
+.app-shell.side-panel-collapsed {
+  --left-panel-width: 44px;
 }
 
 .panel {
@@ -134,11 +142,11 @@ select {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 34px;
-  padding: 0 14px;
+  height: 32px;
+  padding: 0 12px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: 12px;
   letter-spacing: 0.01em;
   font-weight: 520;
   color: #fff;
@@ -168,15 +176,21 @@ select {
   box-shadow: none;
 }
 
+.icon-btn {
+  width: 28px;
+  padding: 0;
+  font-weight: 620;
+}
+
 .input {
   width: 100%;
-  height: 38px;
+  height: 34px;
   padding: 0 var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.92);
   color: var(--text);
-  font-size: 14px;
+  font-size: 13px;
   outline: none;
   transition: border-color var(--trans-fast), box-shadow var(--trans-fast), background-color var(--trans-fast);
 }
@@ -208,6 +222,31 @@ select {
 
 .sessions-controls {
   padding: var(--space-3) var(--space-4) 0;
+}
+
+.sessions-panel {
+  min-width: 0;
+}
+
+.sessions-panel-collapsed {
+  border-radius: 12px;
+}
+
+.sessions-collapsed-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 6px;
+}
+
+.sessions-collapsed-tag {
+  writing-mode: vertical-lr;
+  text-orientation: mixed;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: #5d7288;
 }
 
 .sessions-list {
@@ -252,24 +291,29 @@ select {
 
 .filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(150px, max-content) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px var(--space-4);
   border-bottom: 1px solid var(--border-soft);
   background: linear-gradient(180deg, rgba(245, 249, 254, 0.72) 0%, rgba(249, 252, 255, 0.62) 100%);
+}
+
+.filters > * {
+  min-width: 0;
 }
 
 .check-line {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 38px;
+  gap: 6px;
+  min-height: 34px;
   padding: 0 var(--space-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.9);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -277,8 +321,20 @@ select {
   accent-color: var(--accent);
 }
 
+.dense-toggle {
+  justify-self: end;
+  min-width: 66px;
+}
+
+.dense-toggle.active {
+  color: #1f4b74;
+  border-color: #8fb0cf;
+  background: #e7f1fb;
+}
+
 .timeline-scroll {
-  padding: var(--space-3) var(--space-4);
+  padding: 10px 12px;
+  overscroll-behavior: contain;
 }
 
 .swimlane-board {
@@ -309,13 +365,13 @@ select {
 
 .swimlane-time-head {
   align-items: center;
-  padding: 10px;
+  padding: 8px 7px;
 }
 
 .swimlane-time-cell {
   align-items: flex-start;
-  padding: 10px;
-  line-height: 1.45;
+  padding: 8px 7px;
+  line-height: 1.35;
   background: #fcfdff;
 }
 
@@ -323,12 +379,12 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: var(--space-1);
   min-width: 0;
-  padding: 10px 12px;
+  padding: 8px 9px;
   border-right: 1px solid var(--border-soft);
   color: #55667a;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .swimlane-lane-head:last-child {
@@ -344,10 +400,10 @@ select {
 .lane-count {
   border: 1px solid #cad7e5;
   border-radius: 999px;
-  padding: 2px 8px;
+  padding: 1px 6px;
   background: #edf4fb;
   color: #5a7592;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .swimlane-body {
@@ -366,7 +422,7 @@ select {
 
 .swimlane-cell {
   min-width: 0;
-  padding: var(--space-1);
+  padding: 5px;
   border-right: 1px solid var(--border-soft);
   background: #fff;
 }
@@ -386,9 +442,9 @@ select {
 
 .event-card {
   margin: 0;
-  padding: 10px 11px;
+  padding: 8px 9px;
   border: 1px solid var(--border-soft);
-  border-radius: 11px;
+  border-radius: 9px;
   background: #fff;
   cursor: pointer;
   transition: border-color var(--trans-fast), background-color var(--trans-fast), box-shadow var(--trans-fast);
@@ -402,53 +458,107 @@ select {
 .event-card.active {
   border-color: #98aec5;
   background: #f2f7fd;
-  box-shadow: 0 8px 20px rgba(80, 111, 142, 0.1);
+  box-shadow: 0 5px 14px rgba(80, 111, 142, 0.1);
 }
 
-.event-card-topline {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-  color: #6f8095;
+.event-title {
+  color: #536a84;
   font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.event-kind {
-  display: inline-flex;
-  align-items: center;
-  margin-top: 6px;
-  padding: 1px 8px;
-  border: 1px solid #cad8e8;
-  border-radius: 999px;
-  background: #eef5fc;
-  color: #4b6988;
-  font-size: 11px;
+.event-title.tool {
+  color: #2f5b84;
 }
 
-.event-kind.message {
-  background: #f2f4f8;
-  border-color: #d9dee8;
-  color: #5d6b7d;
+.event-title.message {
+  color: #5f6f83;
 }
 
 .event-summary {
-  margin-top: 7px;
+  margin-top: 4px;
   color: #334457;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .event-hint {
-  margin-top: 6px;
+  margin-top: 2px;
   color: #677b91;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.timeline-panel-dense .panel-header {
+  padding: 14px 16px;
+}
+
+.timeline-panel-dense .panel-header h2 {
+  font-size: 16px;
+}
+
+.timeline-panel-dense .subtle {
+  font-size: 12px;
+}
+
+.timeline-panel-dense .filters {
+  gap: 8px;
+  padding: 9px 10px;
+}
+
+.timeline-panel-dense .input,
+.timeline-panel-dense .check-line {
+  min-height: 30px;
+  height: 30px;
+  font-size: 12px;
+}
+
+.timeline-panel-dense .btn {
+  height: 30px;
+  padding: 0 10px;
+}
+
+.timeline-panel-dense .timeline-scroll {
+  padding: 8px 10px;
+}
+
+.timeline-panel-dense .swimlane-time-head,
+.timeline-panel-dense .swimlane-time-cell,
+.timeline-panel-dense .swimlane-lane-head {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.timeline-panel-dense .swimlane-cell {
+  padding: 4px;
+}
+
+.event-card.dense {
+  padding: 6px 7px;
+  border-radius: 8px;
+}
+
+.event-card.dense .event-title {
+  font-size: 11px;
+}
+
+.event-card.dense .event-summary {
+  margin-top: 3px;
+  font-size: 11px;
+}
+
+.event-card.dense .event-hint {
+  margin-top: 1px;
+  font-size: 10.5px;
 }
 
 .detail-body {
@@ -456,6 +566,7 @@ select {
   min-height: 0;
   overflow: auto;
   padding: var(--space-4);
+  overscroll-behavior: contain;
 }
 
 .detail-block {
@@ -592,8 +703,13 @@ select {
 
 @media (max-width: 1180px) {
   .app-shell {
-    grid-template-columns: 250px minmax(0, 1fr);
+    --left-panel-width: 250px;
+    grid-template-columns: var(--left-panel-width) minmax(0, 1fr);
     padding: var(--space-3);
+  }
+
+  .app-shell.side-panel-collapsed {
+    --left-panel-width: 44px;
   }
 
   .detail-panel {
@@ -626,6 +742,11 @@ select {
   .check-line {
     grid-column: 1 / -1;
     justify-content: center;
+  }
+
+  .dense-toggle {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 }
 
@@ -660,7 +781,7 @@ select {
 
   .btn,
   .input {
-    height: 40px;
+    height: 38px;
   }
 
   .sessions-controls {
@@ -671,5 +792,9 @@ select {
   .timeline-scroll,
   .detail-body {
     padding: var(--space-2) var(--space-3);
+  }
+
+  .sessions-collapsed-rail {
+    padding-top: 8px;
   }
 }

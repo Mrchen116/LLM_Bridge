@@ -60,7 +60,7 @@ describe('timeline-parser', () => {
     expect(parsed).not.toBeNull()
     expect(parsed?.events).toHaveLength(2)
     expect(parsed?.events[0].kindClass).toBe('tool')
-    expect(parsed?.events[0].preview).toBe('Bash')
+    expect(parsed?.events[0].preview).toBe('run command')
     expect(parsed?.events[0].timestampLabel).toBe('2026-02-22 12-00-00_000')
     expect(parsed?.events[1].kindClass).toBe('message')
     expect(parsed?.events[1].preview).toBe('done')

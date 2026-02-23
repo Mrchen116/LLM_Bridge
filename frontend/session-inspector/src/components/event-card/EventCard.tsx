@@ -1,39 +1,46 @@
 import type { ParsedTimelineEvent } from '../../lib/timeline-parser'
-import { formatToolArgsPreview } from '../../lib/event-display'
+import { formatToolArgsHint, normalizeReadableText } from '../../lib/event-display'
 
 interface EventCardProps {
   event: ParsedTimelineEvent
-  laneLabel: string
   selected: boolean
+  dense: boolean
   onSelect: (eventId: string) => void
 }
 
-function shortLane(value: string): string {
-  const text = value.trim()
-  if (text.length <= 18) {
+function normalizeCardLine(value: string): string {
+  return normalizeReadableText(value).replace(/\s+/g, ' ').trim()
+}
+
+function shortLine(value: string, maxLength = 120): string {
+  const text = normalizeCardLine(value)
+  if (text.length <= maxLength) {
     return text
   }
-  return `${text.slice(0, 18)}...`
+  return `${text.slice(0, maxLength)}...`
 }
 
-function buildToolCallHint(event: ParsedTimelineEvent): string {
-  const text = formatToolArgsPreview(event.raw).trim()
-  if (!text) {
-    return ''
+function buildCardTitle(event: ParsedTimelineEvent): string {
+  if (event.kind === 'tool_call') {
+    const toolName = shortLine(event.raw.tool_name?.trim() || 'unknown')
+    return `Tool · ${toolName}`
   }
-  const firstLine = text.split('\n')[0]?.trim() || ''
-  if (!firstLine) {
-    return ''
-  }
-  return firstLine.length <= 72 ? firstLine : `${firstLine.slice(0, 72)}...`
+  return `Message · ${event.kind}`
 }
 
-export function EventCard({ event, laneLabel, selected, onSelect }: EventCardProps) {
-  const toolHint = event.kind === 'tool_call' ? buildToolCallHint(event) : ''
+function buildSummary(event: ParsedTimelineEvent): string {
+  const candidate = event.summary || event.preview || event.kind
+  return shortLine(candidate)
+}
+
+export function EventCard({ event, selected, dense, onSelect }: EventCardProps) {
+  const toolHint = event.kind === 'tool_call' ? formatToolArgsHint(event.raw) : ''
+  const title = buildCardTitle(event)
+  const summary = buildSummary(event)
 
   return (
     <article
-      className={`event-card ${selected ? 'active' : ''}`}
+      className={`event-card ${selected ? 'active' : ''} ${dense ? 'dense' : ''}`}
       role="button"
       tabIndex={0}
       onClick={() => onSelect(event.eventId)}
@@ -44,13 +51,11 @@ export function EventCard({ event, laneLabel, selected, onSelect }: EventCardPro
         }
       }}
     >
-      <div className="event-card-topline">
-        <span>{event.kindLabel}</span>
-        <span title={laneLabel}>{shortLane(laneLabel)}</span>
+      <div className={`event-title ${event.kindClass}`} title={title}>
+        {title}
       </div>
-      <div className={`event-kind ${event.kindClass}`}>{event.kind}</div>
-      <div className="event-summary" title={event.preview}>
-        {event.preview}
+      <div className="event-summary" title={summary}>
+        {summary}
       </div>
       {toolHint ? (
         <div className="event-hint" title={toolHint}>
