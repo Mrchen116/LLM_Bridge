@@ -28,7 +28,10 @@ function buildCardTitle(event: ParsedTimelineEvent): string {
   return `Message · ${event.kind}`
 }
 
-function buildSummary(event: ParsedTimelineEvent): string {
+function buildSummary(event: ParsedTimelineEvent, toolHint: string): string {
+  if (event.kind === 'tool_call') {
+    return shortLine(toolHint)
+  }
   const candidate = event.summary || event.preview || event.kind
   return shortLine(candidate)
 }
@@ -36,7 +39,7 @@ function buildSummary(event: ParsedTimelineEvent): string {
 export function EventCard({ event, selected, dense, onSelect }: EventCardProps) {
   const toolHint = event.kind === 'tool_call' ? formatToolArgsHint(event.raw) : ''
   const title = buildCardTitle(event)
-  const summary = buildSummary(event)
+  const summary = buildSummary(event, toolHint)
 
   return (
     <article
@@ -54,12 +57,9 @@ export function EventCard({ event, selected, dense, onSelect }: EventCardProps) 
       <div className={`event-title ${event.kindClass}`} title={title}>
         {title}
       </div>
-      <div className="event-summary" title={summary}>
-        {summary}
-      </div>
-      {toolHint ? (
-        <div className="event-hint" title={toolHint}>
-          {toolHint}
+      {summary ? (
+        <div className="event-summary" title={summary}>
+          {summary}
         </div>
       ) : null}
     </article>

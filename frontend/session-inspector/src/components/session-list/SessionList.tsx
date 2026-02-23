@@ -27,21 +27,18 @@ export function SessionList({
 }: SessionListProps) {
   if (collapsed) {
     return (
-      <aside className="panel sessions-panel sessions-panel-collapsed">
-        <div className="sessions-collapsed-rail">
-          <button
-            className="btn ghost icon-btn"
-            type="button"
-            title="展开会话列表"
-            aria-label="展开会话列表"
-            onClick={onToggleCollapse}
-          >
+      <aside className="sessions-collapsed-shell" aria-label="会话列表已折叠">
+        <button
+          className="sessions-collapsed-handle"
+          type="button"
+          title="展开会话列表"
+          aria-label="展开会话列表"
+          onClick={onToggleCollapse}
+        >
+          <span className="sessions-collapsed-arrow" aria-hidden="true">
             &gt;
-          </button>
-          <span className="sessions-collapsed-tag" title={selectedSessionId || '未选择 Session'}>
-            SI
           </span>
-        </div>
+        </button>
       </aside>
     )
   }
