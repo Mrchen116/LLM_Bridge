@@ -28,9 +28,11 @@ export function SessionList({
           <h1>Session Inspector</h1>
           <p className="subtle">会话总览</p>
         </div>
-        <button className="btn ghost" type="button" onClick={onRefresh}>
-          刷新
-        </button>
+        <div className="panel-actions">
+          <button className="btn ghost" type="button" onClick={onRefresh}>
+            刷新
+          </button>
+        </div>
       </header>
 
       <div className="sessions-controls">

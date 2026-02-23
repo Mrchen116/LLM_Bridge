@@ -1,4 +1,5 @@
 import type { ParsedTimelineEvent } from '../../lib/timeline-parser'
+import { formatToolArgsPreview } from '../../lib/event-display'
 
 interface EventCardProps {
   event: ParsedTimelineEvent
@@ -15,18 +16,21 @@ function shortLane(value: string): string {
   return `${text.slice(0, 18)}...`
 }
 
-function stringifyInline(event: ParsedTimelineEvent): string {
-  try {
-    if (event.raw.kind === 'tool_call') {
-      return JSON.stringify(event.raw.tool_args ?? {}, null, 2)
-    }
-    return JSON.stringify(event.raw.detail ?? {}, null, 2)
-  } catch {
-    return String(event.raw.summary || event.raw.kind)
+function buildToolCallHint(event: ParsedTimelineEvent): string {
+  const text = formatToolArgsPreview(event.raw).trim()
+  if (!text) {
+    return ''
   }
+  const firstLine = text.split('\n')[0]?.trim() || ''
+  if (!firstLine) {
+    return ''
+  }
+  return firstLine.length <= 72 ? firstLine : `${firstLine.slice(0, 72)}...`
 }
 
 export function EventCard({ event, laneLabel, selected, onSelect }: EventCardProps) {
+  const toolHint = event.kind === 'tool_call' ? buildToolCallHint(event) : ''
+
   return (
     <article
       className={`event-card ${selected ? 'active' : ''}`}
@@ -48,8 +52,11 @@ export function EventCard({ event, laneLabel, selected, onSelect }: EventCardPro
       <div className="event-summary" title={event.preview}>
         {event.preview}
       </div>
-
-      {selected ? <pre className="code event-inline">{stringifyInline(event)}</pre> : null}
+      {toolHint ? (
+        <div className="event-hint" title={toolHint}>
+          {toolHint}
+        </div>
+      ) : null}
     </article>
   )
 }

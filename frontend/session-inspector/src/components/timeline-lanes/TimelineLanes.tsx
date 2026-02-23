@@ -55,9 +55,11 @@ export function TimelineLanes({
           <h2>{title}</h2>
           <p className="subtle">{subtitle}</p>
         </div>
-        <button className="btn" type="button" onClick={onRefresh}>
-          刷新时间线
-        </button>
+        <div className="panel-actions">
+          <button className="btn" type="button" onClick={onRefresh}>
+            刷新时间线
+          </button>
+        </div>
       </header>
 
       <div className="filters">
