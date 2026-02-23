@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 240" width="100%">
+  <style>
+    .title { fill: #111827; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 104px; font-weight: 900; letter-spacing: -3px; }
+    .brand { fill: #e11d48; }
+    .subtitle { fill: #111827; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 18px; font-weight: 700; letter-spacing: 2px; }
+    @media (prefers-color-scheme: dark) {
+      .title { fill: #f9fafb; }
+      .brand { fill: #fb7185; }
+      .subtitle { fill: #f9fafb; }
+    }
+  </style>
+
+  <!-- Emoji/Icon -->
+  <text x="110" y="140" text-anchor="middle" font-size="94px">𖣑</text>
+
+  <!-- Title Text, with BRIDGE in Red -->
+  <text x="470" y="140" text-anchor="middle" class="title">LLM_<tspan class="brand">BRIDGE</tspan></text>
+  
+  <!-- Subtitle -->
+  <text x="410" y="190" text-anchor="middle" class="subtitle">MULTI-UPSTREAM PROXY</text>
+</svg>

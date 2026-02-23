@@ -1,6 +1,13 @@
 # LLM_Bridge
+<p align="center">
+  <img src="logo.svg" alt="LLM_Bridge Logo" />
+</p>
 
-[![Ask DeepWiki](https://deepwiki.com/Mrchen116/LLM_Bridge/badge.svg)](https://deepwiki.com/Mrchen116/LLM_Bridge)
+<p align="center">
+  <a href="https://deepwiki.com/Mrchen116/LLM_Bridge">
+    <img src="https://img.shields.io/badge/Ask-DeepWiki-blue?style=for-the-badge" alt="Ask DeepWiki" />
+  </a>
+</p>
 
 一个基于 FastAPI 的多上游 LLM 代理服务，支持在同一入口下转发与桥接：
 
