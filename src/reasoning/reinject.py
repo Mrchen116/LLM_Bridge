@@ -306,24 +306,32 @@ def _update_codex_reasoning_reinject_cache_for_responses(trace: Optional[Dict[st
 
 
 def _extract_response_completed_object_from_sse_chunks(chunks: List[Any]) -> Optional[Dict[str, Any]]:
+    merged = "".join(chunk for chunk in chunks if isinstance(chunk, str))
+    if not merged:
+        return None
+    merged = merged.replace("\r\n", "\n")
     completed: Optional[Dict[str, Any]] = None
-    for chunk in chunks:
-        if not isinstance(chunk, str):
+    for frame in merged.split("\n\n"):
+        if not frame.strip():
             continue
-        for line in chunk.splitlines():
+        data_lines: List[str] = []
+        for line in frame.split("\n"):
             if not line.startswith("data:"):
                 continue
-            data_part = line[5:].strip()
-            if not data_part or data_part == "[DONE]":
-                continue
-            try:
-                obj = json.loads(data_part)
-            except Exception:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            if str(obj.get("type") or "") == "response.completed":
-                resp = obj.get("response")
-                if isinstance(resp, dict):
-                    completed = resp
+            data_lines.append(line[5:].lstrip())
+        if not data_lines:
+            continue
+        data_part = "\n".join(data_lines).strip()
+        if not data_part or data_part == "[DONE]":
+            continue
+        try:
+            obj = json.loads(data_part)
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if str(obj.get("type") or "") == "response.completed":
+            resp = obj.get("response")
+            if isinstance(resp, dict):
+                completed = resp
     return completed

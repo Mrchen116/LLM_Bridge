@@ -105,3 +105,49 @@ def test_responses_with_underscore_session_header_writes_session_logs(client_wit
     session_root = Path.cwd() / "logs" / "session"
     session_dirs = sorted(session_root.glob(f"*_{session_id}"))
     assert session_dirs
+
+
+def test_responses_stream_split_chunks_keeps_non_stream_text(client_with_logs: TestClient):
+    """测试 responses 流式 completed 事件被拆块时，non-stream 仍可聚合文本。"""
+    completed = {
+        "type": "response.completed",
+        "response": {
+            "id": "resp_split_chunks",
+            "object": "response",
+            "model": "gpt-5.3-codex",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "我在！有什么需要我做的？"}],
+                }
+            ],
+            "usage": {"input_tokens": 5, "output_tokens": 6},
+        },
+    }
+    completed_line = f"event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False)}\n\n"
+    split_at = max(int(len(completed_line) * 0.55), 40)
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        raw_chunks=[
+            completed_line[:split_at].encode("utf-8"),
+            completed_line[split_at:].encode("utf-8"),
+            b"data: [DONE]\n\n",
+        ],
+    )
+
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello", "stream": True}
+    session_id = "responses-stream-split"
+    with client_with_logs.stream("POST", "/v1/responses", json=payload, headers={"X-Session-Id": session_id}) as resp:
+        _ = "".join(resp.iter_text())
+    assert resp.status_code == 200
+
+    session_root = Path.cwd() / "logs" / "session"
+    session_dirs = sorted(session_root.glob(f"*_{session_id}"))
+    assert session_dirs
+    session_dir = session_dirs[-1]
+    non_stream_files = sorted(session_dir.glob("*-non-stream-res-openai_responses.json"))
+    assert non_stream_files
+    with non_stream_files[-1].open("r", encoding="utf-8") as f:
+        obj = json.load(f)
+    assert obj["choices"][0]["message"]["content"] == "我在！有什么需要我做的？"

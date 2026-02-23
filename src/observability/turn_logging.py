@@ -431,27 +431,39 @@ def build_openai_chat_non_stream_from_sse_chunks(chunks: List[Any], fallback_mod
 
 
 def build_openai_responses_non_stream_from_sse_chunks(chunks: List[Any]) -> Dict[str, Any]:
-    completed: Optional[Dict[str, Any]] = None
-    for chunk in chunks:
-        if not isinstance(chunk, str):
-            continue
-        for line in chunk.splitlines():
-            line = line.strip()
-            if not line.startswith("data:"):
+    def iter_sse_data_objects() -> List[Dict[str, Any]]:
+        merged = "".join(chunk for chunk in chunks if isinstance(chunk, str))
+        if not merged:
+            return []
+        merged = merged.replace("\r\n", "\n")
+        out: List[Dict[str, Any]] = []
+        for frame in merged.split("\n\n"):
+            if not frame.strip():
                 continue
-            data_str = line[5:].strip()
+            data_lines: List[str] = []
+            for line in frame.split("\n"):
+                if not line.startswith("data:"):
+                    continue
+                data_lines.append(line[5:].lstrip())
+            if not data_lines:
+                continue
+            data_str = "\n".join(data_lines).strip()
             if not data_str or data_str == "[DONE]":
                 continue
             try:
-                data = json.loads(data_str)
+                obj = json.loads(data_str)
             except Exception:
                 continue
-            if not isinstance(data, dict):
-                continue
-            if str(data.get("type") or "") == "response.completed":
-                resp = data.get("response")
-                if isinstance(resp, dict):
-                    completed = resp
+            if isinstance(obj, dict):
+                out.append(obj)
+        return out
+
+    completed: Optional[Dict[str, Any]] = None
+    for data in iter_sse_data_objects():
+        if str(data.get("type") or "") == "response.completed":
+            resp = data.get("response")
+            if isinstance(resp, dict):
+                completed = resp
 
     if completed is not None:
         return completed
