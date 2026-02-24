@@ -361,3 +361,161 @@ def test_session_inspector_request_summary_uses_last_user_payload(client: TestCl
     request_events = [ev for ev in payload["events"] if ev["event_id"].endswith(":request:0")]
     assert request_events
     assert "LAST_USER_TOOL_RESULT_TEXT" in request_events[0]["summary"]
+
+
+def test_session_inspector_keyword_filter_applies_to_whole_turn(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-50-00_000_turn-filter-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-50-00_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [
+                {"role": "user", "content": "普通问题"},
+                {"role": "user", "content": "这里包含 KeepTurn 关键词"},
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-50-00_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_keep",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "响应文本不含关键词"},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+
+    _write_json(
+        session_dir / "2026-02-22_12-50-00_002-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "另一个请求"}],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-50-00_002-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_drop",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "普通响应"},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/turn-filter-session/timeline",
+        params={"include_non_tool": "true", "q": "KeepTurn"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["events"]
+    assert {ev["turn_ts"] for ev in payload["events"]} == {"2026-02-22_12-50-00_001"}
+    assert any(ev["kind"] == "user_input" for ev in payload["events"])
+    assert any(ev["kind"] == "assistant_text" for ev in payload["events"])
+
+
+def test_session_inspector_negative_keyword_removes_whole_turn(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-51-00_000_turn-exclude-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-51-00_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [
+                {"role": "user", "content": "第一段普通输入"},
+                {"role": "user", "content": "第二段包含 BlockMe 词"},
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-51-00_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_bad",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "这个响应也应被整轮剔除"},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+
+    _write_json(
+        session_dir / "2026-02-22_12-51-00_002-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "干净请求"}],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-51-00_002-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_good",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "保留响应"},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/turn-exclude-session/timeline",
+        params={"include_non_tool": "true", "q_not": "BlockMe"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["events"]
+    assert {ev["turn_ts"] for ev in payload["events"]} == {"2026-02-22_12-51-00_002"}
+
+
+def test_session_inspector_keyword_presets_api(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+
+    resp_get_empty = client.get("/api/session-inspector/keyword-presets")
+    assert resp_get_empty.status_code == 200
+    assert resp_get_empty.json()["presets"] == []
+
+    payload = {
+        "default_preset_id": "p1",
+        "presets": [
+            {
+                "id": "p1",
+                "name": "默认",
+                "include_keywords": ["foo", "foo", " bar "],
+                "exclude_keywords": ["bad"],
+            }
+        ],
+    }
+    resp_put = client.put("/api/session-inspector/keyword-presets", json=payload)
+    assert resp_put.status_code == 200
+    body = resp_put.json()
+    assert body["default_preset_id"] == "p1"
+    assert body["presets"][0]["include_keywords"] == ["foo", "bar"]
+    assert body["presets"][0]["exclude_keywords"] == ["bad"]
+
+    resp_get = client.get("/api/session-inspector/keyword-presets")
+    assert resp_get.status_code == 200
+    assert resp_get.json()["default_preset_id"] == "p1"

@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { TimelineEvent } from '../api/contracts'
-import { fetchSessions, fetchTimeline } from '../api/session-inspector-client'
+import type { KeywordPreset, KeywordPresetsResponse } from '../api/contracts'
+import {
+  fetchKeywordPresets,
+  fetchSessions,
+  fetchTimeline,
+  saveKeywordPresets,
+} from '../api/session-inspector-client'
 import {
   buildTimelineFilterOptions,
   buildTimelineGrid,
@@ -24,6 +30,12 @@ function toErrorMessage(error: unknown): string {
 
 export function useSessionInspectorController() {
   const [state, dispatch] = useReducer(inspectorReducer, initialInspectorState)
+  const [keywordPresetState, setKeywordPresetState] = useState<KeywordPresetsResponse>({
+    version: 1,
+    default_preset_id: null,
+    presets: [],
+  })
+  const [selectedKeywordPresetId, setSelectedKeywordPresetId] = useState<string>('')
 
   const sessionsRequestId = useRef(0)
   const timelineRequestId = useRef(0)
@@ -91,6 +103,37 @@ export function useSessionInspectorController() {
     void loadTimeline(state.selectedSessionId, state.filters)
   }, [loadTimeline, state.filters, state.selectedSessionId])
 
+  const applyPresetToFilters = useCallback((preset: KeywordPreset) => {
+    dispatch(
+      inspectorActions.setFilters({
+        q: preset.include_keywords.join(', '),
+        qNot: preset.exclude_keywords.join(', '),
+      }),
+    )
+  }, [])
+
+  const loadKeywordPresets = useCallback(async () => {
+    try {
+      const payload = await fetchKeywordPresets()
+      setKeywordPresetState(payload)
+      const defaultPreset =
+        payload.presets.find((preset) => preset.id === payload.default_preset_id) ?? payload.presets[0]
+      if (defaultPreset) {
+        setSelectedKeywordPresetId(defaultPreset.id)
+        applyPresetToFilters(defaultPreset)
+      } else {
+        setSelectedKeywordPresetId('')
+      }
+    } catch {
+      setKeywordPresetState({ version: 1, default_preset_id: null, presets: [] })
+      setSelectedKeywordPresetId('')
+    }
+  }, [applyPresetToFilters])
+
+  useEffect(() => {
+    void loadKeywordPresets()
+  }, [loadKeywordPresets])
+
   const parsedTimeline = useMemo(() => parseTimelineResponse(state.timeline), [state.timeline])
   const laneClusters = useMemo(() => clusterEventsByLane(parsedTimeline), [parsedTimeline])
   const timelineGrid = useMemo(() => buildTimelineGrid(parsedTimeline), [parsedTimeline])
@@ -119,6 +162,10 @@ export function useSessionInspectorController() {
     [],
   )
 
+  const setFilters = useCallback((filters: Partial<TimelineFilters>) => {
+    dispatch(inspectorActions.setFilters(filters))
+  }, [])
+
   const selectEvent = useCallback((eventId: string) => {
     dispatch(inspectorActions.selectEvent(eventId))
   }, [])
@@ -134,6 +181,114 @@ export function useSessionInspectorController() {
     void loadTimeline(state.selectedSessionId, state.filters)
   }, [loadTimeline, state.filters, state.selectedSessionId])
 
+  const selectKeywordPreset = useCallback(
+    (presetId: string) => {
+      setSelectedKeywordPresetId(presetId)
+      const preset = keywordPresetState.presets.find((item) => item.id === presetId)
+      if (!preset) {
+        return
+      }
+      applyPresetToFilters(preset)
+    },
+    [applyPresetToFilters, keywordPresetState.presets],
+  )
+
+  const createKeywordPreset = useCallback(
+    async (name: string) => {
+      const trimmedName = name.trim()
+      if (!trimmedName) {
+        throw new Error('预设名称不能为空')
+      }
+      const presetId = `preset-${Date.now().toString(36)}`
+      const nextPreset: KeywordPreset = {
+        id: presetId,
+        name: trimmedName,
+        include_keywords: state.filters.q
+          .split(/[\n,，;；]/g)
+          .map((item) => item.trim())
+          .filter(Boolean),
+        exclude_keywords: state.filters.qNot
+          .split(/[\n,，;；]/g)
+          .map((item) => item.trim())
+          .filter(Boolean),
+        updated_at: new Date().toISOString(),
+      }
+      const nextPayload: KeywordPresetsResponse = {
+        version: 1,
+        default_preset_id: presetId,
+        presets: [...keywordPresetState.presets, nextPreset],
+      }
+      const saved = await saveKeywordPresets(nextPayload)
+      setKeywordPresetState(saved)
+      setSelectedKeywordPresetId(presetId)
+    },
+    [keywordPresetState.presets, state.filters.q, state.filters.qNot],
+  )
+
+  const updateSelectedKeywordPreset = useCallback(async () => {
+    const selectedId = selectedKeywordPresetId
+    if (!selectedId) {
+      throw new Error('请先选择一个预设')
+    }
+    const current = keywordPresetState.presets.find((preset) => preset.id === selectedId)
+    if (!current) {
+      throw new Error('预设不存在')
+    }
+    const nextPreset: KeywordPreset = {
+      ...current,
+      include_keywords: state.filters.q
+        .split(/[\n,，;；]/g)
+        .map((item) => item.trim())
+        .filter(Boolean),
+      exclude_keywords: state.filters.qNot
+        .split(/[\n,，;；]/g)
+        .map((item) => item.trim())
+        .filter(Boolean),
+      updated_at: new Date().toISOString(),
+    }
+    const nextPayload: KeywordPresetsResponse = {
+      version: 1,
+      default_preset_id: keywordPresetState.default_preset_id ?? selectedId,
+      presets: keywordPresetState.presets.map((preset) =>
+        preset.id === selectedId ? nextPreset : preset,
+      ),
+    }
+    const saved = await saveKeywordPresets(nextPayload)
+    setKeywordPresetState(saved)
+  }, [
+    keywordPresetState.default_preset_id,
+    keywordPresetState.presets,
+    selectedKeywordPresetId,
+    state.filters.q,
+    state.filters.qNot,
+  ])
+
+  const deleteSelectedKeywordPreset = useCallback(async () => {
+    const selectedId = selectedKeywordPresetId
+    if (!selectedId) {
+      throw new Error('请先选择一个预设')
+    }
+    const remain = keywordPresetState.presets.filter((preset) => preset.id !== selectedId)
+    const nextDefault = remain.length > 0 ? remain[0].id : null
+    const nextPayload: KeywordPresetsResponse = {
+      version: 1,
+      default_preset_id: nextDefault,
+      presets: remain,
+    }
+    const saved = await saveKeywordPresets(nextPayload)
+    setKeywordPresetState(saved)
+    if (nextDefault) {
+      setSelectedKeywordPresetId(nextDefault)
+      const nextPreset = saved.presets.find((preset) => preset.id === nextDefault)
+      if (nextPreset) {
+        applyPresetToFilters(nextPreset)
+      }
+    } else {
+      setSelectedKeywordPresetId('')
+      setFilters({ q: '', qNot: '' })
+    }
+  }, [applyPresetToFilters, keywordPresetState.presets, selectedKeywordPresetId, setFilters])
+
   return {
     state,
     parsedTimeline,
@@ -145,9 +300,16 @@ export function useSessionInspectorController() {
       setSessionQuery,
       selectSession,
       setFilter,
+      setFilters,
       selectEvent,
       refreshSessions,
       refreshTimeline,
+      selectKeywordPreset,
+      createKeywordPreset,
+      updateSelectedKeywordPreset,
+      deleteSelectedKeywordPreset,
     },
+    keywordPresets: keywordPresetState.presets,
+    selectedKeywordPresetId,
   }
 }

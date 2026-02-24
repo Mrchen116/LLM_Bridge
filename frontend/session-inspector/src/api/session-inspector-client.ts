@@ -1,4 +1,9 @@
-import type { LogFileContentResponse, SessionsResponse, TimelineResponse } from './contracts'
+import type {
+  KeywordPresetsResponse,
+  LogFileContentResponse,
+  SessionsResponse,
+  TimelineResponse,
+} from './contracts'
 import type { TimelineFilters } from '../state/types'
 
 const API_BASE = '/api/session-inspector'
@@ -8,6 +13,24 @@ async function requestJson<T>(url: string): Promise<T> {
     headers: {
       Accept: 'application/json',
     },
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || `HTTP ${response.status}`)
+  }
+
+  return (await response.json()) as T
+}
+
+async function requestJsonWithBody<T>(url: string, method: 'PUT', body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method,
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
   })
 
   if (!response.ok) {
@@ -48,6 +71,9 @@ export async function fetchTimeline(
   if (filters.q) {
     params.set('q', filters.q)
   }
+  if (filters.qNot) {
+    params.set('q_not', filters.qNot)
+  }
 
   return requestJson<TimelineResponse>(
     `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/timeline?${params.toString()}`,
@@ -58,4 +84,12 @@ export async function fetchLogFileContent(path: string): Promise<LogFileContentR
   const params = new URLSearchParams()
   params.set('path', path)
   return requestJson<LogFileContentResponse>(`${API_BASE}/log-file?${params.toString()}`)
+}
+
+export async function fetchKeywordPresets(): Promise<KeywordPresetsResponse> {
+  return requestJson<KeywordPresetsResponse>(`${API_BASE}/keyword-presets`)
+}
+
+export async function saveKeywordPresets(payload: KeywordPresetsResponse): Promise<KeywordPresetsResponse> {
+  return requestJsonWithBody<KeywordPresetsResponse>(`${API_BASE}/keyword-presets`, 'PUT', payload)
 }

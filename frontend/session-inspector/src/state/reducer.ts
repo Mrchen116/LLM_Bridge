@@ -71,6 +71,15 @@ export function inspectorReducer(
         },
         selectedEventId: '',
       }
+    case 'SET_FILTERS':
+      return {
+        ...state,
+        filters: {
+          ...state.filters,
+          ...action.payload,
+        },
+        selectedEventId: '',
+      }
     case 'SELECT_EVENT':
       return {
         ...state,

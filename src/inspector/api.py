@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
+from src.inspector.keyword_presets import load_keyword_presets, save_keyword_presets
 from src.inspector.service import get_timeline, list_sessions
 
 
@@ -84,6 +85,7 @@ async def session_inspector_timeline(
     agent: Optional[str] = Query(default=None),
     tool: Optional[str] = Query(default=None),
     q: Optional[str] = Query(default=None),
+    q_not: Optional[str] = Query(default=None),
     summary_chars: int = Query(default=120, ge=40, le=400),
 ):
     _require_enabled()
@@ -94,6 +96,7 @@ async def session_inspector_timeline(
         agent=agent,
         tool=tool,
         q=q,
+        q_not=q_not,
         summary_chars=summary_chars,
     )
     if not payload:
@@ -113,3 +116,15 @@ async def session_inspector_log_file(path: str = Query(...)):
         "size_bytes": log_path.stat().st_size,
         "truncated": False,
     }
+
+
+@ROUTER.get("/api/session-inspector/keyword-presets")
+async def session_inspector_keyword_presets():
+    _require_enabled()
+    return load_keyword_presets()
+
+
+@ROUTER.put("/api/session-inspector/keyword-presets")
+async def session_inspector_keyword_presets_update(payload: dict):
+    _require_enabled()
+    return save_keyword_presets(payload)

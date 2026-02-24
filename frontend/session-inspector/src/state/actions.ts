@@ -13,6 +13,7 @@ export type InspectorAction =
   | { type: 'TIMELINE_LOADED'; payload: TimelineResponse }
   | { type: 'TIMELINE_FAILED'; payload: string }
   | { type: 'SET_FILTER'; payload: { key: FilterKey; value: TimelineFilters[FilterKey] } }
+  | { type: 'SET_FILTERS'; payload: Partial<TimelineFilters> }
   | { type: 'SELECT_EVENT'; payload: string }
 
 export const inspectorActions = {
@@ -45,6 +46,10 @@ export const inspectorActions = {
   setFilter: <K extends FilterKey>(key: K, value: TimelineFilters[K]): InspectorAction => ({
     type: 'SET_FILTER',
     payload: { key, value },
+  }),
+  setFilters: (filters: Partial<TimelineFilters>): InspectorAction => ({
+    type: 'SET_FILTERS',
+    payload: filters,
   }),
   selectEvent: (eventId: string): InspectorAction => ({
     type: 'SELECT_EVENT',

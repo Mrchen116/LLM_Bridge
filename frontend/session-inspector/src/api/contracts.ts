@@ -64,6 +64,20 @@ export interface TimelineResponse {
   }
 }
 
+export interface KeywordPreset {
+  id: string
+  name: string
+  include_keywords: string[]
+  exclude_keywords: string[]
+  updated_at: string
+}
+
+export interface KeywordPresetsResponse {
+  version: number
+  default_preset_id: string | null
+  presets: KeywordPreset[]
+}
+
 export interface LogFileContentResponse {
   path: string
   content: string

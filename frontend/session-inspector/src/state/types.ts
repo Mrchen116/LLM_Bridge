@@ -4,6 +4,7 @@ export interface TimelineFilters {
   agent: string
   tool: string
   q: string
+  qNot: string
   includeNonTool: boolean
 }
 
@@ -29,6 +30,7 @@ export const defaultFilters: TimelineFilters = {
   agent: '',
   tool: '',
   q: '',
+  qNot: '',
   includeNonTool: true,
 }
 

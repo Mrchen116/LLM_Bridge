@@ -298,18 +298,46 @@ def _build_turn_records(
     return records, warnings
 
 
-def _matches_event_query(event: Dict[str, Any], q: str) -> bool:
-    if not q:
-        return True
-    needle = q.lower()
+def _parse_keyword_list(raw: Optional[str]) -> List[str]:
+    text = (raw or "").strip()
+    if not text:
+        return []
+    separators = [",", "，", "\n", ";", "；"]
+    for sep in separators:
+        text = text.replace(sep, "\n")
+    out: List[str] = []
+    seen = set()
+    for part in text.split("\n"):
+        token = part.strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _event_matches_any_keyword(event: Dict[str, Any], keywords: List[str]) -> bool:
+    if not keywords:
+        return False
     hay_summary = str(event.get("summary") or "").lower()
-    if needle in hay_summary:
-        return True
     try:
         hay_detail = json.dumps(event.get("detail"), ensure_ascii=False).lower()
     except Exception:
         hay_detail = str(event.get("detail") or "").lower()
-    return needle in hay_detail
+    return any((kw in hay_summary) or (kw in hay_detail) for kw in keywords)
+
+
+def _turn_passes_keyword_filter(
+    *,
+    turn_events: List[Dict[str, Any]],
+    include_keywords: List[str],
+    exclude_keywords: List[str],
+) -> bool:
+    if any(_event_matches_any_keyword(event, exclude_keywords) for event in turn_events):
+        return False
+    if not include_keywords:
+        return True
+    return any(_event_matches_any_keyword(event, include_keywords) for event in turn_events)
 
 
 def get_timeline(
@@ -320,6 +348,7 @@ def get_timeline(
     agent: Optional[str],
     tool: Optional[str],
     q: Optional[str],
+    q_not: Optional[str],
     summary_chars: int,
 ) -> Optional[Dict[str, Any]]:
     session_dir = _resolve_session_dir(logs_session_dir, session_id)
@@ -369,11 +398,28 @@ def get_timeline(
     events_filtered: List[Dict[str, Any]] = []
     agent_filter = (agent or "").strip().lower()
     tool_filter = (tool or "").strip()
-    query = (q or "").strip()
+    include_keywords = _parse_keyword_list(q)
+    exclude_keywords = _parse_keyword_list(q_not)
 
     lane_id_to_label = {rec.lane.lane_id: rec.lane.label for rec in records}
+    turn_events_map: Dict[str, List[Dict[str, Any]]] = {}
+    for ev in raw_events:
+        turn_events_map.setdefault(str(ev.get("turn_ts") or ""), []).append(ev)
+    turns_selected = {
+        turn_ts
+        for turn_ts, turn_events in turn_events_map.items()
+        if _turn_passes_keyword_filter(
+            turn_events=turn_events,
+            include_keywords=include_keywords,
+            exclude_keywords=exclude_keywords,
+        )
+    }
 
     for ev in raw_events:
+        turn_ts = str(ev.get("turn_ts") or "")
+        if turn_ts not in turns_selected:
+            continue
+
         if not include_non_tool and ev.get("kind") != "tool_call":
             continue
 
@@ -387,9 +433,6 @@ def get_timeline(
             if str(ev.get("tool_name") or "") != tool_filter:
                 continue
         elif tool_filter and ev.get("kind") != "tool_call":
-            continue
-
-        if query and not _matches_event_query(ev, query):
             continue
 
         events_filtered.append(ev)

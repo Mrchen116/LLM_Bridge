@@ -9,7 +9,15 @@ function buildTimelineSubtitle(totalEvents: number, laneCount: number): string {
 }
 
 export default function App() {
-  const { state, timelineGrid, filterOptions, selectedEvent, actions } = useSessionInspectorController()
+  const {
+    state,
+    timelineGrid,
+    filterOptions,
+    selectedEvent,
+    actions,
+    keywordPresets,
+    selectedKeywordPresetId,
+  } = useSessionInspectorController()
   const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false)
 
   const timelineTitle = state.selectedSessionId || '请选择 Session'
@@ -41,6 +49,8 @@ export default function App() {
         filters={state.filters}
         laneOptions={filterOptions.laneOptions}
         toolOptions={filterOptions.toolOptions}
+        keywordPresets={keywordPresets}
+        selectedKeywordPresetId={selectedKeywordPresetId}
         grid={timelineGrid}
         selectedEventId={state.selectedEventId}
         onRefresh={actions.refreshTimeline}
@@ -48,8 +58,13 @@ export default function App() {
           agent: (value) => actions.setFilter('agent', value),
           tool: (value) => actions.setFilter('tool', value),
           q: (value) => actions.setFilter('q', value),
+          qNot: (value) => actions.setFilter('qNot', value),
           includeNonTool: (value) => actions.setFilter('includeNonTool', value),
         }}
+        onSelectKeywordPreset={actions.selectKeywordPreset}
+        onCreateKeywordPreset={actions.createKeywordPreset}
+        onUpdateKeywordPreset={actions.updateSelectedKeywordPreset}
+        onDeleteKeywordPreset={actions.deleteSelectedKeywordPreset}
         onSelectEvent={actions.selectEvent}
       />
 
