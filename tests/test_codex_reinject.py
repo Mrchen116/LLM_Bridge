@@ -11,7 +11,7 @@ def test_messages_codex_oauth_should_reinject_encrypted_content_when_context_exa
     FakeAsyncClient.stream_response = FakeStreamResponse(
         status_code=200,
         lines=[
-            'data: {"type":"response.completed","response":{"id":"resp_turn_1","output":[{"type":"reasoning","encrypted_content":"enc_turn_1"},{"type":"message","content":[{"type":"output_text","text":"A1"}]}],"usage":{"input_tokens":5,"output_tokens":3}}}',
+            'data: {"type":"response.completed","response":{"id":"resp_turn_1","output":[{"type":"reasoning","encrypted_content":"enc_turn_1","summary":[{"type":"summary_text","text":"S1"}]},{"type":"message","content":[{"type":"output_text","text":"A1"}]}],"usage":{"input_tokens":5,"output_tokens":3}}}',
             "data: [DONE]",
         ],
     )
@@ -100,6 +100,9 @@ def test_messages_codex_oauth_should_reinject_encrypted_content_when_context_exa
     assert (
         idx_user_q1 != -1 and idx_assistant_a1 != -1 and idx_user_q2 != -1
     ), "测试前提错误：未找到 Q1/A1/Q2 对应输入项"
+    assert input_items[idx_reasoning].get("summary") == [{"type": "summary_text", "text": "S1"}], (
+        "回填 reasoning item 时应保留上游返回的 summary 字段"
+    )
     assert idx_user_q1 < idx_reasoning < idx_assistant_a1 < idx_user_q2, (
         "回填顺序必须为：第一轮 user -> encrypted reasoning -> 第一轮 assistant -> 下一轮 user"
     )

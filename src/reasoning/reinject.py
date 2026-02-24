@@ -99,7 +99,14 @@ def _extract_codex_reasoning_encrypted_items(resp_json: Dict[str, Any]) -> List[
             continue
         enc = item.get("encrypted_content")
         if isinstance(enc, str) and enc:
-            entry: Dict[str, Any] = {"type": "reasoning", "encrypted_content": enc}
+            summary = item.get("summary")
+            if not isinstance(summary, list):
+                summary = []
+            entry: Dict[str, Any] = {
+                "type": "reasoning",
+                "encrypted_content": enc,
+                "summary": copy.deepcopy(summary),
+            }
             rid = item.get("id")
             if isinstance(rid, str) and rid:
                 entry["id"] = rid
