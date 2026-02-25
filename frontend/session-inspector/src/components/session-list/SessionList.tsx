@@ -13,6 +13,16 @@ interface SessionListProps {
   onToggleCollapse: () => void
 }
 
+function formatSessionStartTag(startTs: string): string {
+  const normalized = (startTs || '').trim()
+  const matched = normalized.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/)
+  if (!matched) {
+    return normalized
+  }
+  const [, _year, month, day, hour, minute, second] = matched
+  return `${month}-${day}_${hour}-${minute}-${second}`
+}
+
 export function SessionList({
   query,
   sessions,
@@ -92,7 +102,8 @@ export function SessionList({
           >
             <div className="session-id">{session.session_id}</div>
             <div className="session-meta">
-              {session.turn_count} turns · {session.formats.join(', ') || 'unknown'}
+              {session.turn_count} turns · {session.formats.join(', ') || 'unknown'} ·{' '}
+              {formatSessionStartTag(session.start_ts)}
             </div>
           </button>
         ))}

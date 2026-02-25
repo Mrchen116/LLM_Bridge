@@ -62,16 +62,16 @@ select {
 }
 
 .app-shell {
-  --left-panel-width: 280px;
-  --right-panel-width: 360px;
-  --app-gap: var(--space-3);
+  --left-panel-width: 248px;
+  --right-panel-width: 320px;
+  --app-gap: var(--space-1);
   display: grid;
   grid-template-columns: var(--left-panel-width) minmax(0, 1fr) var(--right-panel-width);
   gap: var(--app-gap);
   height: 100%;
-  max-width: 1840px;
-  margin: 0 auto;
-  padding: var(--space-4);
+  max-width: none;
+  margin: 0;
+  padding: var(--space-1);
   overflow: hidden;
 }
 
@@ -854,10 +854,10 @@ select {
 
 @media (max-width: 1180px) {
   .app-shell {
-    --left-panel-width: 250px;
-    --app-gap: var(--space-2);
+    --left-panel-width: 224px;
+    --app-gap: 6px;
     grid-template-columns: var(--left-panel-width) minmax(0, 1fr);
-    padding: var(--space-3);
+    padding: 6px;
   }
 
   .app-shell.side-panel-collapsed {
@@ -880,8 +880,8 @@ select {
     height: auto;
     min-height: 100%;
     grid-template-columns: 1fr;
-    gap: var(--space-2);
-    padding: var(--space-2);
+    gap: 6px;
+    padding: 6px;
   }
 
   .panel {
