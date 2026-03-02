@@ -284,10 +284,20 @@ async def run_chat_completions_flow(
                     codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
                     _update_codex_reasoning_reinject_cache(codex_reinject_trace, codex_json)
                     converted = codex_response_to_openai_chat_completion(codex_json, model)
-                    content_text = (
-                        converted.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    message_obj = (
+                        converted.get("choices", [{}])[0].get("message", {})
                         if isinstance(converted.get("choices"), list)
+                        else {}
+                    )
+                    content_text = (
+                        message_obj.get("content", "")
+                        if isinstance(message_obj, dict)
                         else ""
+                    )
+                    tool_calls = (
+                        message_obj.get("tool_calls", [])
+                        if isinstance(message_obj, dict) and isinstance(message_obj.get("tool_calls"), list)
+                        else []
                     )
                     chunk_id = str(converted.get("id") or f"chatcmpl-{uuid.uuid4().hex}")
                     created_ts = int(time.time())
@@ -301,12 +311,22 @@ async def run_chat_completions_flow(
                         }
                         yield emit_bytes(f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
 
+                    if tool_calls:
+                        tool_chunk = {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_ts,
+                            "model": model,
+                            "choices": [{"index": 0, "delta": {"tool_calls": tool_calls}, "finish_reason": None}],
+                        }
+                        yield emit_bytes(f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
+
                     last_chunk = {
                         "id": chunk_id,
                         "object": "chat.completion.chunk",
                         "created": created_ts,
                         "model": model,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if tool_calls else "stop"}],
                         "usage": converted.get("usage"),
                     }
                     yield emit_bytes(f"data: {json.dumps(last_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))

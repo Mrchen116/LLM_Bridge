@@ -574,6 +574,7 @@ def _extract_codex_output_text(resp_json: Dict[str, Any]) -> str:
 
 def _codex_responses_to_chat_completion(resp_json: Dict[str, Any], model: str) -> Dict[str, Any]:
     text = _extract_codex_output_text(resp_json)
+    tool_uses = _extract_codex_output_tool_uses(resp_json)
     # 关键兼容点 3（当前行为说明）：
     # chat/completions 的标准返回结构没有 reasoning item 的一等字段。
     # 因此这里仅抽取可见文本与 usage，responses output 里的 encrypted_content
@@ -583,12 +584,27 @@ def _codex_responses_to_chat_completion(resp_json: Dict[str, Any], model: str) -
     completion_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
     total_tokens = prompt_tokens + completion_tokens
 
+    message: Dict[str, Any] = {"role": "assistant", "content": text}
+    if tool_uses:
+        message["tool_calls"] = [
+            {
+                "id": tu["id"],
+                "type": "function",
+                "function": {
+                    "name": tu["name"],
+                    "arguments": json.dumps(tu.get("input") or {}, ensure_ascii=False),
+                },
+            }
+            for tu in tool_uses
+        ]
+    finish_reason = "tool_calls" if tool_uses else "stop"
+
     return {
         "id": str(resp_json.get("id") or f"chatcmpl-{uuid.uuid4().hex}"),
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,

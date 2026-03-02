@@ -127,6 +127,60 @@ def test_chat_completions_codex_oauth_mapping_matches_opencode_style(client: Tes
     assert "reasoning.encrypted_content" in up["include"]
 
 
+def test_chat_completions_codex_oauth_non_stream_maps_function_call_to_tool_calls(client: TestClient):
+    """测试 codex responses 的 function_call 会映射为 chat 的 tool_calls。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            (
+                'data: {"type":"response.completed","response":{"id":"resp_fc_1","output":['
+                '{"type":"function_call","call_id":"call_1","name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}'
+                '],"usage":{"input_tokens":6,"output_tokens":1}}}'
+            ),
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "列出当前目录"}],
+        "stream": False,
+    }
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    obj = resp.json()
+    assert obj["choices"][0]["finish_reason"] == "tool_calls"
+    assert obj["choices"][0]["message"]["role"] == "assistant"
+    assert obj["choices"][0]["message"]["tool_calls"][0]["id"] == "call_1"
+    assert obj["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "bash"
+    assert obj["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] == '{"command": "ls"}'
+
+
+def test_chat_completions_codex_oauth_stream_emits_tool_calls_chunks(client: TestClient):
+    """测试 codex_oauth 流式桥接可返回 tool_calls 并以 tool_calls 结束。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            (
+                'data: {"type":"response.completed","response":{"id":"resp_fc_stream_1","output":['
+                '{"type":"function_call","call_id":"call_1","name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}'
+                '],"usage":{"input_tokens":6,"output_tokens":1}}}'
+            ),
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "列出当前目录"}],
+        "stream": True,
+    }
+    with client.stream("POST", "/v1/chat/completions", json=payload) as resp:
+        data = "".join(resp.iter_text())
+    assert resp.status_code == 200
+    assert '"tool_calls"' in data
+    assert '"finish_reason": "tool_calls"' in data
+    assert "data: [DONE]" in data
+
+
 def test_chat_completions_codex_oauth_reasoning_effort_and_include_merge(client: TestClient):
     """测试 reasoning_effort 映射及 include 字段并集合并。"""
     FakeAsyncClient.stream_response = FakeStreamResponse(
