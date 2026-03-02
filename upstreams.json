@@ -1,5 +1,5 @@
 {
-    "defaultProfile": "moonshotAnthropic",
+    "defaultProfile": "codexOAuth",
     "profiles": {
       "moonshotAnthropic": {
         "provider": "anthropic",
