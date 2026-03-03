@@ -87,6 +87,84 @@ def _parse_tool_arguments(raw_args: Any) -> Any:
     return raw_args
 
 
+def _extract_text_from_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            p_type = str(part.get("type") or "")
+            if p_type in {"text", "input_text", "output_text"}:
+                parts.append(str(part.get("text") or ""))
+                continue
+            if part.get("text") is not None:
+                parts.append(str(part.get("text") or ""))
+                continue
+            if part.get("content") is not None:
+                nested = _extract_text_from_content(part.get("content"))
+                if nested:
+                    parts.append(nested)
+        return "".join(parts)
+    if isinstance(content, dict):
+        if content.get("text") is not None:
+            return str(content.get("text") or "")
+        if content.get("content") is not None:
+            return _extract_text_from_content(content.get("content"))
+    return ""
+
+
+def _extract_last_request_summary(req_obj: Dict[str, Any], downstream_format: str) -> Optional[Dict[str, Any]]:
+    if downstream_format == "openai_responses":
+        input_items = req_obj.get("input") if isinstance(req_obj.get("input"), list) else []
+        for item in reversed(input_items):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "")
+            if role == "assistant":
+                continue
+            text = _extract_text_from_content(item.get("content"))
+            if not text:
+                continue
+            kind = "tool_result" if role == "tool" else "user_input"
+            return {"kind": kind, "summary": text}
+        return None
+
+    messages = req_obj.get("messages") if isinstance(req_obj.get("messages"), list) else []
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "assistant":
+            continue
+
+        content = msg.get("content")
+        if role == "user" and isinstance(content, list):
+            # anthropic tool_result 常见于 user role；若命中则按工具返回显示。
+            tool_result_texts: List[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if str(part.get("type") or "") != "tool_result":
+                    continue
+                text = _extract_text_from_content(part.get("content"))
+                if text:
+                    tool_result_texts.append(text)
+            if tool_result_texts:
+                return {"kind": "tool_result", "summary": "".join(tool_result_texts)}
+
+        text = _extract_text_from_content(content)
+        if not text:
+            continue
+        kind = "tool_result" if role == "tool" else "user_input"
+        return {"kind": kind, "summary": text}
+    return None
+
+
 def build_request_event(
     *,
     turn_ts: str,
@@ -95,14 +173,20 @@ def build_request_event(
     req_obj: Dict[str, Any],
     summary_chars: int,
 ) -> Optional[Dict[str, Any]]:
-    summary = extract_last_user_summary(req_obj, downstream_format)
+    last_request = _extract_last_request_summary(req_obj, downstream_format)
+    if last_request:
+        kind = str(last_request.get("kind") or "user_input")
+        summary = str(last_request.get("summary") or "")
+    else:
+        kind = "user_input"
+        summary = extract_last_user_summary(req_obj, downstream_format)
     if not summary:
         return None
     return {
         "event_id": f"{turn_ts}:request:0",
         "ts": turn_ts,
         "lane_id": lane_id,
-        "kind": "user_input",
+        "kind": kind,
         "summary": truncate_text(summary, summary_chars),
         "detail": {"summary_text": summary},
         "tool_name": None,

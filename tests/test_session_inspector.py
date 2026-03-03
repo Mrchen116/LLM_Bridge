@@ -363,6 +363,63 @@ def test_session_inspector_request_summary_uses_last_user_payload(client: TestCl
     assert "LAST_USER_TOOL_RESULT_TEXT" in request_events[0]["summary"]
 
 
+def test_session_inspector_request_event_uses_tool_result_when_last_role_is_tool(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-42-00_000_tool-result-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-42-00_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [
+                {"role": "user", "content": "开个subagent，让它给你讲个冷笑话"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "task", "arguments": '{"prompt":"tell joke"}'},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": '{"name":"task","output":{"status":"completed","message":"joke"}}',
+                },
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-42-00_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_tool_result",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "冷笑话：..."},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/tool-result-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    request_events = [ev for ev in payload["events"] if ev["event_id"].endswith(":request:0")]
+    assert request_events
+    assert request_events[0]["kind"] == "tool_result"
+    assert '"name":"task"' in request_events[0]["summary"]
+
+
 def test_session_inspector_keyword_filter_applies_to_whole_turn(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
     session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-50-00_000_turn-filter-session"
