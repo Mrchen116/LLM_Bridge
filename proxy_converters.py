@@ -319,6 +319,109 @@ def _message_content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _tool_part_to_responses_output_part(part: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(part, str):
+        return {"type": "input_text", "text": part} if part else None
+    if not isinstance(part, dict):
+        return None
+
+    p_type = str(part.get("type") or "")
+    if p_type in {"text", "input_text", "output_text"}:
+        text = str(part.get("text") or "")
+        return {"type": "input_text", "text": text} if text else None
+
+    if p_type in {"image_url", "input_image"} or "image_url" in part:
+        image_url = part.get("image_url")
+        if isinstance(image_url, dict):
+            url = str(image_url.get("url") or "")
+        else:
+            url = str(image_url or "")
+        if url:
+            return {"type": "input_image", "image_url": url}
+        return None
+
+    if "text" in part:
+        text = str(part.get("text") or "")
+        return {"type": "input_text", "text": text} if text else None
+
+    return None
+
+
+def _normalize_tool_content_parts(parts: Any) -> List[Dict[str, Any]]:
+    if not isinstance(parts, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in parts:
+        converted = _tool_part_to_responses_output_part(item)
+        if converted is not None:
+            out.append(converted)
+            continue
+        if isinstance(item, dict):
+            fallback = _message_content_to_text(item)
+            if fallback:
+                out.append({"type": "input_text", "text": fallback})
+            continue
+        if item is not None:
+            out.append({"type": "input_text", "text": str(item)})
+    return out
+
+
+def _extract_structured_tool_output(content: Any) -> Optional[List[Dict[str, Any]]]:
+    # 兼容常见形态：
+    # 1) tool.content 直接是 blocks 数组
+    # 2) tool.content 是 {"content":[...]} 或 {"output":{"content":[...]}}
+    if isinstance(content, list):
+        normalized = _normalize_tool_content_parts(content)
+        return normalized if normalized else None
+
+    if isinstance(content, dict):
+        if isinstance(content.get("content"), list):
+            normalized = _normalize_tool_content_parts(content.get("content"))
+            if normalized:
+                return normalized
+        output = content.get("output")
+        if isinstance(output, dict) and isinstance(output.get("content"), list):
+            normalized = _normalize_tool_content_parts(output.get("content"))
+            if normalized:
+                return normalized
+        if isinstance(output, list):
+            normalized = _normalize_tool_content_parts(output)
+            if normalized:
+                return normalized
+        single = _tool_part_to_responses_output_part(content)
+        if single is not None:
+            return [single]
+        return None
+
+    return None
+
+
+def _tool_content_to_function_output(content: Any) -> Any:
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        stripped = content.strip()
+        if stripped and stripped[0] in "[{":
+            try:
+                decoded = json.loads(stripped)
+                structured = _extract_structured_tool_output(decoded)
+                if structured is not None:
+                    return structured
+            except Exception:
+                pass
+        return content
+
+    structured = _extract_structured_tool_output(content)
+    if structured is not None:
+        return structured
+
+    if isinstance(content, (dict, list)):
+        return json.dumps(content, ensure_ascii=False)
+
+    return str(content)
+
+
 def _chat_tool_choice_to_responses(tool_choice: Any) -> Any:
     if isinstance(tool_choice, str):
         if tool_choice in {"auto", "none", "required"}:
@@ -467,9 +570,9 @@ def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -
 
         if role == "tool":
             call_id = str(m.get("tool_call_id") or "")
-            text = _message_content_to_text(content)
+            output = _tool_content_to_function_output(content)
             if call_id:
-                input_items.append({"type": "function_call_output", "call_id": call_id, "output": text})
+                input_items.append({"type": "function_call_output", "call_id": call_id, "output": output})
             continue
 
     instructions = str(
