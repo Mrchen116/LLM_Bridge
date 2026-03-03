@@ -31,6 +31,15 @@ describe('event-display', () => {
     expect(extractEventMainText(event)).toBe('line1\nline2')
   })
 
+  it('extracts tool_result text from summary_text field', () => {
+    const event = buildEvent({
+      kind: 'tool_result',
+      summary: '{"name":"task"}...',
+      detail: { summary_text: '{"name":"task","output":{"message":"full text"}}' },
+    })
+    expect(extractEventMainText(event)).toBe('{"name":"task","output":{"message":"full text"}}')
+  })
+
   it('extracts assistant text payload from detail.content', () => {
     const event = buildEvent({
       kind: 'assistant_text',

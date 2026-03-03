@@ -139,7 +139,7 @@ export function normalizeReadableText(value: string): string {
 export function extractEventMainText(event: Pick<TimelineEvent, 'kind' | 'summary' | 'detail'>): string {
   const detail = event.detail
 
-  if (event.kind === 'user_input' && isObjectRecord(detail)) {
+  if ((event.kind === 'user_input' || event.kind === 'tool_result') && isObjectRecord(detail)) {
     const summaryText = detail.summary_text
     if (typeof summaryText === 'string') {
       return normalizeReadableText(summaryText)
