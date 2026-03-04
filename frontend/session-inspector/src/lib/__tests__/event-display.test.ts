@@ -5,6 +5,7 @@ import {
   formatCodeValue,
   formatToolArgsHint,
   formatToolArgsPreview,
+  normalizeEscapedText,
 } from '../event-display'
 
 function buildEvent(partial: Partial<TimelineEvent>): TimelineEvent {
@@ -83,5 +84,29 @@ describe('event-display', () => {
     expect(text).toContain('first line')
     expect(text).toContain('second line')
     expect(text).toContain('\n')
+  })
+
+  it('decodes unicode escape sequences for readable display', () => {
+    expect(normalizeEscapedText('hello: \\u4f60\\u597d')).toBe('hello: 你好')
+  })
+
+  it('decodes double-escaped unicode escape sequences (JSON-within-JSON)', () => {
+    expect(normalizeEscapedText('hello: \\\\u4f60\\\\u597d')).toBe('hello: 你好')
+  })
+
+  it('decodes surrogate pairs when present', () => {
+    expect(normalizeEscapedText('icon=\\uD83D\\uDE00')).toBe('icon=😀')
+  })
+
+  it('decodes double-escaped surrogate pairs when present', () => {
+    expect(normalizeEscapedText('icon=\\\\uD83D\\\\uDE00')).toBe('icon=😀')
+  })
+
+  it('preserves control unicode escapes instead of emitting control characters', () => {
+    expect(normalizeEscapedText('control=\\u0002')).toBe('control=\\u0002')
+  })
+
+  it('renders double-escaped newline without leaving a stray backslash', () => {
+    expect(normalizeEscapedText('a\\\\nb')).toBe('a\nb')
   })
 })
