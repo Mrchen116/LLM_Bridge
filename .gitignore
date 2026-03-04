@@ -4,3 +4,4 @@ __pycache__/
 .codex_oauth.json
 logs/
 logs_*/
+.playwright-cli/
