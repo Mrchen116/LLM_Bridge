@@ -250,6 +250,142 @@ def test_chat_completions_codex_oauth_stream_bridge(client: TestClient):
     assert "data: [DONE]" in data
 
 
+def test_chat_completions_codex_oauth_reinjects_encrypted_reasoning_for_trailing_tool_output(client: TestClient):
+    """测试 tool output 续轮时也应回填上一轮 encrypted reasoning。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            (
+                'data: {"type":"response.completed","response":{"id":"resp_tool_1","output":['
+                '{"type":"reasoning","encrypted_content":"enc_tool_1","summary":[]},'
+                '{"type":"function_call","call_id":"call_1","name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}'
+                '],"usage":{"input_tokens":6,"output_tokens":1}}}'
+            ),
+            "data: [DONE]",
+        ],
+    )
+    first_payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "列出当前目录"}],
+        "stream": False,
+    }
+    resp1 = client.post(
+        "/v1/chat/completions",
+        json=first_payload,
+        headers={"X-Session-Id": "sess_reinject_tool_suffix"},
+    )
+    assert resp1.status_code == 200
+
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_tool_2","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":8,"output_tokens":2}}}',
+            "data: [DONE]",
+        ],
+    )
+    second_payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [
+            {"role": "user", "content": "列出当前目录"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "{\"command\": \"ls\"}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "a\nb\n"},
+        ],
+        "stream": False,
+    }
+    resp2 = client.post(
+        "/v1/chat/completions",
+        json=second_payload,
+        headers={"X-Session-Id": "sess_reinject_tool_suffix"},
+    )
+    assert resp2.status_code == 200
+
+    up2_input = FakeAsyncClient.last_stream_args["json"]["input"]
+    assert any(
+        isinstance(item, dict)
+        and item.get("type") == "reasoning"
+        and item.get("encrypted_content") == "enc_tool_1"
+        for item in up2_input
+    ), "tool output 续轮命中上下文时，应回填上一轮 encrypted_content"
+
+
+def test_chat_completions_codex_oauth_reinjects_encrypted_reasoning_when_tool_args_json_spacing_differs(client: TestClient):
+    """测试 tool args JSON 仅空白差异时，仍应命中回填。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            (
+                'data: {"type":"response.completed","response":{"id":"resp_tool_ws_1","output":['
+                '{"type":"reasoning","encrypted_content":"enc_tool_ws_1","summary":[]},'
+                '{"type":"function_call","call_id":"call_ws_1","name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}'
+                '],"usage":{"input_tokens":6,"output_tokens":1}}}'
+            ),
+            "data: [DONE]",
+        ],
+    )
+    first_payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "列出当前目录"}],
+        "stream": False,
+    }
+    resp1 = client.post(
+        "/v1/chat/completions",
+        json=first_payload,
+        headers={"X-Session-Id": "sess_reinject_tool_args_ws"},
+    )
+    assert resp1.status_code == 200
+
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_tool_ws_2","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":8,"output_tokens":2}}}',
+            "data: [DONE]",
+        ],
+    )
+    second_payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [
+            {"role": "user", "content": "列出当前目录"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ws_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_ws_1", "content": "a\nb\n"},
+        ],
+        "stream": False,
+    }
+    resp2 = client.post(
+        "/v1/chat/completions",
+        json=second_payload,
+        headers={"X-Session-Id": "sess_reinject_tool_args_ws"},
+    )
+    assert resp2.status_code == 200
+
+    up2_input = FakeAsyncClient.last_stream_args["json"]["input"]
+    assert any(
+        isinstance(item, dict)
+        and item.get("type") == "reasoning"
+        and item.get("encrypted_content") == "enc_tool_ws_1"
+        for item in up2_input
+    ), "tool args 的 JSON 空白差异不应导致回填 miss"
+
+
 def test_chat_completions_with_session_writes_raw_and_session_logs(client_with_logs: TestClient):
     """测试 chat/completions 带 session 时同时写 raw(5) 与 session(3) 日志。"""
     upstream_body = {

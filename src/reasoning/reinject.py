@@ -52,7 +52,10 @@ def _split_trailing_user_suffix_oai_messages(
     if not isinstance(messages, list) or not messages:
         return [], []
     idx = len(messages)
-    while idx > 0 and isinstance(messages[idx - 1], dict) and str(messages[idx - 1].get("role") or "") == "user":
+    while idx > 0 and isinstance(messages[idx - 1], dict):
+        role = str(messages[idx - 1].get("role") or "")
+        if role not in {"user", "tool"}:
+            break
         idx -= 1
     return messages[:idx], messages[idx:]
 
@@ -69,15 +72,46 @@ def _split_trailing_user_suffix_responses_input(
     if not isinstance(input_items, list) or not input_items:
         return [], []
     idx = len(input_items)
-    while idx > 0 and isinstance(input_items[idx - 1], dict) and str(input_items[idx - 1].get("role") or "") == "user":
+    while idx > 0 and isinstance(input_items[idx - 1], dict):
+        role = str(input_items[idx - 1].get("role") or "")
+        item_type = str(input_items[idx - 1].get("type") or "")
+        if role not in {"user"} and item_type not in {"function_call_output"}:
+            break
         idx -= 1
     return input_items[:idx], input_items[idx:]
 
 
 def _codex_context_fingerprint(payload: Dict[str, Any]) -> str:
+    normalized_input: List[Any] = []
+    raw_input = payload.get("input")
+    if isinstance(raw_input, list):
+        for item in raw_input:
+            if not isinstance(item, dict):
+                normalized_input.append(item)
+                continue
+            normalized_item: Dict[str, Any] = copy.deepcopy(item)
+            item_type = str(normalized_item.get("type") or "")
+            if item_type in {"function_call", "function_call_output"}:
+                field = "arguments" if item_type == "function_call" else "output"
+                value = normalized_item.get(field)
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if stripped:
+                        try:
+                            parsed = json.loads(stripped)
+                            normalized_item[field] = json.dumps(
+                                parsed,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                        except Exception:
+                            pass
+            normalized_input.append(normalized_item)
+
     key_obj = {
         "instructions": payload.get("instructions"),
-        "input": payload.get("input") or [],
+        "input": normalized_input if normalized_input else (payload.get("input") or []),
         "tools": payload.get("tools"),
         "tool_choice": payload.get("tool_choice"),
         "reasoning": payload.get("reasoning"),
