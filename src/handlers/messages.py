@@ -14,6 +14,8 @@ from src.adapters.upstream_executor import (
     build_headers_by_profile,
     collect_codex_response_from_stream,
     is_rate_limit_status,
+    mark_retryable_response_for_profile,
+    should_trigger_codex_failover,
 )
 from src.bridge.anthropic_openai import (
     anthropic_messages_to_openai_chat_messages,
@@ -55,6 +57,7 @@ from upstream_config import (
     UpstreamCapabilityError,
     UpstreamConfigError,
     build_upstream_url,
+    get_codex_oauth_retry_attempts,
     get_effective_auth_type,
     get_runtime_options,
     resolve_profile,
@@ -367,6 +370,16 @@ async def _handle_openai_bridge_non_stream(
                 max_retries=max_retries,
                 is_retryable=is_rate_limit_status,
                 refresh_headers=lambda: build_headers_by_profile(profile, model),
+                on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
+                    profile=profile,
+                    headers=hdrs,
+                    status_code=status,
+                    error_text=err,
+                ),
+                should_retry_result=lambda result: should_trigger_codex_failover(
+                    int(result.get("status_code") or 0),
+                    str(result.get("error_text") or ""),
+                ),
             )
 
         upstream_obj = {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []}
@@ -502,6 +515,8 @@ async def run_messages_flow(
     auth_type = get_effective_auth_type(profile)
     upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
+    if auth_type == "codex_oauth":
+        max_retries = get_codex_oauth_retry_attempts(profile, max_retries)
     upstream_headers = await build_headers_by_profile(profile, model)
     turn_logs = build_turn_log_paths(
         logs_raw_dir=logs_raw_dir,

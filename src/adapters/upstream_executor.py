@@ -6,14 +6,58 @@ from typing import Any, Dict, List
 
 import httpx
 
-from token_auth import get_codex_upstream_headers, get_x_auth_token
+from token_auth import (
+    get_codex_upstream_headers,
+    get_x_auth_token,
+    mark_codex_account_rate_limited,
+)
 from upstream_config import build_auth_headers, get_effective_auth_type
 
 RATE_LIMIT_STATUS_CODES = {406, 429}
+CODEX_FAILOVER_ERROR_CODES = {
+    "insufficient_quota",
+    "usage_not_included",
+}
 
 
 def is_rate_limit_status(status_code: int) -> bool:
     return status_code in RATE_LIMIT_STATUS_CODES
+
+
+def _extract_error_code_from_text(error_text: str) -> str:
+    text = str(error_text or "").strip()
+    if not text:
+        return ""
+    try:
+        obj = json.loads(text)
+    except Exception:
+        obj = None
+
+    if isinstance(obj, dict):
+        if isinstance(obj.get("code"), str):
+            return str(obj.get("code") or "").strip().lower()
+        err = obj.get("error")
+        if isinstance(err, dict):
+            if isinstance(err.get("code"), str):
+                return str(err.get("code") or "").strip().lower()
+            if isinstance(err.get("type"), str):
+                return str(err.get("type") or "").strip().lower()
+        if isinstance(err, str):
+            return err.strip().lower()
+
+    lowered = text.lower()
+    for code in CODEX_FAILOVER_ERROR_CODES:
+        if code in lowered:
+            return code
+    return ""
+
+
+def should_trigger_codex_failover(status_code: int, error_text: str = "") -> bool:
+    # TODO: 后续根据线上真实 error body 精细化触发条件。
+    if is_rate_limit_status(status_code):
+        return True
+    code = _extract_error_code_from_text(error_text)
+    return code in CODEX_FAILOVER_ERROR_CODES
 
 
 async def build_headers_by_profile(profile: Dict[str, Any], model: str) -> Dict[str, str]:
@@ -24,6 +68,27 @@ async def build_headers_by_profile(profile: Dict[str, Any], model: str) -> Dict[
         token = await get_x_auth_token()
         return build_auth_headers(profile, model, x_auth_token=token)
     return build_auth_headers(profile, model)
+
+
+async def mark_retryable_response_for_profile(
+    *,
+    profile: Dict[str, Any],
+    headers: Dict[str, str],
+    status_code: int,
+    error_text: str = "",
+) -> None:
+    auth_type = get_effective_auth_type(profile)
+    if auth_type != "codex_oauth":
+        return
+    if not should_trigger_codex_failover(status_code, error_text):
+        return
+    normalized_status = status_code if is_rate_limit_status(status_code) else 429
+    await mark_codex_account_rate_limited(
+        headers=headers,
+        status_code=normalized_status,
+        error_text=error_text,
+        profile=profile,
+    )
 
 
 async def collect_codex_response_from_stream(

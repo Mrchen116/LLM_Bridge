@@ -8,10 +8,13 @@ from typing import Any, AsyncIterator, Dict, Optional
 import httpx
 from fastapi.responses import StreamingResponse
 
+from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.upstream_executor import (
     build_headers_by_profile,
     collect_codex_response_from_stream,
     is_rate_limit_status,
+    mark_retryable_response_for_profile,
+    should_trigger_codex_failover,
 )
 from src.bridge.anthropic_openai import openai_chat_finish_reason_to_anthropic_stop_reason
 from src.bridge.openai_codex import (
@@ -99,11 +102,27 @@ def build_openai_bridge_streaming_response(
                     timeout=httpx.Timeout(timeout_seconds),
                     trust_env=trust_env,
                 ) as client:
-                    result = await collect_codex_response_from_stream(
-                        client=client,
-                        upstream_url=upstream_url,
+                    result = await collect_with_retry(
+                        collect_once=lambda hdrs: collect_codex_response_from_stream(
+                            client=client,
+                            upstream_url=upstream_url,
+                            headers=hdrs,
+                            request_body=upstream_payload,
+                        ),
                         headers=upstream_headers,
-                        request_body=upstream_payload,
+                        max_retries=max_retries,
+                        is_retryable=is_rate_limit_status,
+                        refresh_headers=lambda: build_headers_by_profile(profile, model),
+                        on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
+                            profile=profile,
+                            headers=hdrs,
+                            status_code=status,
+                            error_text=err,
+                        ),
+                        should_retry_result=lambda result: should_trigger_codex_failover(
+                            int(result.get("status_code") or 0),
+                            str(result.get("error_text") or ""),
+                        ),
                     )
                     up_chunks.extend(result.get("chunks") or [])
                     if not bool(result.get("ok")):
@@ -195,6 +214,12 @@ def build_openai_bridge_streaming_response(
                             last_retry_err_text = err.decode("utf-8", "ignore")
                             last_retry_status = r.status_code
                             up_chunks.append({"type": "error_body", "text": last_retry_err_text})
+                            await mark_retryable_response_for_profile(
+                                profile=profile,
+                                headers=retry_headers,
+                                status_code=r.status_code,
+                                error_text=last_retry_err_text,
+                            )
                             break
 
                         connection_established = True

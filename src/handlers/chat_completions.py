@@ -17,6 +17,8 @@ from src.adapters.upstream_executor import (
     build_headers_by_profile,
     collect_codex_response_from_stream,
     is_rate_limit_status,
+    mark_retryable_response_for_profile,
+    should_trigger_codex_failover,
 )
 from src.bridge.openai_codex import (
     codex_response_to_openai_chat_completion,
@@ -46,6 +48,7 @@ from upstream_config import (
     UpstreamCapabilityError,
     UpstreamConfigError,
     build_upstream_url,
+    get_codex_oauth_retry_attempts,
     get_effective_auth_type,
     get_runtime_options,
     resolve_profile,
@@ -83,6 +86,8 @@ async def run_chat_completions_flow(
 
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_CHAT)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
+    if auth_type == "codex_oauth":
+        max_retries = get_codex_oauth_retry_attempts(profile, max_retries)
     upstream_headers = await build_headers_by_profile(profile, model)
 
     body["model"] = model
@@ -145,6 +150,16 @@ async def run_chat_completions_flow(
                     max_retries=max_retries,
                     is_retryable=is_rate_limit_status,
                     refresh_headers=lambda: build_headers_by_profile(profile, model),
+                    on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
+                        profile=profile,
+                        headers=hdrs,
+                        status_code=status,
+                        error_text=err,
+                    ),
+                    should_retry_result=lambda result: should_trigger_codex_failover(
+                        int(result.get("status_code") or 0),
+                        str(result.get("error_text") or ""),
+                    ),
                 )
 
             upstream_obj = {"type": "codex_nonstream_bridge_capture", "chunks": result.get("chunks") or []}
@@ -256,11 +271,27 @@ async def run_chat_completions_flow(
                     timeout=httpx.Timeout(timeout_seconds),
                     trust_env=trust_env,
                 ) as client:
-                    result = await collect_codex_response_from_stream(
-                        client=client,
-                        upstream_url=upstream_url,
+                    result = await collect_with_retry(
+                        collect_once=lambda hdrs: collect_codex_response_from_stream(
+                            client=client,
+                            upstream_url=upstream_url,
+                            headers=hdrs,
+                            request_body=upstream_request_body,
+                        ),
                         headers=upstream_headers,
-                        request_body=upstream_request_body,
+                        max_retries=max_retries,
+                        is_retryable=is_rate_limit_status,
+                        refresh_headers=lambda: build_headers_by_profile(profile, model),
+                        on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
+                            profile=profile,
+                            headers=hdrs,
+                            status_code=status,
+                            error_text=err,
+                        ),
+                        should_retry_result=lambda result: should_trigger_codex_failover(
+                            int(result.get("status_code") or 0),
+                            str(result.get("error_text") or ""),
+                        ),
                     )
                     up_chunks.extend(result.get("chunks") or [])
                     if not bool(result.get("ok")):
@@ -360,6 +391,12 @@ async def run_chat_completions_flow(
                             last_retry_err_text = err.decode("utf-8", errors="replace")
                             last_retry_status = r.status_code
                             up_chunks.append({"type": "error_body", "body": last_retry_err_text})
+                            await mark_retryable_response_for_profile(
+                                profile=profile,
+                                headers=retry_headers,
+                                status_code=r.status_code,
+                                error_text=last_retry_err_text,
+                            )
                             logging.warning(
                                 f"{attempt} retryable response (chat/completions stream): {r.status_code} {last_retry_err_text}")
                             if attempt < max_retries - 1:

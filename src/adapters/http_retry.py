@@ -14,6 +14,7 @@ async def post_with_retry(
     max_retries: int,
     is_retryable: Callable[[int], bool],
     refresh_headers: Callable[[], Awaitable[Dict[str, str]]],
+    on_retryable_response: Optional[Callable[[Dict[str, str], int, str], Awaitable[None]]] = None,
     verify: bool,
     timeout_seconds: float,
     trust_env: bool,
@@ -32,6 +33,8 @@ async def post_with_retry(
                 break
             last_retry_response = r
             if attempt < max_retries - 1:
+                if on_retryable_response is not None:
+                    await on_retryable_response(current_headers, r.status_code, r.text or "")
                 await asyncio.sleep(1 * (2 ** attempt))
                 current_headers = await refresh_headers()
 

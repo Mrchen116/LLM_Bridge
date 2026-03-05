@@ -1,14 +1,16 @@
 # start_proxy.py
-import os
 import argparse
 import asyncio
+import os
 import threading
 import webbrowser
+
 from dotenv import load_dotenv
 from token_auth import ensure_codex_login_for_startup
-from upstream_config import load_and_validate_config, UpstreamConfigError, get_effective_auth_type
+from upstream_config import UpstreamConfigError, get_effective_auth_type, load_and_validate_config
 
 load_dotenv(override=True)
+
 
 def _has_codex_oauth_profile(cfg: dict) -> bool:
     profiles = cfg.get("profiles") if isinstance(cfg, dict) else {}

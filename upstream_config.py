@@ -9,6 +9,8 @@ PROTOCOL_OPENAI_RESPONSES = "openai_responses"
 SUPPORTED_PROTOCOLS = {PROTOCOL_ANTHROPIC_MESSAGES, PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES}
 SUPPORTED_PROVIDERS = {"openai_compatible", "anthropic", "codex_oauth"}
 SUPPORTED_AUTH_TYPES = {"internal_hw", "bearer", "anthropic_key", "none", "codex_oauth"}
+DEFAULT_CODEX_POOL_COOLDOWN_SECONDS = 300
+DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST = 2
 
 
 class UpstreamConfigError(Exception):
@@ -118,6 +120,25 @@ def load_and_validate_config(path: Optional[str] = None) -> Dict[str, Any]:
             codex_endpoint = auth.get("codexEndpoint")
             if codex_endpoint is not None and (not isinstance(codex_endpoint, str) or not codex_endpoint.strip()):
                 raise UpstreamConfigError(f"profiles.{name}.auth.codexEndpoint 非法")
+            if auth.get("accessTokenEnv") is not None or auth.get("accountIdEnv") is not None:
+                raise UpstreamConfigError(
+                    f"profiles.{name}.auth.accessTokenEnv/accountIdEnv 已废弃，请改用本地 .codex_oauth.json 账号池"
+                )
+            pool_policy = auth.get("accountPoolPolicy")
+            if pool_policy is not None:
+                pool_policy = _ensure_dict(f"profiles.{name}.auth.accountPoolPolicy", pool_policy)
+                if "cooldownSeconds" in pool_policy:
+                    try:
+                        if int(pool_policy.get("cooldownSeconds")) < 1:
+                            raise ValueError()
+                    except Exception:
+                        raise UpstreamConfigError(f"profiles.{name}.auth.accountPoolPolicy.cooldownSeconds 非法")
+                if "maxFailoverPerRequest" in pool_policy:
+                    try:
+                        if int(pool_policy.get("maxFailoverPerRequest")) < 0:
+                            raise ValueError()
+                    except Exception:
+                        raise UpstreamConfigError(f"profiles.{name}.auth.accountPoolPolicy.maxFailoverPerRequest 非法")
 
         capabilities = _ensure_dict(f"profiles.{name}.capabilities", profile.get("capabilities"))
         ingress = _ensure_list(f"profiles.{name}.capabilities.ingress", capabilities.get("ingress"))
@@ -219,6 +240,21 @@ def get_runtime_options(profile: Dict[str, Any]) -> Tuple[bool, float, int, bool
     return ssl_verify, timeout_seconds, retry_max, trust_env
 
 
+def get_codex_oauth_retry_attempts(profile: Dict[str, Any], configured_retry_max: int) -> int:
+    auth = _ensure_dict("profile.auth", profile.get("auth") or {})
+    pool_policy = auth.get("accountPoolPolicy")
+    if not isinstance(pool_policy, dict):
+        return max(1, min(int(configured_retry_max), DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST + 1))
+
+    max_failover = pool_policy.get("maxFailoverPerRequest")
+    try:
+        failover_count = int(max_failover) if max_failover is not None else DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST
+    except Exception:
+        failover_count = DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST
+    failover_count = max(0, failover_count)
+    return max(1, min(int(configured_retry_max), failover_count + 1))
+
+
 def build_auth_headers(profile: Dict[str, Any], model: str, x_auth_token: str = "") -> Dict[str, str]:
     auth = _ensure_dict("profile.auth", profile.get("auth") or {})
     auth_type = _resolve_auth_type_for_profile("runtime", profile["provider"], auth)
@@ -270,18 +306,7 @@ def build_auth_headers(profile: Dict[str, Any], model: str, x_auth_token: str = 
         return headers
 
     if auth_type == "codex_oauth":
-        access_token_env = str(auth.get("accessTokenEnv") or "CODEX_ACCESS_TOKEN")
-        access_token = os.getenv(access_token_env, "")
-        if not access_token:
-            raise UpstreamConfigError(f"未设置环境变量: {access_token_env}")
-        headers["Authorization"] = f"Bearer {access_token}"
-
-        account_id_env = str(auth.get("accountIdEnv") or "CODEX_ACCOUNT_ID").strip()
-        if account_id_env:
-            account_id = os.getenv(account_id_env, "")
-            if account_id:
-                headers["ChatGPT-Account-Id"] = account_id
-        return headers
+        raise UpstreamConfigError("codex_oauth 不再支持环境变量直传，请走 token_auth 账号池")
 
     raise UpstreamConfigError(f"未知 auth.type: {auth_type}")
 

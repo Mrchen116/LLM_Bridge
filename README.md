@@ -55,11 +55,13 @@ export PROXY_HOST="127.0.0.1"
 export PROXY_PORT="4000"
 ```
 
-如果使用 `codex_oauth` profile，还可配置：
+如果使用 `codex_oauth` profile，请先登录本地账号池（不再支持 `CODEX_ACCESS_TOKEN` / `CODEX_ACCOUNT_ID` 环境变量直传）：
 
 ```bash
-export CODEX_ACCESS_TOKEN="your_codex_access_token"
-export CODEX_ACCOUNT_ID="your_account_id"
+python manage_codex_accounts.py add --label work --method browser
+python manage_codex_accounts.py list
+# 或直接进入交互式向导：
+python manage_codex_accounts.py
 ```
 
 3. 启动服务
