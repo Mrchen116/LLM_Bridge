@@ -89,6 +89,11 @@ python start_proxy.py
 - 页面：`GET /ui/session-inspector`
 - 静态资源：`/ui/session-inspector/assets/*`
 
+界面预览：
+
+![Session Inspector 主界面](docs/images/session-inspector-main-ui.png)
+![Session Inspector 统计界面](docs/images/session-inspector-stats-ui.png)
+
 ### Agent Lane 判定规则（当前实现）
 
 每个 turn 会先被转换到统一上下文（Responses 风格），然后按以下规则聚类 lane：
