@@ -1,4 +1,5 @@
-import type { KeywordPreset } from '../../api/contracts'
+import { useMemo, useState } from 'react'
+import type { KeywordPreset, TimelineResponse } from '../../api/contracts'
 import type { TimelineFilters } from '../../state/types'
 import type { SelectOption, TimelineGrid } from '../../lib/timeline-cluster'
 import { EventCard } from '../event-card/EventCard'
@@ -6,6 +7,7 @@ import { EventCard } from '../event-card/EventCard'
 interface TimelineLanesProps {
   title: string
   subtitle: string
+  stats: TimelineResponse['stats'] | null
   warnings: string[]
   loading: boolean
   error: string
@@ -40,6 +42,7 @@ function buildSwimlaneTemplate(laneCount: number): string {
 export function TimelineLanes({
   title,
   subtitle,
+  stats,
   warnings,
   loading,
   error,
@@ -58,6 +61,45 @@ export function TimelineLanes({
   onDeleteKeywordPreset,
   onSelectEvent,
 }: TimelineLanesProps) {
+  const [statsModalOpen, setStatsModalOpen] = useState(false)
+  const [selectedStatsLaneId, setSelectedStatsLaneId] = useState('')
+
+  const filteredScopeStats = stats?.filtered_scope ?? null
+  const selectedAgentStats = useMemo(() => {
+    if (!filteredScopeStats || filteredScopeStats.agents.length === 0) {
+      return null
+    }
+    if (!selectedStatsLaneId) {
+      return filteredScopeStats.agents[0]
+    }
+    return (
+      filteredScopeStats.agents.find((item) => item.lane_id === selectedStatsLaneId) ??
+      filteredScopeStats.agents[0]
+    )
+  }, [filteredScopeStats, selectedStatsLaneId])
+
+  function formatCount(value: number): string {
+    return value.toLocaleString()
+  }
+
+  function openStatsModal() {
+    if (!filteredScopeStats) {
+      return
+    }
+    if (!selectedStatsLaneId && filteredScopeStats.agents.length > 0) {
+      setSelectedStatsLaneId(filteredScopeStats.agents[0].lane_id)
+    }
+    setStatsModalOpen(true)
+  }
+
+  function openStatsModalForLane(laneId: string) {
+    if (!filteredScopeStats) {
+      return
+    }
+    setSelectedStatsLaneId(laneId)
+    setStatsModalOpen(true)
+  }
+
   async function handleCreatePreset() {
     const name = window.prompt('输入新预设名称')
     if (!name) {
@@ -105,6 +147,26 @@ export function TimelineLanes({
       </header>
 
       <div className="filters">
+        {filteredScopeStats ? (
+          <div className="stats-summary-strip">
+            <div className="stats-chip">
+              Session Tokens: in {formatCount(filteredScopeStats.session_tokens.input_tokens)} / out{' '}
+              {formatCount(filteredScopeStats.session_tokens.output_tokens)}
+            </div>
+            <div className="stats-chip">
+              Turns {formatCount(filteredScopeStats.session_tokens.num_turns)} · Tool Calls{' '}
+              {formatCount(filteredScopeStats.tool_calls.total_calls)}
+            </div>
+            <div className="stats-chip">
+              Agents {formatCount(filteredScopeStats.agents.length)} · Keyword Turns{' '}
+              {formatCount(filteredScopeStats.turn_count_after_keywords)}
+            </div>
+            <button className="btn ghost stats-open-btn" type="button" onClick={openStatsModal}>
+              查看统计
+            </button>
+          </div>
+        ) : null}
+
         <div className="filters-row filters-row-main">
           <select
             className="input"
@@ -202,12 +264,18 @@ export function TimelineLanes({
             >
               <div className="swimlane-time-head">时间</div>
               {grid.laneOrder.map((lane) => (
-                <div className="swimlane-lane-head" key={lane.lane_id}>
+                <button
+                  type="button"
+                  className="swimlane-lane-head lane-head-btn"
+                  key={lane.lane_id}
+                  onClick={() => openStatsModalForLane(lane.lane_id)}
+                  title="点击查看该 Agent 统计"
+                >
                   <span className="lane-label" title={lane.label}>
                     {lane.label}
                   </span>
                   <span className="lane-count">{lane.event_count}</span>
-                </div>
+                </button>
               ))}
             </div>
 
@@ -239,6 +307,144 @@ export function TimelineLanes({
           </div>
         ) : null}
       </section>
+
+      {statsModalOpen && filteredScopeStats ? (
+        <div className="stats-modal-backdrop" onClick={() => setStatsModalOpen(false)}>
+          <div className="stats-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="stats-modal-head">
+              <div>
+                <div className="stats-modal-title">Session 统计</div>
+                <div className="subtle">统计范围：仅关键词过滤后的 turns</div>
+              </div>
+              <button className="btn ghost" type="button" onClick={() => setStatsModalOpen(false)}>
+                关闭
+              </button>
+            </div>
+
+            <div className="stats-kv-grid">
+              <div className="stats-kv-card">
+                <div className="stats-kv-label">Input Tokens</div>
+                <div className="stats-kv-value">
+                  {formatCount(filteredScopeStats.session_tokens.input_tokens)}
+                </div>
+              </div>
+              <div className="stats-kv-card">
+                <div className="stats-kv-label">Output Tokens</div>
+                <div className="stats-kv-value">
+                  {formatCount(filteredScopeStats.session_tokens.output_tokens)}
+                </div>
+              </div>
+              <div className="stats-kv-card">
+                <div className="stats-kv-label">Turns</div>
+                <div className="stats-kv-value">
+                  {formatCount(filteredScopeStats.session_tokens.num_turns)}
+                </div>
+              </div>
+              <div className="stats-kv-card">
+                <div className="stats-kv-label">Tool Calls</div>
+                <div className="stats-kv-value">{formatCount(filteredScopeStats.tool_calls.total_calls)}</div>
+              </div>
+            </div>
+
+            <div className="stats-modal-body">
+              <section className="stats-panel">
+                <div className="stats-panel-title">工具调用分布</div>
+                <div className="stats-table-wrap">
+                  {filteredScopeStats.tool_calls.by_tool.length > 0 ? (
+                    <table className="stats-table">
+                      <thead>
+                        <tr>
+                          <th>Tool</th>
+                          <th>Count</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredScopeStats.tool_calls.by_tool.map((item) => (
+                          <tr key={`session-tool-${item.tool_name}`}>
+                            <td title={item.tool_name}>{item.tool_name}</td>
+                            <td>{formatCount(item.count)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="subtle">当前关键词范围下没有工具调用</div>
+                  )}
+                </div>
+              </section>
+
+              <section className="stats-panel">
+                <div className="stats-panel-title">Agent 统计</div>
+                <div className="stats-agent-layout">
+                  <div className="stats-agent-list">
+                    {filteredScopeStats.agents.map((agentStat) => {
+                      const active =
+                        (selectedAgentStats?.lane_id ?? filteredScopeStats.agents[0].lane_id) ===
+                        agentStat.lane_id
+                      return (
+                        <button
+                          key={`agent-stats-${agentStat.lane_id}`}
+                          type="button"
+                          className={`stats-agent-item ${active ? 'active' : ''}`}
+                          onClick={() => setSelectedStatsLaneId(agentStat.lane_id)}
+                        >
+                          <div className="stats-agent-label" title={agentStat.label}>
+                            {agentStat.label}
+                          </div>
+                          <div className="stats-agent-meta">
+                            turns {formatCount(agentStat.tokens.num_turns)} · tools{' '}
+                            {formatCount(agentStat.tool_calls_total)}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <div className="stats-agent-detail">
+                    {selectedAgentStats ? (
+                      <>
+                        <div className="stats-agent-detail-title" title={selectedAgentStats.label}>
+                          {selectedAgentStats.label}
+                        </div>
+                        <div className="stats-agent-detail-kv">
+                          <div>Input: {formatCount(selectedAgentStats.tokens.input_tokens)}</div>
+                          <div>Output: {formatCount(selectedAgentStats.tokens.output_tokens)}</div>
+                          <div>Turns: {formatCount(selectedAgentStats.tokens.num_turns)}</div>
+                          <div>Tool Calls: {formatCount(selectedAgentStats.tool_calls_total)}</div>
+                        </div>
+                        <div className="stats-table-wrap">
+                          {selectedAgentStats.tool_calls_by_name.length > 0 ? (
+                            <table className="stats-table">
+                              <thead>
+                                <tr>
+                                  <th>Tool</th>
+                                  <th>Count</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {selectedAgentStats.tool_calls_by_name.map((item) => (
+                                  <tr key={`agent-tool-${selectedAgentStats.lane_id}-${item.tool_name}`}>
+                                    <td title={item.tool_name}>{item.tool_name}</td>
+                                    <td>{formatCount(item.count)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          ) : (
+                            <div className="subtle">该 Agent 在关键词范围下没有工具调用</div>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="subtle">当前关键词范围下没有 Agent 统计数据</div>
+                    )}
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   )
 }

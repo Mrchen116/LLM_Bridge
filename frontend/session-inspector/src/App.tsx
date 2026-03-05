@@ -43,6 +43,7 @@ export default function App() {
       <TimelineLanes
         title={timelineTitle}
         subtitle={timelineSubtitle}
+        stats={state.timeline?.stats ?? null}
         warnings={state.timeline?.meta.warnings ?? []}
         loading={state.timelineLoading}
         error={state.timelineError}

@@ -420,6 +420,109 @@ def test_session_inspector_request_event_uses_tool_result_when_last_role_is_tool
     assert '"name":"task"' in request_events[0]["summary"]
 
 
+def test_session_inspector_filtered_scope_stats_follow_keyword_turns(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-43-00_000_stats-scope-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-43-00_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "newtopic: run bash"}],
+            "tools": [{"type": "function", "function": {"name": "Bash", "parameters": {}}}],
+            "tool_choice": "auto",
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-43-00_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_scope_1",
+            "object": "chat.completion",
+            "model": "gpt-5.2-codex",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_scope_1",
+                                "type": "function",
+                                "function": {"name": "Bash", "arguments": '{"cmd":"ls"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14},
+        },
+    )
+
+    _write_json(
+        session_dir / "2026-02-22_12-43-00_002-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "other topic: run read"}],
+            "tools": [{"type": "function", "function": {"name": "Read", "parameters": {}}}],
+            "tool_choice": "auto",
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-43-00_002-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_scope_2",
+            "object": "chat.completion",
+            "model": "gpt-5.2-codex",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_scope_2",
+                                "type": "function",
+                                "function": {"name": "Read", "arguments": '{"path":"README.md"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 4, "total_tokens": 24},
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/stats-scope-session/timeline",
+        params={"include_non_tool": "true", "q": "newtopic"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    filtered_scope = payload["stats"]["filtered_scope"]
+    assert filtered_scope["turn_count_after_keywords"] == 1
+    assert filtered_scope["session_tokens"]["input_tokens"] == 11
+    assert filtered_scope["session_tokens"]["output_tokens"] == 3
+    assert filtered_scope["session_tokens"]["num_turns"] == 1
+
+    assert filtered_scope["tool_calls"]["total_calls"] == 1
+    assert filtered_scope["tool_calls"]["by_tool"] == [{"tool_name": "Bash", "count": 1}]
+
+    assert len(filtered_scope["agents"]) == 1
+    agent_stats = filtered_scope["agents"][0]
+    assert agent_stats["tokens"]["input_tokens"] == 11
+    assert agent_stats["tokens"]["output_tokens"] == 3
+    assert agent_stats["tokens"]["num_turns"] == 1
+    assert agent_stats["tool_calls_total"] == 1
+    assert agent_stats["tool_calls_by_name"] == [{"tool_name": "Bash", "count": 1}]
+
+
 def test_session_inspector_keyword_filter_applies_to_whole_turn(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
     session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-50-00_000_turn-filter-session"

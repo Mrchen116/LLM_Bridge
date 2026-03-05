@@ -57,6 +57,35 @@ export interface TimelineResponse {
     tool_events: number
     non_tool_events: number
     lane_count: number
+    filtered_scope?: {
+      turn_count_after_keywords: number
+      session_tokens: {
+        input_tokens: number
+        output_tokens: number
+        num_turns: number
+      }
+      tool_calls: {
+        total_calls: number
+        by_tool: Array<{
+          tool_name: string
+          count: number
+        }>
+      }
+      agents: Array<{
+        lane_id: string
+        label: string
+        tokens: {
+          input_tokens: number
+          output_tokens: number
+          num_turns: number
+        }
+        tool_calls_total: number
+        tool_calls_by_name: Array<{
+          tool_name: string
+          count: number
+        }>
+      }>
+    }
   }
   meta: {
     warnings: string[]

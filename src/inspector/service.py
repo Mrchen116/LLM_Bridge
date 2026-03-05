@@ -25,6 +25,7 @@ from src.inspector.files import (
 )
 from src.inspector.grouping import AssignedLane, TurnLaneInput, assign_lanes, lane_sort_key
 from src.inspector.types import Lane, SessionSummary, TimelineEvent
+from src.observability.token_stats import collect_usage_tokens_for_stats
 
 
 @dataclass(frozen=True)
@@ -340,6 +341,28 @@ def _turn_passes_keyword_filter(
     return any(_event_matches_any_keyword(event, include_keywords) for event in turn_events)
 
 
+def _new_token_bucket() -> Dict[str, int]:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "num_turns": 0,
+    }
+
+
+def _apply_token_usage(bucket: Dict[str, int], obj: Any, path: str) -> None:
+    bucket["num_turns"] += 1
+    in_tok, out_tok, _fmt = collect_usage_tokens_for_stats(obj, path)
+    bucket["input_tokens"] += in_tok
+    bucket["output_tokens"] += out_tok
+
+
+def _sorted_tool_counts(tool_counts: Dict[str, int]) -> List[Dict[str, Any]]:
+    return [
+        {"tool_name": name, "count": count}
+        for name, count in sorted(tool_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
 def get_timeline(
     *,
     logs_session_dir: str,
@@ -437,6 +460,63 @@ def get_timeline(
 
         events_filtered.append(ev)
 
+    keyword_scope_events = [ev for ev in raw_events if str(ev.get("turn_ts") or "") in turns_selected]
+
+    # Build keyword-scope statistical aggregates.
+    # The token usage selection follows /session/{session_id}/stats style:
+    # prefer *-non-stream-res-* files when present in session, otherwise fallback to *res.json style.
+    has_non_stream_files = any(bool(rec.non_stream_file) for rec in records)
+    session_tokens = _new_token_bucket()
+    agent_token_buckets: Dict[str, Dict[str, int]] = {}
+    for rec in records:
+        if rec.ts not in turns_selected:
+            continue
+
+        token_obj: Optional[Dict[str, Any]]
+        token_path: Optional[str]
+        if has_non_stream_files:
+            token_obj = rec.non_stream_obj
+            token_path = rec.non_stream_file
+        else:
+            token_obj = rec.non_stream_obj if rec.non_stream_file else rec.downstream_obj
+            token_path = rec.non_stream_file or rec.downstream_file
+
+        if not token_path:
+            continue
+
+        payload = token_obj if isinstance(token_obj, dict) else {}
+        _apply_token_usage(session_tokens, payload, token_path)
+
+        lane_bucket = agent_token_buckets.setdefault(rec.lane.lane_id, _new_token_bucket())
+        _apply_token_usage(lane_bucket, payload, token_path)
+
+    session_tool_counts: Dict[str, int] = {}
+    agent_tool_counts: Dict[str, Dict[str, int]] = {}
+    agent_tool_totals: Dict[str, int] = {}
+    for ev in keyword_scope_events:
+        if ev.get("kind") != "tool_call":
+            continue
+        lane_id = str(ev.get("lane_id") or "")
+        tool_name = str(ev.get("tool_name") or "").strip() or "(unknown)"
+
+        session_tool_counts[tool_name] = session_tool_counts.get(tool_name, 0) + 1
+        lane_tool_counts = agent_tool_counts.setdefault(lane_id, {})
+        lane_tool_counts[tool_name] = lane_tool_counts.get(tool_name, 0) + 1
+        agent_tool_totals[lane_id] = agent_tool_totals.get(lane_id, 0) + 1
+
+    agent_ids = set(agent_token_buckets.keys()) | set(agent_tool_totals.keys())
+    filtered_scope_agents: List[Dict[str, Any]] = []
+    for lane_id in sorted(agent_ids, key=lambda x: lane_sort_key(lane_id_to_label.get(x, x))):
+        filtered_scope_agents.append(
+            {
+                "lane_id": lane_id,
+                "label": lane_id_to_label.get(lane_id, lane_id),
+                "tokens": agent_token_buckets.get(lane_id, _new_token_bucket()),
+                "tool_calls_total": agent_tool_totals.get(lane_id, 0),
+                "tool_calls_by_name": _sorted_tool_counts(agent_tool_counts.get(lane_id, {})),
+            }
+        )
+
     events_filtered.sort(key=lambda x: (x.get("ts") or "", int(x.get("_seq") or 0)))
 
     lane_stats: Dict[str, Dict[str, Any]] = {}
@@ -526,6 +606,15 @@ def get_timeline(
             "tool_events": tool_events,
             "non_tool_events": total_events - tool_events,
             "lane_count": len(lanes),
+            "filtered_scope": {
+                "turn_count_after_keywords": len(turns_selected),
+                "session_tokens": session_tokens,
+                "tool_calls": {
+                    "total_calls": sum(session_tool_counts.values()),
+                    "by_tool": _sorted_tool_counts(session_tool_counts),
+                },
+                "agents": filtered_scope_agents,
+            },
         },
         "meta": {
             "warnings": warnings,
