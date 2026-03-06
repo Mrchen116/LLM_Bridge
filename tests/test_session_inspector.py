@@ -420,6 +420,205 @@ def test_session_inspector_request_event_uses_tool_result_when_last_role_is_tool
     assert '"name":"task"' in request_events[0]["summary"]
 
 
+def test_session_inspector_request_event_prefers_latest_function_call_output_for_responses(
+    client: TestClient, monkeypatch
+):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-42-30_000_responses-tool-output-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-42-30_001-req-openai_responses.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "EARLY_USER_QUESTION"}]},
+                {"role": "assistant", "content": [{"type": "output_text", "text": "我先执行命令"}]},
+                {
+                    "type": "function_call",
+                    "call_id": "call_rsp_1",
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"echo hi"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_rsp_1",
+                    "output": "LATEST_FUNCTION_CALL_OUTPUT_TEXT",
+                },
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-42-30_001-non-stream-res-openai_responses.json",
+        {
+            "id": "resp_tool_out_1",
+            "object": "response",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/responses-tool-output-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    request_events = [ev for ev in payload["events"] if ev["event_id"].endswith(":request:0")]
+    assert request_events
+    assert request_events[0]["kind"] == "tool_result"
+    assert "LATEST_FUNCTION_CALL_OUTPUT_TEXT" in request_events[0]["summary"]
+
+
+def test_session_inspector_request_events_include_contiguous_tail_tool_results_openai_chat(
+    client: TestClient, monkeypatch
+):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-42-40_000_multi-tool-tail-chat-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-42-40_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [
+                {"role": "user", "content": "OLDER_USER_TEXT"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_chat_1",
+                            "type": "function",
+                            "function": {"name": "exec_command", "arguments": '{"cmd":"echo 1"}'},
+                        },
+                        {
+                            "id": "call_chat_2",
+                            "type": "function",
+                            "function": {"name": "exec_command", "arguments": '{"cmd":"echo 2"}'},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_chat_1", "content": "CHAT_TOOL_OUTPUT_1"},
+                {"role": "tool", "tool_call_id": "call_chat_2", "content": "CHAT_TOOL_OUTPUT_2"},
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-42-40_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_multi_tool_tail",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/multi-tool-tail-chat-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    request_events = [ev for ev in payload["events"] if ":request:" in ev["event_id"]]
+    assert len(request_events) == 2
+    assert request_events[0]["kind"] == "tool_result"
+    assert "CHAT_TOOL_OUTPUT_1" in request_events[0]["summary"]
+    assert request_events[1]["kind"] == "tool_result"
+    assert "CHAT_TOOL_OUTPUT_2" in request_events[1]["summary"]
+
+
+def test_session_inspector_request_events_include_contiguous_tail_tool_results_openai_responses(
+    client: TestClient, monkeypatch
+):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-42-50_000_multi-tool-tail-responses-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-42-50_001-req-openai_responses.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "OLDER_USER_TEXT"}]},
+                {
+                    "type": "function_call",
+                    "call_id": "call_rsp_1",
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"echo 1"}',
+                },
+                {"type": "function_call_output", "call_id": "call_rsp_1", "output": "RSP_TOOL_OUTPUT_1"},
+                {"type": "function_call_output", "call_id": "call_rsp_2", "output": "RSP_TOOL_OUTPUT_2"},
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-42-50_001-non-stream-res-openai_responses.json",
+        {
+            "id": "resp_multi_tool_tail",
+            "object": "response",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/multi-tool-tail-responses-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    request_events = [ev for ev in payload["events"] if ":request:" in ev["event_id"]]
+    assert len(request_events) == 2
+    assert request_events[0]["kind"] == "tool_result"
+    assert "RSP_TOOL_OUTPUT_1" in request_events[0]["summary"]
+    assert request_events[1]["kind"] == "tool_result"
+    assert "RSP_TOOL_OUTPUT_2" in request_events[1]["summary"]
+
+
+def test_session_inspector_request_event_treats_responses_developer_as_user_input(
+    client: TestClient, monkeypatch
+):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-42-55_000_developer-tail-responses-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-42-55_001-req-openai_responses.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "input": [
+                {"role": "developer", "content": [{"type": "input_text", "text": "DEVELOPER_TAIL_TEXT"}]}
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-42-55_001-non-stream-res-openai_responses.json",
+        {
+            "id": "resp_developer_tail",
+            "object": "response",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/developer-tail-responses-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    request_events = [ev for ev in payload["events"] if ":request:" in ev["event_id"]]
+    assert len(request_events) == 1
+    assert request_events[0]["kind"] == "user_input"
+    assert "DEVELOPER_TAIL_TEXT" in request_events[0]["summary"]
+
+
 def test_session_inspector_filtered_scope_stats_follow_keyword_turns(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
     session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-43-00_000_stats-scope-session"

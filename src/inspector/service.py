@@ -13,7 +13,7 @@ from src.inspector.canonicalize import (
     infer_downstream_format,
 )
 from src.inspector.events import (
-    build_request_event,
+    build_request_events,
     build_response_events,
     extract_tool_definitions,
 )
@@ -391,14 +391,14 @@ def get_timeline(
             "downstream_response": rec.downstream_file,
         }
 
-        req_event = build_request_event(
+        req_events = build_request_events(
             turn_ts=rec.ts,
             lane_id=rec.lane.lane_id,
             downstream_format=rec.downstream_format,
             req_obj=rec.req_obj,
             summary_chars=summary_chars,
         )
-        if req_event is not None:
+        for req_event in req_events:
             req_event["_seq"] = seq
             req_event["source_files"] = source_files
             raw_events.append(req_event)
