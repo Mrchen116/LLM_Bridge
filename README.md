@@ -1,73 +1,77 @@
-# LLM_Bridge：把多上游 LLM、协议转换和 Agent 可观测性收敛到一个入口
+# LLM_Bridge: One Gateway for Multi-Upstream LLMs, Protocol Translation, and Agent Observability
+
 <p align="center">
   <img src="logo.svg" alt="LLM_Bridge Logo" />
 </p>
 
 <p align="center">
+  <a href="README-zh.md">
+    <img src="https://img.shields.io/badge/Docs-%E4%B8%AD%E6%96%87-red?style=for-the-badge" alt="Chinese README" />
+  </a>
   <a href="https://deepwiki.com/Mrchen116/LLM_Bridge">
     <img src="https://img.shields.io/badge/Ask-DeepWiki-blue?style=for-the-badge" alt="Ask DeepWiki" />
   </a>
 </p>
 
-![Session Inspector 主界面](docs/images/session-inspector-main-ui.png)
-![Session Inspector 统计界面](docs/images/session-inspector-stats-ui.png)
+![Session Inspector Main UI](docs/images/session-inspector-main-ui.png)
+![Session Inspector Stats UI](docs/images/session-inspector-stats-ui.png)
 
-面向 Agent / Coding Assistant 场景的多上游 LLM 代理层。它把多个模型提供方、多个 Codex OAuth 订阅账号、三种常见协议入口，以及运行日志与会话观测能力统一到同一个服务里。
+Multi-upstream LLM proxy layer for Agent and Coding Assistant workloads. It consolidates multiple model providers, multiple Codex OAuth subscriptions, three common protocol entrypoints, and session observability into a single FastAPI service.
 
-当前支持的统一入口：
+Supported ingress endpoints:
 
-- Anthropic Messages：`/v1/messages`
-- OpenAI Chat Completions：`/v1/chat/completions`
-- OpenAI Responses：`/v1/responses`
+- Anthropic Messages: `/v1/messages`
+- OpenAI Chat Completions: `/v1/chat/completions`
+- OpenAI Responses: `/v1/responses`
 
-你可以把它理解成一个专门给 Agent 系统准备的 LLM Gateway：
+Think of it as an LLM gateway built specifically for agent systems:
 
-- 对外暴露稳定的单一入口，对内按 `profile:model` 路由到不同上游
-- 把多个 Codex 订阅整理成可切换、可失败转移的账号池
-- 在 `Anthropic Messages`、`OpenAI Chat Completions`、`OpenAI Responses` 三种协议之间做桥接与转换
-- 为多 Agent 运行保留完整轨迹，并提供可视化分析界面
-- 遇到 `406` / `429` 等限流或临时失败时自动重试，尽量避免 Agent 中断
+- Expose one stable endpoint externally while routing internally by `profile:model`
+- Pool multiple Codex subscriptions and fail over between accounts when needed
+- Bridge between `Anthropic Messages`, `OpenAI Chat Completions`, and `OpenAI Responses`
+- Preserve full multi-agent traces and inspect them visually
+- Automatically retry around `406` and `429` responses to reduce agent interruption
 
-## 这个项目适合解决什么问题
+## What Problems It Solves
 
-- 你需要统一管理多个上游 LLM API，而不是把密钥、模型和协议分散写死在各个 Agent 工具里
-- 你有多个 Codex 订阅，希望组成资源池，在限流、过期或单账号不稳定时自动切换
-- 你想让只会说一种协议的客户端，接入另一种协议的模型或内网服务
-- 你需要观察多 Agent 并发执行过程，定位工具调用、上下文漂移、失败点和 token 消耗
-- 你想采集黑箱 Agent 运行轨迹，把请求、响应、工具调用和会话结构沉淀下来，用于 SFT 或 RL 数据准备
+- You want one place to manage multiple upstream LLM APIs instead of hardcoding keys, models, and protocols across several agent tools
+- You have multiple Codex subscriptions and want to turn them into a resource pool with automatic switching on rate limits, expiry, or account instability
+- You want clients that speak one protocol to use models or internal services that expose another
+- You need to inspect multi-agent runs, including tool calls, context drift, failure points, and token usage
+- You want to collect black-box agent trajectories and store requests, responses, tool calls, and session structure for SFT or RL datasets
 
-## 核心优势
+## Why Use It
 
-- 统一多上游管理：一个服务入口统一接入商业模型、内网模型和 Codex OAuth 账号池
-- 三协议互通：支持 `Anthropic Messages`、`OpenAI Chat Completions`、`OpenAI Responses` 相互桥接
-- 兼容主流 Agent：可以用 Codex 订阅去承接 Claude Code 风格请求，也能把只有单一协议的内网部署暴露给不同 Agent 客户端使用
-- 多 Agent 轨迹可视化：内置 Session Inspector，可直接查看 lane 时间线、工具参数、工具定义、摘要事件和原始日志
-- 黑箱轨迹采集：会话日志默认落盘，便于回放、审计、故障分析和训练数据整理
-- 限流韧性：对 `406` / `429` 自动指数退避重试，并支持 Codex OAuth 账号失败转移
-- 保留工程可用性：支持 SSE 流式与非流式透传，便于直接挂在现有 Agent 框架前面
+- Unified upstream management: one gateway for commercial models, internal deployments, and Codex OAuth account pools
+- Protocol interoperability: bridge `Anthropic Messages`, `OpenAI Chat Completions`, and `OpenAI Responses`
+- Agent compatibility: use a Codex subscription behind Claude Code style requests, or expose a single-protocol internal deployment to multiple agent clients
+- Visual trace inspection: built-in Session Inspector for lanes, tool arguments, tool definitions, summary events, and raw logs
+- Black-box trajectory capture: session logs are persisted for replay, auditing, incident analysis, and dataset preparation
+- Rate-limit resilience: exponential backoff for `406` and `429`, plus Codex OAuth account failover
+- Practical integration: supports both SSE streaming and non-stream passthrough so it can sit in front of existing agent stacks
 
-## 功能特性
+## Features
 
-- 按 `profile:model` 动态选择上游与默认模型
-- 支持 Codex OAuth 本地账号池管理与请求级失败转移
-- 支持流式（SSE）与非流式透传
-- 可选屏蔽 Task 工具描述中的 `- Explore:` 行
-- 支持会话日志与统计接口（session logs + token 聚合）
-- 内置 Session Inspector：
-  - 多 agent lane 时间线展示
-  - 工具调用参数与工具定义（name/description/schema）查看
-  - 非工具事件摘要查看
-  - 日志文件原文弹窗查看（支持“渲染换行 / 原始文本”模式切换）
+- Route dynamically by `profile:model`
+- Manage local Codex OAuth account pools with per-request failover
+- Support both SSE streaming and non-stream passthrough
+- Optionally strip `- Explore:` lines from Task tool descriptions
+- Expose session logs and stats APIs, including token aggregation
+- Built-in Session Inspector:
+  - Multi-agent lane timeline view
+  - Tool arguments and tool definition inspection (`name` / `description` / schema)
+  - Summary views for non-tool events
+  - Raw log modal with rendered newline / raw text modes
 
-## 环境要求
+## Requirements
 
 - Python 3.10+
 
-依赖已写入 `requirements.txt`。
+Dependencies are listed in `requirements.txt`.
 
-## 快速开始
+## Quick Start
 
-1. 安装依赖
+1. Install dependencies
 
 ```bash
 python -m venv .venv
@@ -75,7 +79,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2. 配置环境变量（示例）
+2. Configure environment variables
 
 ```bash
 export MOONSHOT_API_KEY="your_key"
@@ -83,105 +87,105 @@ export PROXY_HOST="127.0.0.1"
 export PROXY_PORT="4000"
 ```
 
-如果使用 `codex_oauth` profile，请先登录本地账号池（不再支持 `CODEX_ACCESS_TOKEN` / `CODEX_ACCOUNT_ID` 环境变量直传）：
+If you use a `codex_oauth` profile, log into the local account pool first. Direct `CODEX_ACCESS_TOKEN` / `CODEX_ACCOUNT_ID` environment-variable injection is no longer supported:
 
 ```bash
 python manage_codex_accounts.py add --label work --method browser
 python manage_codex_accounts.py list
-# 或直接进入交互式向导：
+# Or enter the interactive wizard:
 python manage_codex_accounts.py
 ```
 
-3. 启动服务
+3. Start the service
 
 ```bash
 python start_proxy.py
 ```
 
-可选参数：
+Optional flags:
 
-- `--ban_explore`：移除 Task 工具描述中的 `- Explore:` 行
-- `--ban_stream`：禁用 `/v1/messages` 流式请求
-- `--ui`：启用 Session Inspector UI 与 API
-- `--open-ui`：启用 UI，并自动打开浏览器（`/ui/session-inspector`）
+- `--ban_explore`: remove `- Explore:` lines from Task tool descriptions
+- `--ban_stream`: disable streaming for `/v1/messages`
+- `--ui`: enable the Session Inspector UI and API
+- `--open-ui`: enable the UI and open the browser automatically at `/ui/session-inspector`
 
-## Session Inspector（多 Agent 会话分析）
+## Session Inspector
 
-启用方式（二选一）：
+Enable it in one of two ways:
 
-- 环境变量：`export ENABLE_SESSION_INSPECTOR_UI=true`
-- 启动参数：`python start_proxy.py --ui` 或 `python start_proxy.py --open-ui`
+- Environment variable: `export ENABLE_SESSION_INSPECTOR_UI=true`
+- Startup flag: `python start_proxy.py --ui` or `python start_proxy.py --open-ui`
 
-访问地址：
+Endpoints:
 
-- 页面：`GET /ui/session-inspector`
-- 静态资源：`/ui/session-inspector/assets/*`
+- Page: `GET /ui/session-inspector`
+- Static assets: `/ui/session-inspector/assets/*`
 
-### Agent Lane 判定规则（当前实现）
+### Agent Lane Grouping Rules
 
-每个 turn 会先被转换到统一上下文（Responses 风格），然后按以下规则聚类 lane：
+Each turn is first normalized into a unified context (Responses-style), then grouped into lanes with the following rules:
 
-1. 先提取上下文键：`instructions`、`input`、`tools`、`tool_choice`、`reasoning`、`include`
-2. 去掉当前 turn 最后一个 user suffix，只保留“当前请求之前的完整前缀”
-3. `static_key` 只基于 `input` 之外的静态上下文 + `provider` + `model`
-4. 在同 `static_key` 下，若“某已知 lane 的前缀”是“当前前缀”的前缀，则归入该 lane
-5. 若没有命中，则创建新 lane
+1. Extract context keys: `instructions`, `input`, `tools`, `tool_choice`, `reasoning`, `include`
+2. Remove the current turn's final user suffix and keep only the full prefix before the current request
+3. Build `static_key` from static context outside `input`, plus `provider` and `model`
+4. Under the same `static_key`, assign the turn to a known lane if that lane's prefix is a prefix of the current prefix
+5. If nothing matches, create a new lane
 
-这保证了多 agent 并发场景下，能按历史前缀链和工具/系统上下文稳定区分 agent。
+This keeps agent lanes stable in concurrent multi-agent runs by using prefix history plus tool/system context.
 
-### 事件与详情
+### Events and Details
 
-- 时间线事件类型：
+- Timeline event types:
   - `user_input`
   - `assistant_text`
   - `assistant_reasoning`
   - `tool_call`
   - `response_status`
-- 事件详情可查看：
-  - 事件摘要与完整内容
-  - 工具参数
-  - 工具定义（名称 / 描述 / 参数 schema）
-  - 对应日志文件路径（request / response / non_stream / downstream）
-- 日志文件弹窗支持：
-  - `渲染换行`：将 `\n` 等转义序列按可读文本显示
-  - `原始文本`：保留 JSON 原始字面量展示
+- Detail views include:
+  - Event summary and full content
+  - Tool arguments
+  - Tool definitions (name / description / parameter schema)
+  - Associated log file paths (`request` / `response` / `non_stream` / `downstream`)
+- Log modal modes:
+  - `Rendered newlines`: displays `\n` and other escaped sequences as readable text
+  - `Raw text`: shows the original JSON literal content
 
-## 上游配置
+## Upstream Configuration
 
-默认读取 `upstreams.json`，可用 `UPSTREAM_CONFIG_PATH` 覆盖路径。
+By default, configuration is loaded from `upstreams.json`. You can override the path with `UPSTREAM_CONFIG_PATH`.
 
-关键字段：
+Key fields:
 
-- `defaultProfile`：默认上游 profile
-- `profiles.<name>.provider`：`openai_compatible` / `anthropic` / `codex_oauth`
-- `profiles.<name>.capabilities.ingress`：允许的入口协议
-- `profiles.<name>.defaults.model`：默认模型
+- `defaultProfile`: default upstream profile
+- `profiles.<name>.provider`: `openai_compatible` / `anthropic` / `codex_oauth`
+- `profiles.<name>.capabilities.ingress`: allowed ingress protocols
+- `profiles.<name>.defaults.model`: default model
 
-模型支持 `profile:model` 写法，例如：
+Models support the `profile:model` syntax, for example:
 
 - `moonshot:kimi-k2.5`
 - `codexOAuth:gpt-5.2-codex`
 
-## API 列表
+## API Endpoints
 
-- `GET /health`：健康检查
-- `POST /v1/messages`：Anthropic Messages 入口（可桥接到 OpenAI 兼容上游）
-- `POST /v1/messages/count_tokens`：token 估算
-- `GET /session/{session_id}/stats`：会话统计
-- `POST /v1/chat/completions`：OpenAI Chat Completions 入口
-- `POST /v1/responses`：OpenAI Responses 入口
+- `GET /health`: health check
+- `POST /v1/messages`: Anthropic Messages ingress, can bridge to OpenAI-compatible upstreams
+- `POST /v1/messages/count_tokens`: token estimation
+- `GET /session/{session_id}/stats`: session statistics
+- `POST /v1/chat/completions`: OpenAI Chat Completions ingress
+- `POST /v1/responses`: OpenAI Responses ingress
 
-Session Inspector API（仅在 UI 启用时可用）：
+Session Inspector APIs are available only when the UI is enabled:
 
 - `GET /api/session-inspector/sessions`
 - `GET /api/session-inspector/sessions/{session_id}/timeline`
-- `GET /api/session-inspector/log-file?path=<logs/session 下的文件路径>`
+- `GET /api/session-inspector/log-file?path=<path under logs/session>`
 
-`/api/session-inspector/log-file` 只允许读取 `logs/session` 目录内文件。
+`/api/session-inspector/log-file` only allows reads inside `logs/session`.
 
-## 前端开发（Session Inspector）
+## Frontend Development
 
-前端位于 `frontend/session-inspector`（React + TypeScript + Vite）。
+The frontend lives in `frontend/session-inspector` and is built with React, TypeScript, and Vite.
 
 ```bash
 cd frontend/session-inspector
@@ -190,18 +194,18 @@ npm test
 npm run build
 ```
 
-构建产物会输出到后端静态目录 `src/inspector_ui/`，由 FastAPI 直接托管。
+Build output is emitted to the backend static directory `src/inspector_ui/`, which is served directly by FastAPI.
 
-## 日志目录
+## Log Directories
 
-运行后会在 `logs/` 下生成分类日志：
+Running the service creates categorized logs under `logs/`:
 
 - `logs/anthropic/`
 - `logs/openai/`
 - `logs/session/`
 - `logs/codeagent/`
 
-## 测试
+## Tests
 
 ```bash
 pytest -q
