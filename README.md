@@ -1,4 +1,4 @@
-# LLM_Bridge
+# LLM_Bridge：把多上游 LLM、协议转换和 Agent 可观测性收敛到一个入口
 <p align="center">
   <img src="logo.svg" alt="LLM_Bridge Logo" />
 </p>
@@ -9,19 +9,47 @@
   </a>
 </p>
 
-一个基于 FastAPI 的多上游 LLM 代理服务，支持在同一入口下转发与桥接：
+![Session Inspector 主界面](docs/images/session-inspector-main-ui.png)
+![Session Inspector 统计界面](docs/images/session-inspector-stats-ui.png)
+
+面向 Agent / Coding Assistant 场景的多上游 LLM 代理层。它把多个模型提供方、多个 Codex OAuth 订阅账号、三种常见协议入口，以及运行日志与会话观测能力统一到同一个服务里。
+
+当前支持的统一入口：
 
 - Anthropic Messages：`/v1/messages`
 - OpenAI Chat Completions：`/v1/chat/completions`
 - OpenAI Responses：`/v1/responses`
 
-支持按 `profile:model` 语法路由到不同上游，并提供请求/响应日志落盘、限流重试、Codex OAuth 适配，以及 Session Inspector（多 agent 时间线分析 UI）。
+你可以把它理解成一个专门给 Agent 系统准备的 LLM Gateway：
+
+- 对外暴露稳定的单一入口，对内按 `profile:model` 路由到不同上游
+- 把多个 Codex 订阅整理成可切换、可失败转移的账号池
+- 在 `Anthropic Messages`、`OpenAI Chat Completions`、`OpenAI Responses` 三种协议之间做桥接与转换
+- 为多 Agent 运行保留完整轨迹，并提供可视化分析界面
+- 遇到 `406` / `429` 等限流或临时失败时自动重试，尽量避免 Agent 中断
+
+## 这个项目适合解决什么问题
+
+- 你需要统一管理多个上游 LLM API，而不是把密钥、模型和协议分散写死在各个 Agent 工具里
+- 你有多个 Codex 订阅，希望组成资源池，在限流、过期或单账号不稳定时自动切换
+- 你想让只会说一种协议的客户端，接入另一种协议的模型或内网服务
+- 你需要观察多 Agent 并发执行过程，定位工具调用、上下文漂移、失败点和 token 消耗
+- 你想采集黑箱 Agent 运行轨迹，把请求、响应、工具调用和会话结构沉淀下来，用于 SFT 或 RL 数据准备
+
+## 核心优势
+
+- 统一多上游管理：一个服务入口统一接入商业模型、内网模型和 Codex OAuth 账号池
+- 三协议互通：支持 `Anthropic Messages`、`OpenAI Chat Completions`、`OpenAI Responses` 相互桥接
+- 兼容主流 Agent：可以用 Codex 订阅去承接 Claude Code 风格请求，也能把只有单一协议的内网部署暴露给不同 Agent 客户端使用
+- 多 Agent 轨迹可视化：内置 Session Inspector，可直接查看 lane 时间线、工具参数、工具定义、摘要事件和原始日志
+- 黑箱轨迹采集：会话日志默认落盘，便于回放、审计、故障分析和训练数据整理
+- 限流韧性：对 `406` / `429` 自动指数退避重试，并支持 Codex OAuth 账号失败转移
+- 保留工程可用性：支持 SSE 流式与非流式透传，便于直接挂在现有 Agent 框架前面
 
 ## 功能特性
 
-- 统一入口代理 Anthropic / OpenAI 协议
-- 按 profile 动态选择上游与默认模型
-- 对 `406` / `429` 自动指数退避重试
+- 按 `profile:model` 动态选择上游与默认模型
+- 支持 Codex OAuth 本地账号池管理与请求级失败转移
 - 支持流式（SSE）与非流式透传
 - 可选屏蔽 Task 工具描述中的 `- Explore:` 行
 - 支持会话日志与统计接口（session logs + token 聚合）
@@ -88,11 +116,6 @@ python start_proxy.py
 
 - 页面：`GET /ui/session-inspector`
 - 静态资源：`/ui/session-inspector/assets/*`
-
-界面预览：
-
-![Session Inspector 主界面](docs/images/session-inspector-main-ui.png)
-![Session Inspector 统计界面](docs/images/session-inspector-stats-ui.png)
 
 ### Agent Lane 判定规则（当前实现）
 
