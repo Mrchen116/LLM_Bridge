@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 import httpx
 from fastapi import Request
@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.http_retry import post_with_retry
 from src.adapters.upstream_executor import (
+    build_codex_oauth_style_headers,
     build_headers_by_profile,
     collect_codex_response_from_stream,
     is_rate_limit_status,
@@ -75,6 +76,7 @@ async def _forward_anthropic_native_messages(
     max_retries: int,
     trust_env: bool,
     upstream_headers: Dict[str, str],
+    refresh_headers: Callable[[], Awaitable[Dict[str, str]]],
     profile: Dict[str, Any],
     turn_logs: TurnLogPaths,
 ) -> Response:
@@ -85,7 +87,7 @@ async def _forward_anthropic_native_messages(
             headers=upstream_headers,
             max_retries=max_retries,
             is_retryable=is_rate_limit_status,
-            refresh_headers=lambda: build_headers_by_profile(profile, model),
+            refresh_headers=refresh_headers,
             verify=verify,
             timeout_seconds=timeout_seconds,
             trust_env=trust_env,
@@ -128,7 +130,7 @@ async def _forward_anthropic_native_messages(
                 last_retry_err_text = None
                 last_retry_status = None
                 connection_established = False
-                retry_headers = await build_headers_by_profile(profile, model)
+                retry_headers = upstream_headers
 
                 for attempt in range(max_retries):
                     async with client.stream("POST", upstream_url, headers=retry_headers, json=payload) as r:
@@ -140,7 +142,7 @@ async def _forward_anthropic_native_messages(
                             up_chunks.append({"type": "error_body", "text": last_retry_err_text})
                             if attempt < max_retries - 1:
                                 await asyncio.sleep(1 * (2 ** attempt))
-                                retry_headers = await build_headers_by_profile(profile, model)
+                                retry_headers = await refresh_headers()
                             continue
 
                         connection_established = True
@@ -151,7 +153,7 @@ async def _forward_anthropic_native_messages(
 
                     if not connection_established and attempt < max_retries - 1:
                         await asyncio.sleep(1 * (2 ** attempt))
-                        retry_headers = await build_headers_by_profile(profile, model)
+                        retry_headers = await refresh_headers()
 
                 if (not connection_established) and (last_retry_status is not None):
                     if last_retry_err_text:
@@ -352,6 +354,7 @@ async def _handle_openai_bridge_non_stream(
     codex_reinject_trace: Optional[Dict[str, Any]],
     turn_logs: TurnLogPaths,
     expose_thinking: bool,
+    refresh_headers: Callable[[], Awaitable[Dict[str, str]]],
 ) -> Response:
     if auth_type == "codex_oauth":
         async with httpx.AsyncClient(
@@ -369,7 +372,7 @@ async def _handle_openai_bridge_non_stream(
                 headers=upstream_headers,
                 max_retries=max_retries,
                 is_retryable=is_rate_limit_status,
-                refresh_headers=lambda: build_headers_by_profile(profile, model),
+                refresh_headers=refresh_headers,
                 on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
                     profile=profile,
                     headers=hdrs,
@@ -412,7 +415,7 @@ async def _handle_openai_bridge_non_stream(
             headers=upstream_headers,
             max_retries=max_retries,
             is_retryable=is_rate_limit_status,
-            refresh_headers=lambda: build_headers_by_profile(profile, model),
+            refresh_headers=refresh_headers,
             verify=verify,
             timeout_seconds=timeout_seconds,
             trust_env=trust_env,
@@ -517,7 +520,18 @@ async def run_messages_flow(
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
     if auth_type == "codex_oauth":
         max_retries = get_codex_oauth_retry_attempts(profile, max_retries)
-    upstream_headers = await build_headers_by_profile(profile, model)
+
+    async def refresh_upstream_headers() -> Dict[str, str]:
+        headers = await build_headers_by_profile(profile, model)
+        if auth_type != "codex_oauth":
+            return headers
+        return build_codex_oauth_style_headers(
+            auth_headers=headers,
+            client_headers=req.headers,
+            session_id=session_id,
+        )
+
+    upstream_headers = await refresh_upstream_headers()
     turn_logs = build_turn_log_paths(
         logs_raw_dir=logs_raw_dir,
         logs_session_dir=logs_session_dir,
@@ -550,6 +564,7 @@ async def run_messages_flow(
             max_retries=max_retries,
             trust_env=trust_env,
             upstream_headers=upstream_headers,
+            refresh_headers=refresh_upstream_headers,
             profile=profile,
             turn_logs=turn_logs,
         )
@@ -594,6 +609,7 @@ async def run_messages_flow(
             codex_reinject_trace=codex_reinject_trace,
             turn_logs=turn_logs,
             expose_thinking=expose_thinking,
+            refresh_headers=refresh_upstream_headers,
         )
 
     return build_openai_bridge_streaming_response(
@@ -603,6 +619,7 @@ async def run_messages_flow(
         upstream_url=upstream_url,
         upstream_payload=upstream_payload,
         upstream_headers=upstream_headers,
+        refresh_headers=refresh_upstream_headers,
         max_retries=max_retries,
         verify=verify,
         timeout_seconds=timeout_seconds,

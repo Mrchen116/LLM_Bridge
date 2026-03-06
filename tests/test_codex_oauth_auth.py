@@ -43,7 +43,7 @@ def test_codex_oauth_upstream_use_store_token(client: TestClient, monkeypatch):
     payload = {"model": "codexOAuth:gpt-5.2-codex", "messages": [{"role": "user", "content": "hello"}]}
     upstream_resp = client.post("/v1/chat/completions", json=payload)
     assert upstream_resp.status_code == 200
-    assert FakeAsyncClient.last_stream_args["headers"]["Authorization"] == "Bearer oauth-access-from-store"
+    assert FakeAsyncClient.last_stream_args["headers"]["authorization"] == "Bearer oauth-access-from-store"
 
 
 def test_codex_oauth_auto_refresh_on_upstream_call(client: TestClient, monkeypatch):
@@ -77,7 +77,7 @@ def test_codex_oauth_auto_refresh_on_upstream_call(client: TestClient, monkeypat
     payload = {"model": "codexOAuth:gpt-5.2-codex", "messages": [{"role": "user", "content": "hello"}]}
     resp = client.post("/v1/chat/completions", json=payload)
     assert resp.status_code == 200
-    assert FakeAsyncClient.last_stream_args["headers"]["Authorization"] == "Bearer refreshed-access"
+    assert FakeAsyncClient.last_stream_args["headers"]["authorization"] == "Bearer refreshed-access"
 
     store = json.loads(Path(".codex_oauth.json").read_text(encoding="utf-8"))
     assert store["schema_version"] == 2
@@ -132,7 +132,7 @@ def test_codex_oauth_failover_on_429_switches_account(client: TestClient, monkey
     )
 
     async def fake_collect_codex_response_from_stream(client, upstream_url, headers, request_body):
-        auth = str(headers.get("Authorization") or "")
+        auth = str(headers.get("authorization") or headers.get("Authorization") or "")
         if auth == "Bearer token-a":
             return {
                 "ok": False,
@@ -212,7 +212,7 @@ def test_codex_oauth_failover_on_insufficient_quota_switches_account(client: Tes
     )
 
     async def fake_collect_codex_response_from_stream(client, upstream_url, headers, request_body):
-        auth = str(headers.get("Authorization") or "")
+        auth = str(headers.get("authorization") or headers.get("Authorization") or "")
         if auth == "Bearer token-a":
             err_text = "{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}}"
             return {

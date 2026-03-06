@@ -3,14 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional
 
 import httpx
 from fastapi.responses import StreamingResponse
 
 from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.upstream_executor import (
-    build_headers_by_profile,
     collect_codex_response_from_stream,
     is_rate_limit_status,
     mark_retryable_response_for_profile,
@@ -37,6 +36,7 @@ def build_openai_bridge_streaming_response(
     upstream_url: str,
     upstream_payload: Dict[str, Any],
     upstream_headers: Dict[str, str],
+    refresh_headers: Callable[[], Awaitable[Dict[str, str]]],
     max_retries: int,
     verify: bool,
     timeout_seconds: float,
@@ -112,7 +112,7 @@ def build_openai_bridge_streaming_response(
                         headers=upstream_headers,
                         max_retries=max_retries,
                         is_retryable=is_rate_limit_status,
-                        refresh_headers=lambda: build_headers_by_profile(profile, model),
+                        refresh_headers=refresh_headers,
                         on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
                             profile=profile,
                             headers=hdrs,
@@ -384,7 +384,7 @@ def build_openai_bridge_streaming_response(
 
                     if not connection_established and attempt < max_retries - 1:
                         await asyncio.sleep(0.1 * (2 ** attempt))
-                        retry_headers = await build_headers_by_profile(profile, model)
+                        retry_headers = await refresh_headers()
 
                 if not connection_established and last_retry_status is not None and is_rate_limit_status(last_retry_status):
                     yield emit("error", {"upstream_status": last_retry_status, "upstream_body": last_retry_err_text})

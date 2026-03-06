@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.http_retry import post_with_retry
 from src.adapters.upstream_executor import (
+    build_codex_oauth_style_headers,
     build_headers_by_profile,
     collect_codex_response_from_stream,
     is_rate_limit_status,
@@ -88,7 +89,18 @@ async def run_chat_completions_flow(
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
     if auth_type == "codex_oauth":
         max_retries = get_codex_oauth_retry_attempts(profile, max_retries)
-    upstream_headers = await build_headers_by_profile(profile, model)
+
+    async def refresh_upstream_headers() -> Dict[str, str]:
+        headers = await build_headers_by_profile(profile, model)
+        if auth_type != "codex_oauth":
+            return headers
+        return build_codex_oauth_style_headers(
+            auth_headers=headers,
+            client_headers=req.headers,
+            session_id=session_id,
+        )
+
+    upstream_headers = await refresh_upstream_headers()
 
     body["model"] = model
 
@@ -149,7 +161,7 @@ async def run_chat_completions_flow(
                     headers=upstream_headers,
                     max_retries=max_retries,
                     is_retryable=is_rate_limit_status,
-                    refresh_headers=lambda: build_headers_by_profile(profile, model),
+                    refresh_headers=refresh_upstream_headers,
                     on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
                         profile=profile,
                         headers=hdrs,
@@ -210,7 +222,7 @@ async def run_chat_completions_flow(
             headers=upstream_headers,
             max_retries=max_retries,
             is_retryable=is_rate_limit_status,
-            refresh_headers=lambda: build_headers_by_profile(profile, model),
+            refresh_headers=refresh_upstream_headers,
             verify=verify,
             timeout_seconds=timeout_seconds,
             trust_env=trust_env,
@@ -281,7 +293,7 @@ async def run_chat_completions_flow(
                         headers=upstream_headers,
                         max_retries=max_retries,
                         is_retryable=is_rate_limit_status,
-                        refresh_headers=lambda: build_headers_by_profile(profile, model),
+                        refresh_headers=refresh_upstream_headers,
                         on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
                             profile=profile,
                             headers=hdrs,
@@ -401,7 +413,7 @@ async def run_chat_completions_flow(
                                 f"{attempt} retryable response (chat/completions stream): {r.status_code} {last_retry_err_text}")
                             if attempt < max_retries - 1:
                                 await asyncio.sleep(1 * (2 ** attempt))
-                                retry_headers = await build_headers_by_profile(profile, model)
+                                retry_headers = await refresh_upstream_headers()
                             continue
 
                         connection_established = True
@@ -552,7 +564,7 @@ async def run_chat_completions_flow(
 
                     if not connection_established and attempt < max_retries - 1:
                         await asyncio.sleep(1 * (2 ** attempt))
-                        retry_headers = await build_headers_by_profile(profile, model)
+                        retry_headers = await refresh_upstream_headers()
 
                 if not connection_established and last_retry_status is not None and is_rate_limit_status(last_retry_status):
                     if last_retry_err_text is not None:

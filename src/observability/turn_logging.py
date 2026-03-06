@@ -138,9 +138,11 @@ def log_response_phase(
 ) -> None:
     _dump_json(paths.raw_upstream_res_path, upstream_response_obj)
     _dump_json(paths.raw_downstream_res_path, downstream_response_obj)
-    if paths.session_downstream_res_path:
+    status_code = downstream_response_obj.get("status_code") if isinstance(downstream_response_obj, dict) else None
+    session_writable = not (isinstance(status_code, int) and status_code >= 400)
+    if session_writable and paths.session_downstream_res_path:
         _dump_json(paths.session_downstream_res_path, downstream_response_obj)
-    if paths.session_non_stream_res_path:
+    if session_writable and paths.session_non_stream_res_path:
         source_obj = non_stream_response_obj or downstream_response_obj
         _dump_json(
             paths.session_non_stream_res_path,

@@ -751,8 +751,9 @@ def _find_account_index_by_label(accounts: List[Dict[str, Any]], label: str) -> 
 
 
 def _find_account_index_by_headers(accounts: List[Dict[str, Any]], headers: Dict[str, str]) -> int:
-    account_id = str(headers.get("ChatGPT-Account-Id") or "").strip()
-    auth = str(headers.get("Authorization") or "").strip()
+    lowered_headers = {str(k).lower(): str(v or "") for k, v in headers.items()}
+    account_id = str(lowered_headers.get("chatgpt-account-id") or "").strip()
+    auth = str(lowered_headers.get("authorization") or "").strip()
     access_token = ""
     if auth.lower().startswith("bearer "):
         access_token = auth[7:].strip()

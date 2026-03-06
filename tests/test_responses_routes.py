@@ -33,9 +33,94 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
     assert resp.status_code == 200
     assert resp.json() == upstream_body
     assert FakeAsyncClient.last_stream_args["url"] == "https://chatgpt.com/backend-api/codex/responses"
+    assert FakeAsyncClient.last_stream_args["headers"]["authorization"] == "Bearer codex-access-token"
+    assert FakeAsyncClient.last_stream_args["headers"]["chatgpt-account-id"] == "org-test-account"
+    assert FakeAsyncClient.last_stream_args["headers"]["originator"] == "codex_cli_rs"
+    assert FakeAsyncClient.last_stream_args["headers"]["accept"] == "text/event-stream"
+    assert "session_id" not in FakeAsyncClient.last_stream_args["headers"]
+    assert "x-codex-turn-metadata" not in FakeAsyncClient.last_stream_args["headers"]
     assert FakeAsyncClient.last_stream_args["json"]["store"] is False
     assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
     assert FakeAsyncClient.last_post_args == {}
+
+
+def test_responses_codex_oauth_forwards_turn_metadata_and_session_id(client: TestClient):
+    """测试 codex_oauth 上游请求会透传 codex turn metadata 与 session_id。"""
+    upstream_body = {
+        "id": "resp_passthrough_meta",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello", "stream": False}
+    turn_metadata = '{"turn_id":"turn_123"}'
+    session_id = "session-header-id"
+    resp = client.post(
+        "/v1/responses",
+        json=payload,
+        headers={
+            "x-codex-turn-metadata": turn_metadata,
+            "session_id": session_id,
+            "originator": "codex_cli_rs",
+        },
+    )
+    assert resp.status_code == 200
+    assert FakeAsyncClient.last_stream_args["headers"]["x-codex-turn-metadata"] == turn_metadata
+    assert FakeAsyncClient.last_stream_args["headers"]["session_id"] == session_id
+
+
+def test_responses_codex_oauth_extracts_session_id_from_metadata_user_id(client: TestClient):
+    """测试 session_id 请求头缺失时，会从 metadata.user_id 提取并上游透传。"""
+    upstream_body = {
+        "id": "resp_passthrough_meta_user",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "input": "hello",
+        "metadata": {"user_id": "user_session_session-from-metadata"},
+    }
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 200
+    assert FakeAsyncClient.last_stream_args["headers"]["session_id"] == "session-from-metadata"
+
+
+def test_responses_codex_oauth_does_not_forward_turn_metadata_for_non_codex_downstream(client: TestClient):
+    """测试非 codex 下游来源时，不透传 x-codex-turn-metadata。"""
+    upstream_body = {
+        "id": "resp_passthrough_meta_non_codex",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello"}
+    resp = client.post(
+        "/v1/responses",
+        json=payload,
+        headers={"x-codex-turn-metadata": '{"turn_id":"turn_non_codex"}'},
+    )
+    assert resp.status_code == 200
+    assert "x-codex-turn-metadata" not in FakeAsyncClient.last_stream_args["headers"]
 
 
 def test_responses_with_session_writes_raw_and_session_logs(client_with_logs: TestClient):
@@ -80,6 +165,30 @@ def test_responses_with_session_writes_raw_and_session_logs(client_with_logs: Te
     assert obj["object"] == "chat.completion"
     assert obj["usage"]["prompt_tokens"] == 3
     assert obj["usage"]["completion_tokens"] == 2
+
+
+def test_responses_with_session_on_upstream_failure_skips_session_response_logs(client_with_logs: TestClient):
+    """测试 responses 上游失败时，不写 session response/non-stream 日志。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        500,
+        read_bytes=b'{"error":"upstream_fail"}',
+    )
+
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello", "stream": False}
+    session_id = "responses-session-error-no-response-log"
+    resp = client_with_logs.post("/v1/responses", json=payload, headers={"X-Session-Id": session_id})
+    assert resp.status_code == 500
+
+    session_root = Path.cwd() / "logs" / "session"
+    session_dirs = sorted(session_root.glob(f"*_{session_id}"))
+    assert session_dirs
+    session_dir = session_dirs[-1]
+    req_files = sorted(session_dir.glob("*-req-openai_responses.json"))
+    down_files = sorted(session_dir.glob("*-downstream-res-openai_responses.json"))
+    non_stream_files = sorted(session_dir.glob("*-non-stream-res-openai_responses.json"))
+    assert req_files
+    assert not down_files
+    assert not non_stream_files
 
 
 def test_responses_with_underscore_session_header_writes_session_logs(client_with_logs: TestClient):

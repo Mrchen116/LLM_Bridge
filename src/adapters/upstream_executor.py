@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Optional
 
 import httpx
 
@@ -18,6 +18,10 @@ CODEX_FAILOVER_ERROR_CODES = {
     "insufficient_quota",
     "usage_not_included",
 }
+CODEX_DEFAULT_ORIGINATOR = "codex_cli_rs"
+CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.104.0 (LLM_PROXY)"
+CODEX_DEFAULT_BETA_FEATURES = "multi_agent,prevent_idle_sleep"
+CODEX_DEFAULT_VERSION = "0.104.0"
 
 
 def is_rate_limit_status(status_code: int) -> bool:
@@ -58,6 +62,70 @@ def should_trigger_codex_failover(status_code: int, error_text: str = "") -> boo
         return True
     code = _extract_error_code_from_text(error_text)
     return code in CODEX_FAILOVER_ERROR_CODES
+
+
+def _header_value_case_insensitive(headers: Optional[Mapping[str, Any]], key: str) -> str:
+    if not headers:
+        return ""
+    key_lower = key.lower()
+    for raw_k, raw_v in headers.items():
+        if str(raw_k).lower() != key_lower:
+            continue
+        value = str(raw_v or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def build_codex_oauth_style_headers(
+    *,
+    auth_headers: Mapping[str, Any],
+    client_headers: Optional[Mapping[str, Any]],
+    session_id: Optional[str],
+) -> Dict[str, str]:
+    """
+    Build codex_oauth upstream headers in codex-cli style.
+    - Keep auth/account identity from oauth account pool.
+    - Keep session_id extraction strategy in handlers (do not synthesize here).
+    - Forward x-codex-turn-metadata only when client actually provides it.
+    """
+    authorization = _header_value_case_insensitive(auth_headers, "authorization")
+    account_id = _header_value_case_insensitive(auth_headers, "chatgpt-account-id")
+
+    incoming_originator = _header_value_case_insensitive(client_headers, "originator")
+    incoming_user_agent = _header_value_case_insensitive(client_headers, "user-agent")
+    incoming_beta_features = _header_value_case_insensitive(client_headers, "x-codex-beta-features")
+    is_codex_downstream = bool(
+        incoming_originator.lower() == "codex_cli_rs"
+        or "codex_cli_rs" in incoming_user_agent.lower()
+        or incoming_beta_features
+    )
+
+    out: Dict[str, str] = {
+        "accept": "text/event-stream",
+        "content-type": "application/json",
+        "originator": incoming_originator or CODEX_DEFAULT_ORIGINATOR,
+        "user-agent": incoming_user_agent or CODEX_DEFAULT_USER_AGENT,
+        "x-codex-beta-features": incoming_beta_features or CODEX_DEFAULT_BETA_FEATURES,
+        "version": (
+            _header_value_case_insensitive(client_headers, "version")
+            or CODEX_DEFAULT_VERSION
+        ),
+    }
+
+    if authorization:
+        out["authorization"] = authorization
+    if account_id:
+        out["chatgpt-account-id"] = account_id
+    if isinstance(session_id, str) and session_id.strip():
+        out["session_id"] = session_id.strip()
+
+    # Only forward codex turn metadata when downstream is codex-style.
+    turn_metadata = _header_value_case_insensitive(client_headers, "x-codex-turn-metadata")
+    if turn_metadata and is_codex_downstream:
+        out["x-codex-turn-metadata"] = turn_metadata
+
+    return out
 
 
 async def build_headers_by_profile(profile: Dict[str, Any], model: str) -> Dict[str, str]:

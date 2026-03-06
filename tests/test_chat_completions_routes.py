@@ -58,8 +58,12 @@ def test_chat_completions_codex_oauth_uses_codex_endpoint_and_headers(client: Te
 
     assert resp.status_code == 200
     assert FakeAsyncClient.last_stream_args["url"] == "https://chatgpt.com/backend-api/codex/responses"
-    assert FakeAsyncClient.last_stream_args["headers"]["Authorization"] == "Bearer codex-access-token"
-    assert FakeAsyncClient.last_stream_args["headers"]["ChatGPT-Account-Id"] == "org-test-account"
+    assert FakeAsyncClient.last_stream_args["headers"]["authorization"] == "Bearer codex-access-token"
+    assert FakeAsyncClient.last_stream_args["headers"]["chatgpt-account-id"] == "org-test-account"
+    assert FakeAsyncClient.last_stream_args["headers"]["originator"] == "codex_cli_rs"
+    assert FakeAsyncClient.last_stream_args["headers"]["accept"] == "text/event-stream"
+    assert FakeAsyncClient.last_stream_args["headers"]["x-codex-beta-features"] == "multi_agent,prevent_idle_sleep"
+    assert "session_id" not in FakeAsyncClient.last_stream_args["headers"]
     assert FakeAsyncClient.last_stream_args["json"]["instructions"] == "You are a helpful assistant."
     assert FakeAsyncClient.last_stream_args["json"]["input"][0]["role"] == "user"
     assert FakeAsyncClient.last_stream_args["json"]["input"][0]["content"][0]["text"] == "hello"
