@@ -355,12 +355,21 @@ async def run_chat_completions_flow(
                         yield emit_bytes(f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
 
                     if tool_calls:
+                        normalized_tool_calls: List[Dict[str, Any]] = []
+                        for idx, tc in enumerate(tool_calls):
+                            if isinstance(tc, dict):
+                                normalized_tc = dict(tc)
+                                normalized_tc.setdefault("index", idx)
+                                normalized_tool_calls.append(normalized_tc)
+                            else:
+                                normalized_tool_calls.append({"index": idx})
+
                         tool_chunk = {
                             "id": chunk_id,
                             "object": "chat.completion.chunk",
                             "created": created_ts,
                             "model": model,
-                            "choices": [{"index": 0, "delta": {"tool_calls": tool_calls}, "finish_reason": None}],
+                            "choices": [{"index": 0, "delta": {"tool_calls": normalized_tool_calls}, "finish_reason": None}],
                         }
                         yield emit_bytes(f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
 

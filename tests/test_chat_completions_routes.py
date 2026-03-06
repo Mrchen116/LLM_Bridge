@@ -184,6 +184,29 @@ def test_chat_completions_codex_oauth_stream_emits_tool_calls_chunks(client: Tes
     assert '"finish_reason": "tool_calls"' in data
     assert "data: [DONE]" in data
 
+    chunks = []
+    for line in data.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if payload == "[DONE]":
+            continue
+        chunks.append(json.loads(payload))
+
+    tool_call_chunks = [
+        c
+        for c in chunks
+        if isinstance(c, dict)
+        and isinstance(c.get("choices"), list)
+        and c["choices"]
+        and isinstance(c["choices"][0], dict)
+        and isinstance(c["choices"][0].get("delta"), dict)
+        and isinstance(c["choices"][0]["delta"].get("tool_calls"), list)
+        and c["choices"][0]["delta"].get("tool_calls")
+    ]
+    assert tool_call_chunks
+    assert tool_call_chunks[0]["choices"][0]["delta"]["tool_calls"][0]["index"] == 0
+
 
 def test_chat_completions_codex_oauth_reasoning_effort_and_include_merge(client: TestClient):
     """测试 reasoning_effort 映射及 include 字段并集合并。"""
