@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import rehypeHighlight from 'rehype-highlight'
+import rehypeSanitize from 'rehype-sanitize'
+import remarkGfm from 'remark-gfm'
 import type { TimelineEvent, ToolDefinition } from '../../api/contracts'
 import { fetchLogFileContent } from '../../api/session-inspector-client'
 import {
@@ -12,7 +16,7 @@ interface DetailPanelProps {
   event: TimelineEvent | null
 }
 
-type BlockVariant = 'text' | 'code'
+type BlockVariant = 'text' | 'code' | 'markdown'
 type FileViewerMode = 'rendered' | 'raw'
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -30,7 +34,35 @@ function formatCopyValue(value: unknown): string {
   }
 }
 
+function normalizeMarkdownSource(value: unknown): string {
+  let text = typeof value === 'string' ? value : formatCopyValue(value)
+  for (let index = 0; index < 4; index += 1) {
+    const normalized = normalizeReadableText(text)
+    if (normalized === text) {
+      break
+    }
+    text = normalized
+  }
+
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const indents = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.match(/^\s*/)![0].length)
+  const minIndent = indents.length > 0 ? Math.min(...indents) : 0
+  const outdented =
+    minIndent > 0
+      ? lines.map((line) => (line.trim().length > 0 ? line.slice(minIndent) : line)).join('\n')
+      : lines.join('\n')
+
+  return outdented
+    .replace(/\u00a0/g, ' ')
+    .replace(/\\([`*_{}\[\]()#+\-.!>~|])/g, '$1')
+}
+
 function formatDisplayValue(value: unknown, variant: BlockVariant): string {
+  if (variant === 'markdown') {
+    return normalizeMarkdownSource(value)
+  }
   if (variant === 'text') {
     return normalizeReadableText(typeof value === 'string' ? value : formatCopyValue(value))
   }
@@ -63,7 +95,18 @@ function DetailBlock({
           {copied ? '已复制' : copyLabel}
         </button>
       </div>
-      <pre className={variant === 'text' ? 'detail-text' : 'code'}>{displayText}</pre>
+      {variant === 'markdown' ? (
+        <div className="detail-markdown">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeSanitize, rehypeHighlight]}
+          >
+            {displayText}
+          </ReactMarkdown>
+        </div>
+      ) : (
+        <pre className={variant === 'text' ? 'detail-text' : 'code'}>{displayText}</pre>
+      )}
     </div>
   )
 }
@@ -259,7 +302,7 @@ export function DetailPanel({ event }: DetailPanelProps) {
               <DetailBlock
                 title="事件内容"
                 value={mainText}
-                variant="text"
+                variant={event.kind === 'assistant_text' ? 'markdown' : 'text'}
                 copyLabel="复制"
                 copied={copiedKey === 'main_text'}
                 onCopy={(text) => void onCopy('main_text', text)}
@@ -302,7 +345,7 @@ export function DetailPanel({ event }: DetailPanelProps) {
                       <DetailBlock
                         title="工具定义 · 描述"
                         value={toolDefFields.description}
-                        variant="text"
+                        variant="markdown"
                         copyLabel="复制"
                         copied={copiedKey === 'tool_def_description'}
                         onCopy={(text) => void onCopy('tool_def_description', text)}

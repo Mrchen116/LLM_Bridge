@@ -714,6 +714,65 @@ select {
   word-break: break-word;
 }
 
+.detail-markdown {
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #f6f9fc;
+  color: #2d3e52;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow: auto;
+}
+
+.detail-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.detail-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.detail-markdown p,
+.detail-markdown ul,
+.detail-markdown ol,
+.detail-markdown blockquote,
+.detail-markdown pre {
+  margin: 0 0 10px;
+}
+
+.detail-markdown ul,
+.detail-markdown ol {
+  padding-left: 20px;
+}
+
+.detail-markdown ul {
+  list-style: disc;
+}
+
+.detail-markdown ol {
+  list-style: decimal;
+}
+
+.detail-markdown code {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.detail-markdown pre {
+  margin: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #f5f8fc;
+  overflow: auto;
+}
+
+.detail-markdown pre code {
+  display: block;
+  white-space: pre;
+}
+
 .source-files {
   display: flex;
   flex-direction: column;
