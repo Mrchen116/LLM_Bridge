@@ -198,12 +198,10 @@ npm run build
 
 ## 日志目录
 
-运行后会在 `logs/` 下生成分类日志：
+运行后会在 `logs/` 下生成这些目录：
 
-- `logs/anthropic/`
-- `logs/openai/`
-- `logs/session/`
-- `logs/codeagent/`
+- `logs/session/`：按会话聚合的 turn 日志，供 Session Inspector 使用
+- `logs/raw/`：原始请求、上游请求、响应和 headers 落盘，按 bucket 分组，例如 `anthropic`、`openai_chat`、`openai_codex`
 
 ## 测试
 

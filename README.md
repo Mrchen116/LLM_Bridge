@@ -198,12 +198,10 @@ Build output is emitted to the backend static directory `src/inspector_ui/`, whi
 
 ## Log Directories
 
-Running the service creates categorized logs under `logs/`:
+Running the service creates logs under:
 
-- `logs/anthropic/`
-- `logs/openai/`
-- `logs/session/`
-- `logs/codeagent/`
+- `logs/session/`: per-session turn logs used by Session Inspector
+- `logs/raw/`: raw request/response/header captures, grouped by bucket such as `anthropic`, `openai_chat`, and `openai_codex`
 
 ## Tests
 
