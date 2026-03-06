@@ -277,6 +277,52 @@ def test_chat_completions_codex_oauth_stream_bridge(client: TestClient):
     assert "data: [DONE]" in data
 
 
+def test_chat_completions_codex_oauth_stream_logs_non_stream_with_tool_calls(client_with_logs: TestClient):
+    """测试 codex_oauth 流式时 non-stream 日志保留 tool_calls。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            (
+                'data: {"type":"response.completed","response":{"id":"resp_fc_log_1","output":['
+                '{"type":"function_call","call_id":"call_1","name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}'
+                '],"usage":{"input_tokens":6,"output_tokens":1}}}'
+            ),
+            "data: [DONE]",
+        ],
+    )
+
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "列出当前目录"}],
+        "stream": True,
+    }
+    session_id = "chat-codex-stream-toolcalls-nonstream"
+    with client_with_logs.stream(
+        "POST",
+        "/v1/chat/completions",
+        json=payload,
+        headers={"X-Session-Id": session_id},
+    ) as resp:
+        data = "".join(resp.iter_text())
+
+    assert resp.status_code == 200
+    assert '"tool_calls"' in data
+
+    session_root = Path.cwd() / "logs" / "session"
+    session_dirs = sorted(session_root.glob(f"*_{session_id}"))
+    assert session_dirs
+    non_stream_files = sorted(session_dirs[-1].glob("*-non-stream-res-openai_chat.json"))
+    assert non_stream_files
+
+    with non_stream_files[-1].open("r", encoding="utf-8") as f:
+        obj = json.load(f)
+
+    message = obj["choices"][0]["message"]
+    assert isinstance(message.get("tool_calls"), list)
+    assert message["tool_calls"]
+    assert message["tool_calls"][0]["function"]["name"] == "bash"
+
+
 def test_chat_completions_codex_oauth_reinjects_encrypted_reasoning_for_trailing_tool_output(client: TestClient):
     """测试 tool output 续轮时也应回填上一轮 encrypted reasoning。"""
     FakeAsyncClient.stream_response = FakeStreamResponse(

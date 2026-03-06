@@ -372,6 +372,8 @@ def build_openai_chat_non_stream_from_sse_chunks(chunks: List[Any], fallback_mod
     finish_reason: Optional[str] = None
     resp_id: Optional[str] = None
     model = fallback_model
+    tool_calls_by_index: Dict[int, Dict[str, Any]] = {}
+    next_tool_idx = 0
 
     for chunk in chunks:
         if not isinstance(chunk, str):
@@ -409,9 +411,47 @@ def build_openai_chat_non_stream_from_sse_chunks(chunks: List[Any], fallback_mod
                 if isinstance(content, str):
                     text_parts.append(content)
 
+                delta_tool_calls = delta.get("tool_calls")
+                if isinstance(delta_tool_calls, list):
+                    for tc in delta_tool_calls:
+                        if not isinstance(tc, dict):
+                            continue
+
+                        raw_idx = tc.get("index")
+                        if isinstance(raw_idx, int):
+                            tool_idx = raw_idx
+                        else:
+                            tool_idx = next_tool_idx
+                        next_tool_idx = max(next_tool_idx, tool_idx + 1)
+
+                        merged = tool_calls_by_index.get(tool_idx)
+                        if not isinstance(merged, dict):
+                            merged = {"type": "function", "function": {}}
+
+                        if isinstance(tc.get("id"), str):
+                            merged["id"] = tc.get("id")
+                        if isinstance(tc.get("type"), str):
+                            merged["type"] = tc.get("type")
+
+                        fn = tc.get("function")
+                        if isinstance(fn, dict):
+                            merged_fn = merged.get("function") if isinstance(merged.get("function"), dict) else {}
+                            if isinstance(fn.get("name"), str) and fn.get("name"):
+                                merged_fn["name"] = fn.get("name")
+                            if isinstance(fn.get("arguments"), str):
+                                prev_args = merged_fn.get("arguments") if isinstance(merged_fn.get("arguments"), str) else ""
+                                merged_fn["arguments"] = f"{prev_args}{fn.get('arguments')}"
+                            merged["function"] = merged_fn
+
+                        tool_calls_by_index[tool_idx] = merged
+
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
     total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+
+    message: Dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
+    if tool_calls_by_index:
+        message["tool_calls"] = [tool_calls_by_index[idx] for idx in sorted(tool_calls_by_index.keys())]
 
     return {
         "id": resp_id or f"chatcmpl-{uuid.uuid4().hex}",
@@ -420,7 +460,7 @@ def build_openai_chat_non_stream_from_sse_chunks(chunks: List[Any], fallback_mod
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": "".join(text_parts)},
+                "message": message,
                 "finish_reason": finish_reason or "stop",
             }
         ],
