@@ -103,6 +103,14 @@ async def run_chat_completions_flow(
     upstream_headers = await refresh_upstream_headers()
 
     body["model"] = model
+    if auth_type == "codex_oauth":
+        reasoning = body.get("reasoning")
+        if (
+            resolved.reasoning_effort is not None
+            and body.get("reasoning_effort") is None
+            and not (isinstance(reasoning, dict) and reasoning.get("effort") is not None)
+        ):
+            body["reasoning_effort"] = resolved.reasoning_effort
 
     tools = _strip_task_explore_line(body.get("tools"), ban_explore=ban_explore)
     if tools is not None:

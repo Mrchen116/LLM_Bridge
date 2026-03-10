@@ -605,9 +605,6 @@ def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -
     reasoning_effort = _normalize_reasoning_effort(body.get("reasoning_effort"))
     if reasoning_effort is None and isinstance(body.get("reasoning"), dict):
         reasoning_effort = _normalize_reasoning_effort(body.get("reasoning", {}).get("effort"))
-    if reasoning_effort is None and "gpt-5" in model and "gpt-5-pro" not in model:
-        # 与 opencode 行为保持一致：gpt-5（非 pro）默认给中等推理强度
-        reasoning_effort = "medium"
     if reasoning_effort is not None:
         payload["reasoning"] = {"effort": reasoning_effort}
 

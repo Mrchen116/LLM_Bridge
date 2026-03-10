@@ -199,6 +199,7 @@ def _build_openai_bridge_payload(
     auth_type: str,
     session_id: Optional[str],
     provider: str,
+    reasoning_effort: Optional[str],
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     oai_messages = anthropic_messages_to_openai_chat_messages(messages, system)
 
@@ -239,6 +240,8 @@ def _build_openai_bridge_payload(
         "stream": stream,
         "max_tokens": max_tokens,
     }
+    if reasoning_effort is not None:
+        codex_chat_body["reasoning_effort"] = reasoning_effort
     if oai_tools:
         codex_chat_body["tools"] = oai_tools
     if oai_tool_choice is not None:
@@ -584,6 +587,7 @@ async def run_messages_flow(
         auth_type=auth_type,
         session_id=session_id,
         provider=str(profile.get("provider") or ""),
+        reasoning_effort=resolved.reasoning_effort if auth_type == "codex_oauth" else None,
     )
 
     log_request_phase(

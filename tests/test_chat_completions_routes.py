@@ -127,7 +127,7 @@ def test_chat_completions_codex_oauth_mapping_matches_opencode_style(client: Tes
     assert up["tool_choice"]["name"] == "tool_a"
     assert up["tools"][0]["type"] == "function"
     assert up["tools"][0]["name"] == "tool_a"
-    assert up["reasoning"]["effort"] == "medium"
+    assert "reasoning" not in up
     assert "reasoning.encrypted_content" in up["include"]
 
 
@@ -230,6 +230,49 @@ def test_chat_completions_codex_oauth_reasoning_effort_and_include_merge(client:
     assert up["reasoning"]["effort"] == "high"
     assert "foo.bar" in up["include"]
     assert "reasoning.encrypted_content" in up["include"]
+
+
+def test_chat_completions_codex_oauth_model_suffix_sets_reasoning_effort(client: TestClient):
+    """测试模型名 @high 后缀可为 codex_oauth 补推理强度。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_map_suffix_1","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":4,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex@high",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert up["model"] == "gpt-5.2-codex"
+    assert up["reasoning"]["effort"] == "high"
+
+
+def test_chat_completions_codex_oauth_explicit_reasoning_effort_overrides_model_suffix(client: TestClient):
+    """测试显式 reasoning_effort 优先于模型名后缀。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_map_suffix_2","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":4,"output_tokens":1}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex@high",
+        "messages": [{"role": "user", "content": "hello"}],
+        "reasoning_effort": "low",
+    }
+
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert up["model"] == "gpt-5.2-codex"
+    assert up["reasoning"]["effort"] == "low"
 
 
 def test_chat_completions_codex_oauth_strip_sampling_params(client: TestClient):

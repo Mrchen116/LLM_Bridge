@@ -26,6 +26,7 @@ class ResolvedProfile:
     profile_name: str
     profile: Dict[str, Any]
     model: str
+    reasoning_effort: Optional[str] = None
 
 
 def _ensure_dict(name: str, value: Any) -> Dict[str, Any]:
@@ -163,6 +164,31 @@ def _normalize_model(raw_model: Any, default_model: str) -> str:
     return str(raw_model)
 
 
+def _split_model_reasoning_effort(raw_model: str, provider: str) -> Tuple[str, Optional[str]]:
+    if provider != "codex_oauth" or "@" not in raw_model:
+        return raw_model, None
+
+    model_name, maybe_effort = raw_model.rsplit("@", 1)
+    effort = str(maybe_effort).strip().lower()
+    allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    if model_name and effort in allowed:
+        return model_name, effort
+    return raw_model, None
+
+
+def _normalize_model_with_reasoning_effort(
+    raw_model: Any,
+    *,
+    default_model: str,
+    provider: str,
+) -> Tuple[str, Optional[str]]:
+    normalized_model = _normalize_model(raw_model, default_model)
+    model_name, reasoning_effort = _split_model_reasoning_effort(normalized_model, provider)
+    if model_name == "byenv":
+        model_name = default_model
+    return model_name, reasoning_effort
+
+
 def resolve_profile(
     cfg: Dict[str, Any],
     body: Dict[str, Any],
@@ -196,8 +222,17 @@ def resolve_profile(
         )
 
     default_model = profile["defaults"]["model"]
-    model = _normalize_model(model_raw, default_model)
-    return ResolvedProfile(profile_name=selected_profile, profile=profile, model=model)
+    model, reasoning_effort = _normalize_model_with_reasoning_effort(
+        model_raw,
+        default_model=default_model,
+        provider=str(profile.get("provider") or ""),
+    )
+    return ResolvedProfile(
+        profile_name=selected_profile,
+        profile=profile,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
 
 
 def build_upstream_url(profile: Dict[str, Any], protocol: str) -> str:

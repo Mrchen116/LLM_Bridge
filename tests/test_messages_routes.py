@@ -90,10 +90,36 @@ def test_messages_codex_oauth_non_stream_bridge(client: TestClient):
     assert "x=7" in body["content"][0]["text"]
 
     up = FakeAsyncClient.last_stream_args["json"]
+    assert up["model"] == "gpt-5.2-codex"
     assert up["instructions"] == "You are a helpful assistant."
     assert up["input"][0]["role"] == "user"
     assert up["store"] is False
+    assert "reasoning" not in up
     assert "reasoning.encrypted_content" in up["include"]
+
+
+def test_messages_codex_oauth_model_suffix_sets_reasoning_effort(client: TestClient):
+    """测试 /v1/messages 在 codex_oauth 下支持模型名 @high 后缀。"""
+    from tests.support import FakeAsyncClient
+
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"type":"response.completed","response":{"id":"resp_msg_suffix_1","output":[{"type":"message","content":[{"type":"output_text","text":"答案"}]}],"usage":{"input_tokens":5,"output_tokens":3}}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex@high",
+        "messages": [{"role": "user", "content": "解方程"}],
+        "max_tokens": 128,
+    }
+    resp = client.post("/v1/messages", json=payload)
+    assert resp.status_code == 200
+
+    up = FakeAsyncClient.last_stream_args["json"]
+    assert up["model"] == "gpt-5.2-codex"
+    assert up["reasoning"]["effort"] == "high"
 
 
 def test_messages_stream_anthropic_passthrough(client: TestClient):

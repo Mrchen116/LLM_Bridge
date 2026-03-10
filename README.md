@@ -166,6 +166,14 @@ Models support the `profile:model` syntax, for example:
 - `moonshot:kimi-k2.5`
 - `codexOAuth:gpt-5.2-codex`
 
+For `codex_oauth` profiles, you can optionally append a reasoning effort suffix with `@`:
+
+- `codexOAuth:gpt-5.4@high` — 指定推理强度为 high
+- `codexOAuth:byenv@high` — 使用 profile 默认模型，推理强度为 high
+- `byenv@high` — 使用 defaultProfile 的默认模型，推理强度为 high
+
+When the downstream request does not provide `reasoning_effort` / `reasoning.effort`, the model suffix is used. Explicit parameters take precedence over the suffix.
+
 ## API Endpoints
 
 - `GET /health`: health check

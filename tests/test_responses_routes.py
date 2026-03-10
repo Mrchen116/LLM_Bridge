@@ -39,9 +39,57 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
     assert FakeAsyncClient.last_stream_args["headers"]["accept"] == "text/event-stream"
     assert "session_id" not in FakeAsyncClient.last_stream_args["headers"]
     assert "x-codex-turn-metadata" not in FakeAsyncClient.last_stream_args["headers"]
+    assert FakeAsyncClient.last_stream_args["json"]["model"] == "gpt-5.2-codex"
     assert FakeAsyncClient.last_stream_args["json"]["store"] is False
     assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
+    assert "reasoning" not in FakeAsyncClient.last_stream_args["json"]
     assert FakeAsyncClient.last_post_args == {}
+
+
+def test_responses_codex_oauth_model_suffix_sets_reasoning_effort(client: TestClient):
+    """测试 /v1/responses 在 codex_oauth 下支持模型名 @high 后缀。"""
+    upstream_body = {
+        "id": "resp_passthrough_suffix",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {"model": "codexOAuth:gpt-5.2-codex@high", "input": "hello"}
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 200
+    assert FakeAsyncClient.last_stream_args["json"]["model"] == "gpt-5.2-codex"
+    assert FakeAsyncClient.last_stream_args["json"]["reasoning"]["effort"] == "high"
+
+
+def test_responses_explicit_reasoning_effort_overrides_model_suffix(client: TestClient):
+    """测试 /v1/responses 显式 reasoning.effort 优先于模型名后缀。"""
+    upstream_body = {
+        "id": "resp_passthrough_suffix_override",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex@high",
+        "input": "hello",
+        "reasoning": {"effort": "low"},
+    }
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 200
+    assert FakeAsyncClient.last_stream_args["json"]["model"] == "gpt-5.2-codex"
+    assert FakeAsyncClient.last_stream_args["json"]["reasoning"]["effort"] == "low"
 
 
 def test_responses_codex_oauth_forwards_turn_metadata_and_session_id(client: TestClient):
