@@ -276,18 +276,22 @@ def get_runtime_options(profile: Dict[str, Any]) -> Tuple[bool, float, int, bool
 
 
 def get_codex_oauth_retry_attempts(profile: Dict[str, Any], configured_retry_max: int) -> int:
+    del profile
+    return max(1, int(configured_retry_max))
+
+
+def get_codex_oauth_max_failovers(profile: Dict[str, Any]) -> int:
     auth = _ensure_dict("profile.auth", profile.get("auth") or {})
     pool_policy = auth.get("accountPoolPolicy")
     if not isinstance(pool_policy, dict):
-        return max(1, min(int(configured_retry_max), DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST + 1))
+        return DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST
 
     max_failover = pool_policy.get("maxFailoverPerRequest")
     try:
         failover_count = int(max_failover) if max_failover is not None else DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST
     except Exception:
         failover_count = DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST
-    failover_count = max(0, failover_count)
-    return max(1, min(int(configured_retry_max), failover_count + 1))
+    return max(0, failover_count)
 
 
 def build_auth_headers(profile: Dict[str, Any], model: str, x_auth_token: str = "") -> Dict[str, str]:

@@ -89,6 +89,7 @@ class FakeAsyncClient:
         json={"ok": True},
     )
     stream_response: FakeStreamResponse = FakeStreamResponse()
+    stream_responses: List[FakeStreamResponse] = []
     last_post_args: Dict[str, Any] = {}
     last_stream_args: Dict[str, Any] = {}
 
@@ -113,6 +114,8 @@ class FakeAsyncClient:
             "headers": headers,
             "json": json,
         }
+        if FakeAsyncClient.stream_responses:
+            return FakeStreamContext(FakeAsyncClient.stream_responses.pop(0))
         return FakeStreamContext(FakeAsyncClient.stream_response)
 
 

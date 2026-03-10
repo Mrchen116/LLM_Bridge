@@ -13,6 +13,7 @@ from src.adapters.upstream_executor import (
     collect_codex_response_from_stream,
     is_rate_limit_status,
     mark_retryable_response_for_profile,
+    should_retry_codex_result,
     should_trigger_codex_failover,
 )
 from src.bridge.anthropic_openai import openai_chat_finish_reason_to_anthropic_stop_reason
@@ -38,6 +39,7 @@ def build_openai_bridge_streaming_response(
     upstream_headers: Dict[str, str],
     refresh_headers: Callable[[], Awaitable[Dict[str, str]]],
     max_retries: int,
+    max_failovers: int,
     verify: bool,
     timeout_seconds: float,
     trust_env: bool,
@@ -111,6 +113,7 @@ def build_openai_bridge_streaming_response(
                         ),
                         headers=upstream_headers,
                         max_retries=max_retries,
+                        max_failovers=max_failovers,
                         is_retryable=is_rate_limit_status,
                         refresh_headers=refresh_headers,
                         on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
@@ -119,7 +122,11 @@ def build_openai_bridge_streaming_response(
                             status_code=status,
                             error_text=err,
                         ),
-                        should_retry_result=lambda result: should_trigger_codex_failover(
+                        should_retry_result=lambda result: should_retry_codex_result(
+                            int(result.get("status_code") or 0),
+                            str(result.get("error_text") or ""),
+                        ),
+                        should_failover_result=lambda result: should_trigger_codex_failover(
                             int(result.get("status_code") or 0),
                             str(result.get("error_text") or ""),
                         ),

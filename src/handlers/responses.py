@@ -15,6 +15,7 @@ from src.adapters.upstream_executor import (
     collect_codex_response_from_stream,
     is_rate_limit_status,
     mark_retryable_response_for_profile,
+    should_retry_codex_result,
     should_trigger_codex_failover,
 )
 from src.observability.turn_logging import (
@@ -39,6 +40,7 @@ from upstream_config import (
     UpstreamCapabilityError,
     UpstreamConfigError,
     build_upstream_url,
+    get_codex_oauth_max_failovers,
     get_codex_oauth_retry_attempts,
     get_effective_auth_type,
     get_runtime_options,
@@ -77,8 +79,10 @@ async def run_responses_flow(
 
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_RESPONSES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
+    max_failovers = 0
     if auth_type == "codex_oauth":
         max_retries = get_codex_oauth_retry_attempts(profile, max_retries)
+        max_failovers = get_codex_oauth_max_failovers(profile)
 
     async def refresh_upstream_headers() -> Dict[str, str]:
         headers = await build_headers_by_profile(profile, model)
@@ -149,6 +153,7 @@ async def run_responses_flow(
                     ),
                     headers=upstream_headers,
                     max_retries=max_retries,
+                    max_failovers=max_failovers,
                     is_retryable=is_rate_limit_status,
                     refresh_headers=refresh_upstream_headers,
                     on_retryable_response=lambda hdrs, status, err: mark_retryable_response_for_profile(
@@ -157,7 +162,11 @@ async def run_responses_flow(
                         status_code=status,
                         error_text=err,
                     ),
-                    should_retry_result=lambda result: should_trigger_codex_failover(
+                    should_retry_result=lambda result: should_retry_codex_result(
+                        int(result.get("status_code") or 0),
+                        str(result.get("error_text") or ""),
+                    ),
+                    should_failover_result=lambda result: should_trigger_codex_failover(
                         int(result.get("status_code") or 0),
                         str(result.get("error_text") or ""),
                     ),

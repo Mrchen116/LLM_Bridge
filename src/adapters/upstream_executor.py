@@ -18,6 +18,9 @@ CODEX_FAILOVER_ERROR_CODES = {
     "insufficient_quota",
     "usage_not_included",
 }
+CODEX_RETRYABLE_ERROR_CODES = CODEX_FAILOVER_ERROR_CODES | {
+    "server_error",
+}
 CODEX_DEFAULT_ORIGINATOR = "codex_cli_rs"
 CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.104.0 (LLM_PROXY)"
 CODEX_DEFAULT_BETA_FEATURES = "multi_agent,prevent_idle_sleep"
@@ -62,6 +65,15 @@ def should_trigger_codex_failover(status_code: int, error_text: str = "") -> boo
         return True
     code = _extract_error_code_from_text(error_text)
     return code in CODEX_FAILOVER_ERROR_CODES
+
+
+def should_retry_codex_result(status_code: int, error_text: str = "") -> bool:
+    if status_code >= 500:
+        return True
+    if is_rate_limit_status(status_code):
+        return True
+    code = _extract_error_code_from_text(error_text)
+    return code in CODEX_RETRYABLE_ERROR_CODES
 
 
 def _header_value_case_insensitive(headers: Optional[Mapping[str, Any]], key: str) -> str:
@@ -191,6 +203,8 @@ async def collect_codex_response_from_stream(
 
             text_parts: List[str] = []
             completed_response: Dict[str, Any] | None = None
+            failed_response: Dict[str, Any] | None = None
+            stream_error_text = ""
             async for line in r.aiter_lines():
                 if not line:
                     continue
@@ -211,10 +225,51 @@ async def collect_codex_response_from_stream(
                     delta_text = evt.get("delta")
                     if isinstance(delta_text, str) and delta_text:
                         text_parts.append(delta_text)
+                elif evt_type == "error":
+                    error_obj = evt.get("error")
+                    if isinstance(error_obj, dict):
+                        try:
+                            stream_error_text = json.dumps({"error": error_obj}, ensure_ascii=False)
+                        except Exception:
+                            stream_error_text = str(error_obj)
+                    elif not stream_error_text:
+                        stream_error_text = data_part
+                elif evt_type == "response.failed":
+                    response_obj = evt.get("response")
+                    if isinstance(response_obj, dict):
+                        failed_response = response_obj
+                        if not stream_error_text:
+                            error_obj = response_obj.get("error")
+                            if isinstance(error_obj, dict):
+                                try:
+                                    stream_error_text = json.dumps({"error": error_obj}, ensure_ascii=False)
+                                except Exception:
+                                    stream_error_text = str(error_obj)
+                            else:
+                                try:
+                                    stream_error_text = json.dumps({"response": response_obj}, ensure_ascii=False)
+                                except Exception:
+                                    stream_error_text = data_part
                 elif evt_type == "response.completed":
                     response_obj = evt.get("response")
                     if isinstance(response_obj, dict):
                         completed_response = response_obj
+
+            if failed_response is not None or stream_error_text:
+                if not stream_error_text and failed_response is not None:
+                    try:
+                        stream_error_text = json.dumps({"response": failed_response}, ensure_ascii=False)
+                    except Exception:
+                        stream_error_text = "codex stream failed"
+                err_bytes = stream_error_text.encode("utf-8", errors="replace")
+                return {
+                    "ok": False,
+                    "status_code": 502,
+                    "error_bytes": err_bytes,
+                    "error_text": stream_error_text,
+                    "response_json": failed_response,
+                    "chunks": collected_chunks,
+                }
 
             if completed_response is None:
                 completed_response = {

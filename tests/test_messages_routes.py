@@ -1,3 +1,4 @@
+import copy
 import json
 import sys
 from pathlib import Path
@@ -165,6 +166,47 @@ def test_messages_codex_oauth_stream_bridge(client: TestClient):
     assert "event: content_block_delta" in data
     assert "x=7,y=3" in data
     assert "event: message_stop" in data
+
+
+def test_messages_codex_oauth_stream_retries_on_upstream_failed_event(client: TestClient, monkeypatch):
+    """测试 codex 流内 response.failed 会触发重试，成功后不再返回空响应。"""
+    from tests.support import FakeAsyncClient
+
+    cfg = copy.deepcopy(app_module.UPSTREAM_CONFIG)
+    cfg["profiles"]["codexOAuth"]["defaults"]["retryMax"] = 2
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", cfg)
+
+    FakeAsyncClient.stream_responses = [
+        FakeStreamResponse(
+            status_code=200,
+            lines=[
+                'data: {"type":"response.created","response":{"id":"resp_fail_1","status":"in_progress","output":[]}}',
+                'data: {"type":"error","error":{"type":"server_error","code":"server_error","message":"temporary upstream failure"}}',
+                'data: {"type":"response.failed","response":{"id":"resp_fail_1","status":"failed","error":{"code":"server_error","message":"temporary upstream failure"},"output":[]}}',
+                "data: [DONE]",
+            ],
+        ),
+        FakeStreamResponse(
+            status_code=200,
+            lines=[
+                'data: {"type":"response.output_text.delta","delta":"retry ok"}',
+                'data: {"type":"response.completed","response":{"id":"resp_retry_ok","output":[{"type":"message","content":[{"type":"output_text","text":"retry ok"}]}],"usage":{"input_tokens":4,"output_tokens":2}}}',
+                "data: [DONE]",
+            ],
+        ),
+    ]
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "重试一下"}],
+        "stream": True,
+    }
+    with client.stream("POST", "/v1/messages", json=payload) as resp:
+        data = "".join(resp.iter_text())
+    assert resp.status_code == 200
+    assert "retry ok" in data
+    assert "event: error" not in data
+    assert "event: message_stop" in data
+    assert FakeAsyncClient.stream_responses == []
 
 
 def test_messages_codex_oauth_stream_bridge_maps_function_call_to_tool_use(client: TestClient):
