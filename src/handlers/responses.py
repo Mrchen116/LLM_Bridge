@@ -33,6 +33,7 @@ from src.reasoning.reinject import (
     _maybe_reinject_codex_reasoning_for_responses,
     _update_codex_reasoning_reinject_cache_for_responses,
 )
+from token_auth import CodexAccountUnavailableError
 from proxy_converters import _extract_model_and_ban_explore
 from proxy_logging import _resp_to_obj
 from upstream_config import (
@@ -94,7 +95,13 @@ async def run_responses_flow(
             session_id=session_id,
         )
 
-    upstream_headers = await refresh_upstream_headers()
+    try:
+        upstream_headers = await refresh_upstream_headers()
+    except CodexAccountUnavailableError as e:
+        return JSONResponse(
+            {"error": {"message": str(e), "type": e.error_type}},
+            status_code=e.status_code,
+        )
     body["model"] = model
     if auth_type == "codex_oauth":
         reasoning = body.get("reasoning")

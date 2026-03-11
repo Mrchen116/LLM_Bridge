@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Awaitable, Callable, Dict
+
+from token_auth import CodexAccountUnavailableError
 
 
 async def collect_with_retry(
@@ -40,7 +43,19 @@ async def collect_with_retry(
             if on_retryable_response is not None:
                 await on_retryable_response(current_headers, status_code, str(result.get("error_text") or ""))
             await asyncio.sleep(1 * (2 ** min(retry_sequence, 3)))
-            current_headers = await refresh_headers()
+            try:
+                current_headers = await refresh_headers()
+            except CodexAccountUnavailableError as e:
+                return {
+                    "ok": False,
+                    "status_code": e.status_code,
+                    "error_bytes": json.dumps(
+                        {"error": {"message": str(e), "type": e.error_type}},
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    "error_text": str(e),
+                    "chunks": result.get("chunks") or [],
+                }
             failover_count += 1
             current_account_attempts = 0
             retry_sequence += 1

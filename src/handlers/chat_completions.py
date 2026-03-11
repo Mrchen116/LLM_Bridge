@@ -40,6 +40,7 @@ from src.reasoning.reinject import (
     _maybe_reinject_codex_reasoning,
     _update_codex_reasoning_reinject_cache,
 )
+from token_auth import CodexAccountUnavailableError
 from proxy_converters import (
     _extract_model_and_ban_explore,
     _strip_task_explore_line,
@@ -104,7 +105,13 @@ async def run_chat_completions_flow(
             session_id=session_id,
         )
 
-    upstream_headers = await refresh_upstream_headers()
+    try:
+        upstream_headers = await refresh_upstream_headers()
+    except CodexAccountUnavailableError as e:
+        return JSONResponse(
+            {"error": {"message": str(e), "type": e.error_type}},
+            status_code=e.status_code,
+        )
 
     body["model"] = model
     if auth_type == "codex_oauth":

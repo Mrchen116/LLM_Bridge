@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 from fastapi.testclient import TestClient
 
+import app as app_module
 from tests.support import FakeAsyncClient, FakeStreamResponse
+from tests.support import TEST_UPSTREAM_CONFIG
 
 
 def test_responses_profile_unsupported_for_protocol(client: TestClient):
@@ -44,6 +46,42 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
     assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
     assert "reasoning" not in FakeAsyncClient.last_stream_args["json"]
     assert FakeAsyncClient.last_post_args == {}
+
+
+def test_responses_codex_oauth_all_accounts_cooling_down_returns_429(tmp_path, monkeypatch):
+    """测试 responses 在 codex 账号全冷却时返回 429。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
+    Path(".codex_oauth.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "default_label": "primary",
+                "accounts": [
+                    {
+                        "label": "primary",
+                        "account_id": "org-test-account",
+                        "priority": 100,
+                        "enabled": True,
+                        "access_token": "codex-access-token",
+                        "refresh_token": "codex-refresh-token",
+                        "expires_at": 4102444800,
+                        "cooldown_until": 4102444800,
+                        "last_error": "",
+                        "updated_at": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", TEST_UPSTREAM_CONFIG)
+    local_client = TestClient(app_module.app)
+
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello"}
+    resp = local_client.post("/v1/responses", json=payload)
+    assert resp.status_code == 429
+    assert resp.json()["error"]["type"] == "rate_limit_error"
 
 
 def test_responses_codex_oauth_model_suffix_sets_reasoning_effort(client: TestClient):

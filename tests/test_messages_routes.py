@@ -328,6 +328,50 @@ def test_messages_codex_oauth_stream_connect_error_emits_error_event(tmp_path, m
     assert "event: message_stop" in data
 
 
+def test_messages_codex_oauth_all_accounts_cooling_down_returns_429(tmp_path, monkeypatch):
+    """测试所有 codex 账号都在冷却中时返回 429，而不是未处理异常。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
+    Path(".codex_oauth.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "default_label": "primary",
+                "accounts": [
+                    {
+                        "label": "primary",
+                        "account_id": "org-test-account",
+                        "priority": 100,
+                        "enabled": True,
+                        "access_token": "codex-access-token",
+                        "refresh_token": "codex-refresh-token",
+                        "expires_at": 4102444800,
+                        "cooldown_until": 4102444800,
+                        "last_error": "",
+                        "updated_at": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", TEST_UPSTREAM_CONFIG)
+    monkeypatch.setattr(app_module, "BAN_STREAM", False)
+    monkeypatch.setattr(app_module, "_dump_json", lambda *args, **kwargs: None)
+    local_client = TestClient(app_module.app)
+
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+    }
+    resp = local_client.post("/v1/messages", json=payload)
+    assert resp.status_code == 429
+    body = resp.json()
+    assert body["error"]["type"] == "rate_limit_error"
+    assert "所有 Codex 账号均在冷却中" in body["error"]["message"]
+
+
 def test_messages_stream_disabled(client: TestClient, monkeypatch):
     """测试启用 BAN_STREAM 时拒绝 /v1/messages 流式请求。"""
     monkeypatch.setattr(app_module, "BAN_STREAM", True)

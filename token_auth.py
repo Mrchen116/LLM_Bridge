@@ -39,6 +39,13 @@ LABEL_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
 _lock = asyncio.Lock()
 
 
+class CodexAccountUnavailableError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int, error_type: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_type = error_type
+
+
 def get_x_auth_token(*args, **kwargs):
     return None
 
@@ -868,18 +875,30 @@ async def _select_candidate_labels(profile: Optional[Dict[str, Any]]) -> List[st
         root = _load_pool_locked()
         accounts = [it for it in root.get("accounts") or [] if isinstance(it, dict)]
         if not accounts:
-            raise RuntimeError("未配置 Codex 账号，请先执行: python manage_codex_accounts.py")
+            raise CodexAccountUnavailableError(
+                "未配置 Codex 账号，请先执行: python manage_codex_accounts.py",
+                status_code=503,
+                error_type="service_unavailable",
+            )
 
         enabled_accounts = [it for it in accounts if _as_bool(it.get("enabled"), True)]
         if not enabled_accounts:
-            raise RuntimeError("Codex 账号池为空或均被禁用，请先启用至少一个账号")
+            raise CodexAccountUnavailableError(
+                "Codex 账号池为空或均被禁用，请先启用至少一个账号",
+                status_code=503,
+                error_type="service_unavailable",
+            )
 
         now = _now_ts()
         available = [it for it in enabled_accounts if _as_int(it.get("cooldown_until"), 0) <= now]
         if not available:
             nearest = min(_as_int(it.get("cooldown_until"), now) for it in enabled_accounts)
             wait_seconds = max(0, nearest - now)
-            raise RuntimeError(f"所有 Codex 账号均在冷却中，请等待约 {wait_seconds}s")
+            raise CodexAccountUnavailableError(
+                f"所有 Codex 账号均在冷却中，请等待约 {wait_seconds}s",
+                status_code=429,
+                error_type="rate_limit_error",
+            )
 
         ordered = sorted(available, key=lambda it: (_as_int(it.get("priority"), DEFAULT_PRIORITY), str(it.get("label") or "")))
         return [str(item.get("label") or "") for item in ordered if str(item.get("label") or "")]
