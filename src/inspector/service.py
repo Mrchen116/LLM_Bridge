@@ -21,6 +21,7 @@ from src.inspector.files import (
     build_turn_file_index,
     find_session_dirs_by_id,
     list_session_dirs,
+    parse_ts_to_epoch_ms,
     parse_session_dir_name,
 )
 from src.inspector.grouping import AssignedLane, TurnLaneInput, assign_lanes, lane_sort_key
@@ -31,6 +32,8 @@ from src.observability.token_stats import collect_usage_tokens_for_stats
 @dataclass(frozen=True)
 class _TurnRecord:
     ts: str
+    request_started_at_ms: int
+    response_completed_at_ms: int
     downstream_format: str
     req_obj: Dict[str, Any]
     req_file: str
@@ -258,8 +261,10 @@ def _build_turn_records(
         slots = index[ts]
         non_stream_obj = None
         non_stream_file = None
+        non_stream_path: Optional[Path] = None
         downstream_obj = None
         downstream_file = None
+        downstream_path: Optional[Path] = None
 
         non_stream_entry = slots.get("non_stream")
         if non_stream_entry:
@@ -281,9 +286,18 @@ def _build_turn_records(
                 label="Agent ? · (unknown)",
             )
 
+        request_started_at_ms = parse_ts_to_epoch_ms(ts)
+        response_completed_at_ms = _extract_response_completed_at_ms(
+            non_stream_obj if non_stream_path is not None else downstream_obj,
+            non_stream_path if non_stream_path is not None else downstream_path,
+            request_started_at_ms,
+        )
+
         records.append(
             _TurnRecord(
                 ts=ts,
+                request_started_at_ms=request_started_at_ms,
+                response_completed_at_ms=response_completed_at_ms,
                 downstream_format=fmt,
                 req_obj=req_obj,
                 req_file=req_file,
@@ -361,6 +375,86 @@ def _sorted_tool_counts(tool_counts: Dict[str, int]) -> List[Dict[str, Any]]:
         {"tool_name": name, "count": count}
         for name, count in sorted(tool_counts.items(), key=lambda item: (-item[1], item[0]))
     ]
+
+
+def _extract_response_completed_at_ms(
+    response_obj: Optional[Dict[str, Any]],
+    response_path: Optional[Path],
+    default_ms: int,
+) -> int:
+    if isinstance(response_obj, dict):
+        meta = response_obj.get("_log_meta")
+        if isinstance(meta, dict):
+            try:
+                value = int(meta.get("response_completed_at_ms") or 0)
+            except Exception:
+                value = 0
+            if value > 0:
+                return value
+
+    if response_path is not None:
+        try:
+            stat_ms = int(response_path.stat().st_mtime * 1000)
+        except Exception:
+            stat_ms = 0
+        if stat_ms > 0:
+            return stat_ms
+
+    return default_ms
+
+
+def _build_duration_stats(
+    turn_records: List[_TurnRecord],
+    lane_id_to_label: Dict[str, str],
+) -> Dict[str, Any]:
+    if not turn_records:
+        return {
+            "session": {
+                "start_ms": None,
+                "end_ms": None,
+                "duration_ms": 0,
+            },
+            "agents": [],
+        }
+
+    session_start_ms = min(rec.request_started_at_ms for rec in turn_records)
+    session_end_ms = max(rec.response_completed_at_ms for rec in turn_records)
+
+    lane_ranges: Dict[str, Dict[str, int]] = {}
+    for rec in turn_records:
+        slot = lane_ranges.setdefault(
+            rec.lane.lane_id,
+            {
+                "start_ms": rec.request_started_at_ms,
+                "end_ms": rec.response_completed_at_ms,
+            },
+        )
+        slot["start_ms"] = min(slot["start_ms"], rec.request_started_at_ms)
+        slot["end_ms"] = max(slot["end_ms"], rec.response_completed_at_ms)
+
+    agents: List[Dict[str, Any]] = []
+    for lane_id in sorted(lane_ranges.keys(), key=lambda x: lane_sort_key(lane_id_to_label.get(x, x))):
+        slot = lane_ranges[lane_id]
+        start_ms = int(slot.get("start_ms") or 0)
+        end_ms = int(slot.get("end_ms") or 0)
+        agents.append(
+            {
+                "lane_id": lane_id,
+                "label": lane_id_to_label.get(lane_id, lane_id),
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "duration_ms": max(0, end_ms - start_ms),
+            }
+        )
+
+    return {
+        "session": {
+            "start_ms": session_start_ms,
+            "end_ms": session_end_ms,
+            "duration_ms": max(0, session_end_ms - session_start_ms),
+        },
+        "agents": agents,
+    }
 
 
 def get_timeline(
@@ -505,8 +599,16 @@ def get_timeline(
         agent_tool_totals[lane_id] = agent_tool_totals.get(lane_id, 0) + 1
 
     agent_ids = set(agent_token_buckets.keys()) | set(agent_tool_totals.keys())
+    filtered_turn_records = [rec for rec in records if rec.ts in turns_selected]
+    duration_stats = _build_duration_stats(filtered_turn_records, lane_id_to_label)
+    duration_agents_by_lane = {
+        str(item.get("lane_id") or ""): item
+        for item in duration_stats.get("agents", [])
+        if isinstance(item, dict)
+    }
     filtered_scope_agents: List[Dict[str, Any]] = []
     for lane_id in sorted(agent_ids, key=lambda x: lane_sort_key(lane_id_to_label.get(x, x))):
+        duration_item = duration_agents_by_lane.get(lane_id, {})
         filtered_scope_agents.append(
             {
                 "lane_id": lane_id,
@@ -514,6 +616,11 @@ def get_timeline(
                 "tokens": agent_token_buckets.get(lane_id, _new_token_bucket()),
                 "tool_calls_total": agent_tool_totals.get(lane_id, 0),
                 "tool_calls_by_name": _sorted_tool_counts(agent_tool_counts.get(lane_id, {})),
+                "duration": {
+                    "start_ms": duration_item.get("start_ms"),
+                    "end_ms": duration_item.get("end_ms"),
+                    "duration_ms": int(duration_item.get("duration_ms") or 0),
+                },
             }
         )
 
@@ -609,6 +716,7 @@ def get_timeline(
             "filtered_scope": {
                 "turn_count_after_keywords": len(turns_selected),
                 "session_tokens": session_tokens,
+                "duration": duration_stats.get("session"),
                 "tool_calls": {
                     "total_calls": sum(session_tool_counts.values()),
                     "by_tool": _sorted_tool_counts(session_tool_counts),

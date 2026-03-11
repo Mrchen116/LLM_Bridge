@@ -3,6 +3,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from src.inspector.files import parse_ts_to_epoch_ms
+
 
 def _write_json(path: Path, obj):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -720,6 +722,90 @@ def test_session_inspector_filtered_scope_stats_follow_keyword_turns(client: Tes
     assert agent_stats["tokens"]["num_turns"] == 1
     assert agent_stats["tool_calls_total"] == 1
     assert agent_stats["tool_calls_by_name"] == [{"tool_name": "Bash", "count": 1}]
+
+
+def test_session_inspector_filtered_scope_duration_stats(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-44-00_000_duration-session"
+
+    turn_1_ts = "2026-02-22_12-44-00_001"
+    turn_2_ts = "2026-02-22_12-44-03_000"
+    turn_1_start_ms = parse_ts_to_epoch_ms(turn_1_ts)
+    turn_2_start_ms = parse_ts_to_epoch_ms(turn_2_ts)
+    turn_1_end_ms = turn_1_start_ms + 2500
+    turn_2_end_ms = turn_2_start_ms + 4000
+
+    _write_json(
+        session_dir / f"{turn_1_ts}-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "instructions": "system A",
+            "messages": [{"role": "user", "content": "task one"}],
+            "tools": [{"type": "function", "function": {"name": "Bash", "parameters": {}}}],
+            "tool_choice": "auto",
+        },
+    )
+    _write_json(
+        session_dir / f"{turn_1_ts}-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_duration_1",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "done one"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            "_log_meta": {"response_completed_at_ms": turn_1_end_ms},
+        },
+    )
+
+    _write_json(
+        session_dir / f"{turn_2_ts}-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "instructions": "system B",
+            "messages": [{"role": "user", "content": "task two"}],
+            "tools": [{"type": "function", "function": {"name": "Read", "parameters": {}}}],
+            "tool_choice": "auto",
+        },
+    )
+    _write_json(
+        session_dir / f"{turn_2_ts}-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_duration_2",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "done two"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 6, "completion_tokens": 3, "total_tokens": 9},
+            "_log_meta": {"response_completed_at_ms": turn_2_end_ms},
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/duration-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    filtered_scope = payload["stats"]["filtered_scope"]
+
+    assert filtered_scope["duration"]["start_ms"] == turn_1_start_ms
+    assert filtered_scope["duration"]["end_ms"] == turn_2_end_ms
+    assert filtered_scope["duration"]["duration_ms"] == turn_2_end_ms - turn_1_start_ms
+
+    agents = {item["label"]: item for item in filtered_scope["agents"]}
+    assert agents
+    assert sorted(item["duration"]["duration_ms"] for item in agents.values()) == [2500, 4000]
 
 
 def test_session_inspector_keyword_filter_applies_to_whole_turn(client: TestClient, monkeypatch):

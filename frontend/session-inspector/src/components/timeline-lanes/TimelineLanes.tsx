@@ -82,6 +82,20 @@ export function TimelineLanes({
     return value.toLocaleString()
   }
 
+  function formatDuration(durationMs: number): string {
+    if (durationMs < 1000) {
+      return `${durationMs} ms`
+    }
+    if (durationMs < 60_000) {
+      return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)} s`
+    }
+
+    const totalSeconds = Math.floor(durationMs / 1000)
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    return `${minutes}m ${seconds}s`
+  }
+
   function openStatsModal() {
     if (!filteredScopeStats) {
       return
@@ -157,6 +171,7 @@ export function TimelineLanes({
               Turns {formatCount(filteredScopeStats.session_tokens.num_turns)} · Tool Calls{' '}
               {formatCount(filteredScopeStats.tool_calls.total_calls)}
             </div>
+            <div className="stats-chip">Duration {formatDuration(filteredScopeStats.duration.duration_ms)}</div>
             <div className="stats-chip">
               Agents {formatCount(filteredScopeStats.agents.length)} · Keyword Turns{' '}
               {formatCount(filteredScopeStats.turn_count_after_keywords)}
@@ -344,6 +359,12 @@ export function TimelineLanes({
                 <div className="stats-kv-label">Tool Calls</div>
                 <div className="stats-kv-value">{formatCount(filteredScopeStats.tool_calls.total_calls)}</div>
               </div>
+              <div className="stats-kv-card">
+                <div className="stats-kv-label">Duration</div>
+                <div className="stats-kv-value">
+                  {formatDuration(filteredScopeStats.duration.duration_ms)}
+                </div>
+              </div>
             </div>
 
             <div className="stats-modal-body">
@@ -393,7 +414,8 @@ export function TimelineLanes({
                           </div>
                           <div className="stats-agent-meta">
                             turns {formatCount(agentStat.tokens.num_turns)} · tools{' '}
-                            {formatCount(agentStat.tool_calls_total)}
+                            {formatCount(agentStat.tool_calls_total)} · time{' '}
+                            {formatDuration(agentStat.duration.duration_ms)}
                           </div>
                         </button>
                       )
@@ -410,6 +432,7 @@ export function TimelineLanes({
                           <div>Input: {formatCount(selectedAgentStats.tokens.input_tokens)}</div>
                           <div>Output: {formatCount(selectedAgentStats.tokens.output_tokens)}</div>
                           <div>Turns: {formatCount(selectedAgentStats.tokens.num_turns)}</div>
+                          <div>Duration: {formatDuration(selectedAgentStats.duration.duration_ms)}</div>
                           <div>Tool Calls: {formatCount(selectedAgentStats.tool_calls_total)}</div>
                         </div>
                         <div className="stats-table-wrap">

@@ -136,17 +136,33 @@ def log_response_phase(
     downstream_response_obj: Dict[str, Any],
     non_stream_response_obj: Optional[Dict[str, Any]] = None,
 ) -> None:
+    response_completed_at = datetime.now()
+    response_completed_at_ms = int(response_completed_at.timestamp() * 1000)
+
+    def with_session_log_meta(obj: Any) -> Any:
+        if not isinstance(obj, dict):
+            return obj
+        enriched = dict(obj)
+        meta = enriched.get("_log_meta") if isinstance(enriched.get("_log_meta"), dict) else {}
+        enriched["_log_meta"] = {
+            **meta,
+            "request_started_at": paths.ts,
+            "response_completed_at": response_completed_at.isoformat(timespec="milliseconds"),
+            "response_completed_at_ms": response_completed_at_ms,
+        }
+        return enriched
+
     _dump_json(paths.raw_upstream_res_path, upstream_response_obj)
     _dump_json(paths.raw_downstream_res_path, downstream_response_obj)
     status_code = downstream_response_obj.get("status_code") if isinstance(downstream_response_obj, dict) else None
     session_writable = not (isinstance(status_code, int) and status_code >= 400)
     if session_writable and paths.session_downstream_res_path:
-        _dump_json(paths.session_downstream_res_path, downstream_response_obj)
+        _dump_json(paths.session_downstream_res_path, with_session_log_meta(downstream_response_obj))
     if session_writable and paths.session_non_stream_res_path:
         source_obj = non_stream_response_obj or downstream_response_obj
         _dump_json(
             paths.session_non_stream_res_path,
-            build_session_non_stream_openai_chat(source_obj, paths.downstream_format),
+            with_session_log_meta(build_session_non_stream_openai_chat(source_obj, paths.downstream_format)),
         )
 
 

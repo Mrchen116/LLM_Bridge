@@ -64,6 +64,11 @@ export interface TimelineResponse {
         output_tokens: number
         num_turns: number
       }
+      duration: {
+        start_ms: number | null
+        end_ms: number | null
+        duration_ms: number
+      }
       tool_calls: {
         total_calls: number
         by_tool: Array<{
@@ -78,6 +83,11 @@ export interface TimelineResponse {
           input_tokens: number
           output_tokens: number
           num_turns: number
+        }
+        duration: {
+          start_ms: number | null
+          end_ms: number | null
+          duration_ms: number
         }
         tool_calls_total: number
         tool_calls_by_name: Array<{

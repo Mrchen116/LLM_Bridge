@@ -880,27 +880,34 @@ select {
 
 .stats-kv-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .stats-kv-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: #fff;
-  padding: 10px 12px;
+  min-width: 0;
+  padding: 8px 10px;
 }
 
 .stats-kv-label {
   color: #617589;
-  font-size: 12px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stats-kv-value {
-  margin-top: 4px;
+  margin-top: 3px;
   color: #2e475f;
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 620;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stats-modal-body {
@@ -1208,7 +1215,7 @@ select {
   }
 
   .stats-kv-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .stats-modal-body {
@@ -1226,6 +1233,9 @@ select {
 }
 
 @media (max-width: 640px) {
+  .stats-kv-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .panel-header {
     padding: var(--space-3);
     flex-wrap: wrap;
