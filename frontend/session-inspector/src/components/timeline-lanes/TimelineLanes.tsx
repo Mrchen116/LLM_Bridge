@@ -146,6 +146,36 @@ export function TimelineLanes({
     }
   }
 
+  const statsCards = filteredScopeStats
+    ? [
+        {
+          label: 'Input Tokens',
+          value: formatCount(filteredScopeStats.session_tokens.input_tokens),
+          help: '关键词过滤后的 turns 中，所有请求消耗的输入 token 总和，来自日志里的 usage 字段聚合。',
+        },
+        {
+          label: 'Output Tokens',
+          value: formatCount(filteredScopeStats.session_tokens.output_tokens),
+          help: '关键词过滤后的 turns 中，所有回复消耗的输出 token 总和，来自日志里的 usage 字段聚合。',
+        },
+        {
+          label: 'Turns',
+          value: formatCount(filteredScopeStats.session_tokens.num_turns),
+          help: '关键词过滤后被保留下来的 turn 数量；一个 turn 对应一次请求及其最终回复。',
+        },
+        {
+          label: 'Tool Calls',
+          value: formatCount(filteredScopeStats.tool_calls.total_calls),
+          help: '关键词过滤后的 turns 中，识别到的 tool_call 事件总数。',
+        },
+        {
+          label: 'Duration',
+          value: formatDuration(filteredScopeStats.duration.duration_ms),
+          help: '关键词过滤后的 turns 中，从第一个请求发起时间到最后一个回复获取时间的时间差。',
+        },
+      ]
+    : []
+
   return (
     <main className="panel timeline-panel timeline-panel-dense">
       <header className="panel-header">
@@ -337,34 +367,22 @@ export function TimelineLanes({
             </div>
 
             <div className="stats-kv-grid">
-              <div className="stats-kv-card">
-                <div className="stats-kv-label">Input Tokens</div>
-                <div className="stats-kv-value">
-                  {formatCount(filteredScopeStats.session_tokens.input_tokens)}
+              {statsCards.map((item) => (
+                <div className="stats-kv-card" key={`stats-card-${item.label}`}>
+                  <div className="stats-kv-head">
+                    <div className="stats-kv-label">{item.label}</div>
+                    <span
+                      className="stats-kv-help"
+                      data-help={item.help}
+                      aria-label={`${item.label} 说明：${item.help}`}
+                      tabIndex={0}
+                    >
+                      ?
+                    </span>
+                  </div>
+                  <div className="stats-kv-value">{item.value}</div>
                 </div>
-              </div>
-              <div className="stats-kv-card">
-                <div className="stats-kv-label">Output Tokens</div>
-                <div className="stats-kv-value">
-                  {formatCount(filteredScopeStats.session_tokens.output_tokens)}
-                </div>
-              </div>
-              <div className="stats-kv-card">
-                <div className="stats-kv-label">Turns</div>
-                <div className="stats-kv-value">
-                  {formatCount(filteredScopeStats.session_tokens.num_turns)}
-                </div>
-              </div>
-              <div className="stats-kv-card">
-                <div className="stats-kv-label">Tool Calls</div>
-                <div className="stats-kv-value">{formatCount(filteredScopeStats.tool_calls.total_calls)}</div>
-              </div>
-              <div className="stats-kv-card">
-                <div className="stats-kv-label">Duration</div>
-                <div className="stats-kv-value">
-                  {formatDuration(filteredScopeStats.duration.duration_ms)}
-                </div>
-              </div>
+              ))}
             </div>
 
             <div className="stats-modal-body">
