@@ -1,6 +1,8 @@
 import json
+import copy
 from pathlib import Path
 from fastapi.testclient import TestClient
+import zstandard as zstd
 
 import app as app_module
 from tests.support import FakeAsyncClient, FakeStreamResponse
@@ -46,6 +48,69 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
     assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
     assert "reasoning" not in FakeAsyncClient.last_stream_args["json"]
     assert FakeAsyncClient.last_post_args == {}
+
+
+def test_responses_codex_oauth_can_compress_non_stream_request_body(client: TestClient, monkeypatch):
+    """测试 codex_oauth 可按 profile 配置压缩非流式请求体。"""
+    cfg = copy.deepcopy(TEST_UPSTREAM_CONFIG)
+    cfg["profiles"]["codexOAuth"]["features"] = {"enableRequestCompression": True}
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", cfg)
+
+    upstream_body = {
+        "id": "resp_compressed_non_stream",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello", "store": True}
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 200
+
+    request_headers = FakeAsyncClient.last_stream_args["headers"]
+    compressed = FakeAsyncClient.last_stream_args["content"]
+    assert request_headers["content-encoding"] == "zstd"
+    assert FakeAsyncClient.last_stream_args["json"] is None
+    assert isinstance(compressed, bytes) and compressed
+
+    decoded = json.loads(zstd.ZstdDecompressor().decompress(compressed).decode("utf-8"))
+    assert decoded["model"] == "gpt-5.2-codex"
+    assert decoded["store"] is False
+    assert decoded["stream"] is True
+
+
+def test_responses_codex_oauth_can_compress_stream_request_body(client: TestClient, monkeypatch):
+    """测试 codex_oauth 可按 profile 配置压缩流式请求体。"""
+    cfg = copy.deepcopy(TEST_UPSTREAM_CONFIG)
+    cfg["profiles"]["codexOAuth"]["features"] = {"enableRequestCompression": True}
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", cfg)
+
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        raw_chunks=[b"data: [DONE]\n\n"],
+    )
+
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "input": "hello", "stream": True}
+    with client.stream("POST", "/v1/responses", json=payload) as resp:
+        _ = "".join(resp.iter_text())
+    assert resp.status_code == 200
+
+    request_headers = FakeAsyncClient.last_stream_args["headers"]
+    compressed = FakeAsyncClient.last_stream_args["content"]
+    assert request_headers["content-encoding"] == "zstd"
+    assert FakeAsyncClient.last_stream_args["json"] is None
+    assert isinstance(compressed, bytes) and compressed
+
+    decoded = json.loads(zstd.ZstdDecompressor().decompress(compressed).decode("utf-8"))
+    assert decoded["model"] == "gpt-5.2-codex"
+    assert decoded["stream"] is True
+    assert decoded["input"] == "hello"
 
 
 def test_responses_codex_oauth_all_accounts_cooling_down_returns_429(tmp_path, monkeypatch):

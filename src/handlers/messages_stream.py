@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.upstream_executor import (
+    build_upstream_request_kwargs,
     collect_codex_response_from_stream,
     is_rate_limit_status,
     mark_retryable_response_for_profile,
@@ -108,6 +109,7 @@ def build_openai_bridge_streaming_response(
                         collect_once=lambda hdrs: collect_codex_response_from_stream(
                             client=client,
                             upstream_url=upstream_url,
+                            profile=profile,
                             headers=hdrs,
                             request_body=upstream_payload,
                         ),
@@ -213,7 +215,12 @@ def build_openai_bridge_streaming_response(
                 connection_established = False
 
                 for attempt in range(max_retries):
-                    async with client.stream("POST", upstream_url, headers=retry_headers, json=upstream_payload) as r:
+                    request_headers, request_kwargs = build_upstream_request_kwargs(
+                        profile=profile,
+                        headers=retry_headers,
+                        request_body=upstream_payload,
+                    )
+                    async with client.stream("POST", upstream_url, headers=request_headers, **request_kwargs) as r:
                         up_chunks.append({"type": "response_meta", "status_code": r.status_code, "headers": dict(r.headers)})
 
                         if is_rate_limit_status(r.status_code):

@@ -5,9 +5,12 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 import httpx
 
+from src.adapters.upstream_executor import build_upstream_request_kwargs
+
 
 async def post_with_retry(
     *,
+    profile: Dict[str, Any],
     upstream_url: str,
     request_body: Dict[str, Any],
     headers: Dict[str, str],
@@ -28,7 +31,12 @@ async def post_with_retry(
         last_retry_response: Optional[httpx.Response] = None
         current_headers = headers
         for attempt in range(max_retries):
-            r = await client.post(upstream_url, headers=current_headers, json=request_body)
+            request_headers, request_kwargs = build_upstream_request_kwargs(
+                profile=profile,
+                headers=current_headers,
+                request_body=request_body,
+            )
+            r = await client.post(upstream_url, headers=request_headers, **request_kwargs)
             if not is_retryable(r.status_code):
                 break
             last_retry_response = r

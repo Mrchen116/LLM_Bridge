@@ -131,7 +131,7 @@ def test_codex_oauth_failover_on_429_switches_account(client: TestClient, monkey
         encoding="utf-8",
     )
 
-    async def fake_collect_codex_response_from_stream(client, upstream_url, headers, request_body):
+    async def fake_collect_codex_response_from_stream(client, upstream_url, profile, headers, request_body):
         auth = str(headers.get("authorization") or headers.get("Authorization") or "")
         if auth == "Bearer token-a":
             return {
@@ -211,7 +211,7 @@ def test_codex_oauth_failover_on_insufficient_quota_switches_account(client: Tes
         encoding="utf-8",
     )
 
-    async def fake_collect_codex_response_from_stream(client, upstream_url, headers, request_body):
+    async def fake_collect_codex_response_from_stream(client, upstream_url, profile, headers, request_body):
         auth = str(headers.get("authorization") or headers.get("Authorization") or "")
         if auth == "Bearer token-a":
             err_text = "{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}}"
@@ -294,7 +294,7 @@ def test_codex_oauth_retry_max_is_not_capped_by_failover_limit(client: TestClien
 
     call_headers = []
 
-    async def fake_collect_codex_response_from_stream(client, upstream_url, headers, request_body):
+    async def fake_collect_codex_response_from_stream(client, upstream_url, profile, headers, request_body):
         auth = str(headers.get("authorization") or headers.get("Authorization") or "")
         call_headers.append(auth)
         if len(call_headers) < 4:

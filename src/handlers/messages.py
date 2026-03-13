@@ -13,6 +13,7 @@ from src.adapters.http_retry import post_with_retry
 from src.adapters.upstream_executor import (
     build_codex_oauth_style_headers,
     build_headers_by_profile,
+    build_upstream_request_kwargs,
     collect_codex_response_from_stream,
     is_rate_limit_status,
     mark_retryable_response_for_profile,
@@ -85,6 +86,7 @@ async def _forward_anthropic_native_messages(
 ) -> Response:
     if not stream:
         r = await post_with_retry(
+            profile=profile,
             upstream_url=upstream_url,
             request_body=payload,
             headers=upstream_headers,
@@ -136,7 +138,12 @@ async def _forward_anthropic_native_messages(
                 retry_headers = upstream_headers
 
                 for attempt in range(max_retries):
-                    async with client.stream("POST", upstream_url, headers=retry_headers, json=payload) as r:
+                    request_headers, request_kwargs = build_upstream_request_kwargs(
+                        profile=profile,
+                        headers=retry_headers,
+                        request_body=payload,
+                    )
+                    async with client.stream("POST", upstream_url, headers=request_headers, **request_kwargs) as r:
                         up_chunks.append({"type": "response_meta", "status_code": r.status_code, "headers": dict(r.headers)})
                         if is_rate_limit_status(r.status_code):
                             err = await r.aread()
@@ -373,6 +380,7 @@ async def _handle_openai_bridge_non_stream(
                 collect_once=lambda hdrs: collect_codex_response_from_stream(
                     client=client,
                     upstream_url=upstream_url,
+                    profile=profile,
                     headers=hdrs,
                     request_body=upstream_payload,
                 ),
@@ -422,6 +430,7 @@ async def _handle_openai_bridge_non_stream(
         data = codex_response_to_openai_chat_completion(codex_resp_json, model)
     else:
         r = await post_with_retry(
+            profile=profile,
             upstream_url=upstream_url,
             request_body=upstream_payload,
             headers=upstream_headers,

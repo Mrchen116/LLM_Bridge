@@ -72,6 +72,11 @@ def _resolve_auth_type_for_profile(profile_name: str, provider: str, auth: Dict[
     raise UpstreamConfigError(f"profiles.{profile_name}.provider 非法: {provider}")
 
 
+def _get_profile_features(profile_name: str, profile: Dict[str, Any]) -> Dict[str, Any]:
+    features = profile.get("features") or {}
+    return _ensure_dict(f"profiles.{profile_name}.features", features)
+
+
 def load_and_validate_config(path: Optional[str] = None) -> Dict[str, Any]:
     cfg_path = path or os.getenv("UPSTREAM_CONFIG_PATH", "upstreams.json")
     if not os.path.exists(cfg_path):
@@ -153,6 +158,11 @@ def load_and_validate_config(path: Optional[str] = None) -> Dict[str, Any]:
         default_model = defaults.get("model")
         if not isinstance(default_model, str) or not default_model.strip():
             raise UpstreamConfigError(f"profiles.{name}.defaults.model 必须是非空字符串")
+
+        features = _get_profile_features(name, profile)
+        enable_request_compression = features.get("enableRequestCompression")
+        if enable_request_compression is not None and not isinstance(enable_request_compression, bool):
+            raise UpstreamConfigError(f"profiles.{name}.features.enableRequestCompression 必须是布尔值")
 
     return root
 
@@ -292,6 +302,11 @@ def get_codex_oauth_max_failovers(profile: Dict[str, Any]) -> int:
     except Exception:
         failover_count = DEFAULT_CODEX_MAX_FAILOVER_PER_REQUEST
     return max(0, failover_count)
+
+
+def is_request_compression_enabled(profile: Dict[str, Any]) -> bool:
+    features = _get_profile_features("runtime", profile)
+    return _as_bool(features.get("enableRequestCompression"), False)
 
 
 def build_auth_headers(profile: Dict[str, Any], model: str, x_auth_token: str = "") -> Dict[str, str]:

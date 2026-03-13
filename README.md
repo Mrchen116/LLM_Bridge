@@ -160,6 +160,7 @@ Key fields:
 - `profiles.<name>.provider`: `openai_compatible` / `anthropic` / `codex_oauth`
 - `profiles.<name>.capabilities.ingress`: allowed ingress protocols
 - `profiles.<name>.defaults.model`: default model
+- `profiles.<name>.features.enableRequestCompression`: whether to zstd-compress `codex_oauth` request bodies before forwarding upstream
 
 Models support the `profile:model` syntax, for example:
 

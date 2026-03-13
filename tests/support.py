@@ -103,16 +103,30 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb) -> bool:
         return False
 
-    async def post(self, url: str, headers: Dict[str, str], json: Dict[str, Any]) -> httpx.Response:
-        FakeAsyncClient.last_post_args = {"url": url, "headers": headers, "json": json}
+    async def post(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        json: Optional[Dict[str, Any]] = None,
+        content: Optional[bytes] = None,
+    ) -> httpx.Response:
+        FakeAsyncClient.last_post_args = {"url": url, "headers": headers, "json": json, "content": content}
         return FakeAsyncClient.post_response
 
-    def stream(self, method: str, url: str, headers: Dict[str, str], json: Dict[str, Any]) -> FakeStreamContext:
+    def stream(
+        self,
+        method: str,
+        url: str,
+        headers: Dict[str, str],
+        json: Optional[Dict[str, Any]] = None,
+        content: Optional[bytes] = None,
+    ) -> FakeStreamContext:
         FakeAsyncClient.last_stream_args = {
             "method": method,
             "url": url,
             "headers": headers,
             "json": json,
+            "content": content,
         }
         if FakeAsyncClient.stream_responses:
             return FakeStreamContext(FakeAsyncClient.stream_responses.pop(0))
@@ -128,11 +142,19 @@ class ConnectErrorStreamContext:
 
 
 class ConnectErrorAsyncClient(FakeAsyncClient):
-    def stream(self, method: str, url: str, headers: Dict[str, str], json: Dict[str, Any]):
+    def stream(
+        self,
+        method: str,
+        url: str,
+        headers: Dict[str, str],
+        json: Optional[Dict[str, Any]] = None,
+        content: Optional[bytes] = None,
+    ):
         FakeAsyncClient.last_stream_args = {
             "method": method,
             "url": url,
             "headers": headers,
             "json": json,
+            "content": content,
         }
         return ConnectErrorStreamContext()

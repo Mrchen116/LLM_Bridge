@@ -5,13 +5,18 @@ import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
 import httpx
+import zstandard as zstd
 
 from token_auth import (
     get_codex_upstream_headers,
     get_x_auth_token,
     mark_codex_account_rate_limited,
 )
-from upstream_config import build_auth_headers, get_effective_auth_type
+from upstream_config import (
+    build_auth_headers,
+    get_effective_auth_type,
+    is_request_compression_enabled,
+)
 
 RATE_LIMIT_STATUS_CODES = {406, 429}
 CODEX_FAILOVER_ERROR_CODES = {
@@ -87,6 +92,32 @@ def _header_value_case_insensitive(headers: Optional[Mapping[str, Any]], key: st
         if value:
             return value
     return ""
+
+
+def build_upstream_request_kwargs(
+    *,
+    profile: Dict[str, Any],
+    headers: Mapping[str, Any],
+    request_body: Dict[str, Any],
+) -> tuple[Dict[str, str], Dict[str, Any]]:
+    request_headers = {str(k): str(v) for k, v in headers.items()}
+    auth_type = get_effective_auth_type(profile)
+    should_compress = auth_type == "codex_oauth" and is_request_compression_enabled(profile)
+    if not should_compress:
+        return request_headers, {"json": request_body}
+
+    if _header_value_case_insensitive(request_headers, "content-encoding"):
+        raise ValueError("request compression was requested but content-encoding is already set")
+
+    json_bytes = json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed_bytes = zstd.ZstdCompressor(level=3).compress(json_bytes)
+
+    # 告诉上游当前请求体是 zstd 压缩后的 JSON。
+    request_headers["content-encoding"] = "zstd"
+    if not _header_value_case_insensitive(request_headers, "content-type"):
+        request_headers["content-type"] = "application/json"
+
+    return request_headers, {"content": compressed_bytes}
 
 
 def build_codex_oauth_style_headers(
@@ -174,14 +205,20 @@ async def mark_retryable_response_for_profile(
 async def collect_codex_response_from_stream(
     client: httpx.AsyncClient,
     upstream_url: str,
+    profile: Dict[str, Any],
     headers: Dict[str, str],
     request_body: Dict[str, Any],
 ) -> Dict[str, Any]:
     req_body = dict(request_body)
     req_body["stream"] = True
+    request_headers, request_kwargs = build_upstream_request_kwargs(
+        profile=profile,
+        headers=headers,
+        request_body=req_body,
+    )
     collected_chunks: List[Any] = []
     try:
-        async with client.stream("POST", upstream_url, headers=headers, json=req_body) as r:
+        async with client.stream("POST", upstream_url, headers=request_headers, **request_kwargs) as r:
             collected_chunks.append(
                 {
                     "type": "codex_stream_meta",

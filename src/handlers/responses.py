@@ -12,6 +12,7 @@ from src.adapters.http_retry import post_with_retry
 from src.adapters.upstream_executor import (
     build_codex_oauth_style_headers,
     build_headers_by_profile,
+    build_upstream_request_kwargs,
     collect_codex_response_from_stream,
     is_rate_limit_status,
     mark_retryable_response_for_profile,
@@ -155,6 +156,7 @@ async def run_responses_flow(
                     collect_once=lambda hdrs: collect_codex_response_from_stream(
                         client=client,
                         upstream_url=upstream_url,
+                        profile=profile,
                         headers=hdrs,
                         request_body=upstream_request_body,
                     ),
@@ -210,6 +212,7 @@ async def run_responses_flow(
             return JSONResponse(content=response_obj, status_code=200)
 
         r = await post_with_retry(
+            profile=profile,
             upstream_url=upstream_url,
             request_body=upstream_request_body,
             headers=upstream_headers,
@@ -268,7 +271,12 @@ async def run_responses_flow(
                 last_retry_status = None
                 connected = False
                 for attempt in range(max_retries):
-                    async with client.stream("POST", upstream_url, headers=retry_headers, json=body) as r:
+                    request_headers, request_kwargs = build_upstream_request_kwargs(
+                        profile=profile,
+                        headers=retry_headers,
+                        request_body=body,
+                    )
+                    async with client.stream("POST", upstream_url, headers=request_headers, **request_kwargs) as r:
                         chunks.append({"type": "response_meta", "status_code": r.status_code, "headers": dict(r.headers)})
                         if r.status_code >= 400:
                             err = await r.aread()

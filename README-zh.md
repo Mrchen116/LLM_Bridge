@@ -160,6 +160,7 @@ python start_proxy.py
 - `profiles.<name>.provider`：`openai_compatible` / `anthropic` / `codex_oauth`
 - `profiles.<name>.capabilities.ingress`：允许的入口协议
 - `profiles.<name>.defaults.model`：默认模型
+- `profiles.<name>.features.enableRequestCompression`：是否在转发 `codex_oauth` 请求时对请求体做 zstd 压缩
 
 模型支持 `profile:model` 写法，例如：
 

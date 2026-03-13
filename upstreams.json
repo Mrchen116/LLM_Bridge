@@ -43,6 +43,9 @@
       "codexOAuth": {
         "provider": "codex_oauth",
         "baseUrl": "https://api.openai.com/v1",
+        "features": {
+          "enableRequestCompression": true
+        },
         "capabilities": {
           "ingress": [
             "anthropic_messages",
