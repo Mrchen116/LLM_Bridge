@@ -10,6 +10,11 @@ export interface SessionSummary {
 export interface SessionsResponse {
   items: SessionSummary[]
   next_cursor: string | null
+  meta?: {
+    perf?: Record<string, number>
+    cache?: Record<string, number | boolean>
+    counts?: Record<string, number>
+  }
 }
 
 export interface TimelineLane {
@@ -34,6 +39,7 @@ export interface TimelineEvent {
   kind: string
   summary: string
   detail: unknown
+  detail_loaded?: boolean
   tool_name?: string | null
   tool_args?: unknown
   tool_def?: ToolDefinition | null
@@ -100,7 +106,13 @@ export interface TimelineResponse {
   meta: {
     warnings: string[]
     summary_chars: number
+    perf?: Record<string, number>
+    cache?: Record<string, number | boolean>
   }
+}
+
+export interface TimelineEventDetailResponse {
+  event: TimelineEvent
 }
 
 export interface KeywordPreset {

@@ -97,10 +97,12 @@ describe('timeline-cluster', () => {
 
     expect(grid.laneOrder).toHaveLength(2)
     expect(grid.rows).toHaveLength(3)
-    expect(grid.rows[0].cells[0].event?.eventId).toBe('1')
-    expect(grid.rows[0].cells[1].event).toBeNull()
-    expect(grid.rows[1].cells[0].event).toBeNull()
-    expect(grid.rows[1].cells[1].event?.eventId).toBe('2')
+    expect(grid.rows[0].event.eventId).toBe('1')
+    expect(grid.rows[0].laneIndex).toBe(0)
+    expect(grid.rows[1].event.eventId).toBe('2')
+    expect(grid.rows[1].laneIndex).toBe(1)
+    expect(grid.laneIndexById['agent.alpha']).toBe(0)
+    expect(grid.laneIndexById['agent.beta']).toBe(1)
   })
 
   it('builds filter options with de-duplicated and sorted tool names', () => {

@@ -33,6 +33,7 @@ class TimelineEvent:
     detail: Any
     turn_ts: str
     format: str
+    detail_loaded: bool = True
     tool_name: Optional[str] = None
     tool_args: Optional[Any] = None
     tool_def: Optional[Dict[str, Any]] = None
@@ -68,6 +69,7 @@ def timeline_event_to_dict(item: TimelineEvent) -> Dict[str, Any]:
         "kind": item.kind,
         "summary": item.summary,
         "detail": item.detail,
+        "detail_loaded": item.detail_loaded,
         "tool_name": item.tool_name,
         "tool_args": item.tool_args,
         "tool_def": item.tool_def,

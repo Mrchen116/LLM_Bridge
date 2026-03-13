@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeywordPreset, TimelineResponse } from '../../api/contracts'
 import type { TimelineFilters } from '../../state/types'
 import type { SelectOption, TimelineGrid } from '../../lib/timeline-cluster'
@@ -39,6 +39,9 @@ function buildSwimlaneTemplate(laneCount: number): string {
   return `${timeColumn}px repeat(${laneCount}, minmax(${laneMinWidth}px, 1fr))`
 }
 
+const TIMELINE_ROW_HEIGHT = 56
+const TIMELINE_OVERSCAN = 10
+
 export function TimelineLanes({
   title,
   subtitle,
@@ -63,6 +66,9 @@ export function TimelineLanes({
 }: TimelineLanesProps) {
   const [statsModalOpen, setStatsModalOpen] = useState(false)
   const [selectedStatsLaneId, setSelectedStatsLaneId] = useState('')
+  const scrollRef = useRef<HTMLElement | null>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(640)
 
   const filteredScopeStats = stats?.filtered_scope ?? null
   const selectedAgentStats = useMemo(() => {
@@ -176,6 +182,54 @@ export function TimelineLanes({
       ]
     : []
 
+  const statsSummaryItems = filteredScopeStats
+    ? [
+        `Session Tokens: in ${formatCount(filteredScopeStats.session_tokens.input_tokens)} / out ${formatCount(filteredScopeStats.session_tokens.output_tokens)}`,
+        `Turns ${formatCount(filteredScopeStats.session_tokens.num_turns)} · Tool Calls ${formatCount(filteredScopeStats.tool_calls.total_calls)}`,
+        `Duration ${formatDuration(filteredScopeStats.duration.duration_ms)}`,
+        `Agents ${formatCount(filteredScopeStats.agents.length)} · Keyword Turns ${formatCount(filteredScopeStats.turn_count_after_keywords)}`,
+      ]
+    : []
+
+  const totalVirtualHeight = grid.rows.length * TIMELINE_ROW_HEIGHT
+  const visibleRange = useMemo(() => {
+    const visibleCount = Math.max(1, Math.ceil(viewportHeight / TIMELINE_ROW_HEIGHT))
+    const startIndex = Math.max(0, Math.floor(scrollTop / TIMELINE_ROW_HEIGHT) - TIMELINE_OVERSCAN)
+    const endIndex = Math.min(
+      grid.rows.length,
+      startIndex + visibleCount + TIMELINE_OVERSCAN * 2,
+    )
+    return { startIndex, endIndex }
+  }, [grid.rows.length, scrollTop, viewportHeight])
+  const visibleRows = useMemo(
+    () => grid.rows.slice(visibleRange.startIndex, visibleRange.endIndex),
+    [grid.rows, visibleRange.endIndex, visibleRange.startIndex],
+  )
+
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container) {
+      return
+    }
+
+    const updateViewport = () => {
+      setViewportHeight(container.clientHeight)
+      setScrollTop(container.scrollTop)
+    }
+
+    updateViewport()
+    const resizeObserver = new ResizeObserver(() => updateViewport())
+    resizeObserver.observe(container)
+    return () => resizeObserver.disconnect()
+  }, [grid.rows.length])
+
+  useEffect(() => {
+    if (!loading) {
+      return
+    }
+    scrollRef.current?.scrollTo({ top: 0 })
+  }, [loading])
+
   return (
     <main className="panel timeline-panel timeline-panel-dense">
       <header className="panel-header">
@@ -193,19 +247,11 @@ export function TimelineLanes({
       <div className="filters">
         {filteredScopeStats ? (
           <div className="stats-summary-strip">
-            <div className="stats-chip">
-              Session Tokens: in {formatCount(filteredScopeStats.session_tokens.input_tokens)} / out{' '}
-              {formatCount(filteredScopeStats.session_tokens.output_tokens)}
-            </div>
-            <div className="stats-chip">
-              Turns {formatCount(filteredScopeStats.session_tokens.num_turns)} · Tool Calls{' '}
-              {formatCount(filteredScopeStats.tool_calls.total_calls)}
-            </div>
-            <div className="stats-chip">Duration {formatDuration(filteredScopeStats.duration.duration_ms)}</div>
-            <div className="stats-chip">
-              Agents {formatCount(filteredScopeStats.agents.length)} · Keyword Turns{' '}
-              {formatCount(filteredScopeStats.turn_count_after_keywords)}
-            </div>
+            {statsSummaryItems.map((item) => (
+              <div className="stats-chip" key={item} title={item} aria-label={item}>
+                {item}
+              </div>
+            ))}
             <button className="btn ghost stats-open-btn" type="button" onClick={openStatsModal}>
               查看统计
             </button>
@@ -291,7 +337,11 @@ export function TimelineLanes({
         </div>
       </div>
 
-      <section className="panel-scroll timeline-scroll">
+      <section
+        className="panel-scroll timeline-scroll"
+        ref={scrollRef}
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      >
         {loading ? <div className="subtle">加载中...</div> : null}
         {!loading && error ? <div className="subtle">加载失败：{error}</div> : null}
         {!loading && !error && warnings.length > 0 ? (
@@ -325,29 +375,30 @@ export function TimelineLanes({
             </div>
 
             <div className="swimlane-body">
-              {grid.rows.map((row) => (
-                <div
-                  className="swimlane-row"
-                  key={`row-${row.eventId}`}
-                  style={{ gridTemplateColumns: buildSwimlaneTemplate(grid.laneOrder.length) }}
-                >
-                  <div className="swimlane-time-cell">{row.timestampLabel}</div>
-                  {row.cells.map((cell) => (
+              <div className="swimlane-body-virtual" style={{ height: `${totalVirtualHeight}px` }}>
+                {visibleRows.map((row, visibleIndex) => (
+                  <div
+                    className="swimlane-row swimlane-row-virtual"
+                    key={`row-${row.eventId}`}
+                    style={{
+                      gridTemplateColumns: buildSwimlaneTemplate(grid.laneOrder.length),
+                      transform: `translateY(${(visibleRange.startIndex + visibleIndex) * TIMELINE_ROW_HEIGHT}px)`,
+                    }}
+                  >
+                    <div className="swimlane-time-cell">{row.timestampLabel}</div>
                     <div
-                      className={`swimlane-cell ${cell.event ? '' : 'empty'}`}
-                      key={`cell-${row.eventId}-${cell.laneId}`}
+                      className="swimlane-cell swimlane-cell-active"
+                      style={{ gridColumn: row.laneIndex + 2 }}
                     >
-                      {cell.event ? (
-                        <EventCard
-                          event={cell.event}
-                          selected={selectedEventId === cell.event.eventId}
-                          onSelect={onSelectEvent}
-                        />
-                      ) : null}
+                      <EventCard
+                        event={row.event}
+                        selected={selectedEventId === row.event.eventId}
+                        onSelect={onSelectEvent}
+                      />
                     </div>
-                  ))}
-                </div>
-              ))}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         ) : null}

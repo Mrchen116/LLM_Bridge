@@ -4,7 +4,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import type { TimelineEvent, ToolDefinition } from '../../api/contracts'
-import { fetchLogFileContent } from '../../api/session-inspector-client'
+import { fetchLogFileContent, fetchTimelineEventDetail } from '../../api/session-inspector-client'
 import {
   extractEventMainText,
   formatCodeValue,
@@ -14,6 +14,7 @@ import {
 
 interface DetailPanelProps {
   event: TimelineEvent | null
+  sessionId: string
 }
 
 type BlockVariant = 'text' | 'code' | 'markdown'
@@ -56,7 +57,7 @@ function normalizeMarkdownSource(value: unknown): string {
 
   return outdented
     .replace(/\u00a0/g, ' ')
-    .replace(/\\([`*_{}\[\]()#+\-.!>~|])/g, '$1')
+    .replace(/\\([`*_{}[\]()#+\-.!>~|])/g, '$1')
 }
 
 function formatDisplayValue(value: unknown, variant: BlockVariant): string {
@@ -195,7 +196,7 @@ function extractToolDefinitionFields(toolDef: ToolDefinition | null | undefined)
   }
 }
 
-export function DetailPanel({ event }: DetailPanelProps) {
+export function DetailPanel({ event, sessionId }: DetailPanelProps) {
   const [copiedKey, setCopiedKey] = useState('')
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerPath, setViewerPath] = useState('')
@@ -204,8 +205,15 @@ export function DetailPanel({ event }: DetailPanelProps) {
   const [viewerTruncated, setViewerTruncated] = useState(false)
   const [viewerLoading, setViewerLoading] = useState(false)
   const [viewerError, setViewerError] = useState('')
-  const mainText = useMemo(() => (event ? extractEventMainText(event) : ''), [event])
-  const toolDefFields = useMemo(() => extractToolDefinitionFields(event?.tool_def), [event])
+  const [resolvedEvent, setResolvedEvent] = useState<TimelineEvent | null>(null)
+  const [eventLoading, setEventLoading] = useState(false)
+  const [eventError, setEventError] = useState('')
+  const displayEvent = resolvedEvent ?? event
+  const mainText = useMemo(() => (displayEvent ? extractEventMainText(displayEvent) : ''), [displayEvent])
+  const toolDefFields = useMemo(
+    () => extractToolDefinitionFields(displayEvent?.tool_def),
+    [displayEvent],
+  )
   const viewerDisplayContent = useMemo(() => {
     if (viewerMode === 'raw') {
       return viewerContent
@@ -234,6 +242,47 @@ export function DetailPanel({ event }: DetailPanelProps) {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [viewerOpen])
+
+  useEffect(() => {
+    if (!event) {
+      setResolvedEvent(null)
+      setEventLoading(false)
+      setEventError('')
+      return
+    }
+
+    setResolvedEvent(event)
+    setEventError('')
+    if (event.detail_loaded !== false || !sessionId) {
+      setEventLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setEventLoading(true)
+    void fetchTimelineEventDetail(sessionId, event.event_id)
+      .then((payload) => {
+        if (cancelled) {
+          return
+        }
+        setResolvedEvent(payload.event)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return
+        }
+        setEventError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setEventLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [event, sessionId])
 
   const onCopy = async (key: string, text: string) => {
     try {
@@ -279,13 +328,15 @@ export function DetailPanel({ event }: DetailPanelProps) {
         </header>
 
         <div className="detail-body">
-          {!event ? <div className="subtle">点击事件查看详情</div> : null}
+          {!displayEvent ? <div className="subtle">点击事件查看详情</div> : null}
 
-          {event ? (
+          {displayEvent ? (
             <>
+              {eventLoading ? <div className="subtle">正在补充事件详情...</div> : null}
+              {!eventLoading && eventError ? <div className="subtle">详情加载失败：{eventError}</div> : null}
               <DetailBlock
                 title="事件"
-                value={`${event.kind} · ${event.ts}`}
+                value={`${displayEvent.kind} · ${displayEvent.ts}`}
                 variant="text"
                 copyLabel="复制"
                 copied={copiedKey === 'kind'}
@@ -293,7 +344,7 @@ export function DetailPanel({ event }: DetailPanelProps) {
               />
               <DetailBlock
                 title="摘要"
-                value={event.summary || ''}
+                value={displayEvent.summary || ''}
                 variant="text"
                 copyLabel="复制"
                 copied={copiedKey === 'summary'}
@@ -302,23 +353,23 @@ export function DetailPanel({ event }: DetailPanelProps) {
               <DetailBlock
                 title="事件内容"
                 value={mainText}
-                variant={event.kind === 'assistant_text' ? 'markdown' : 'text'}
+                variant={displayEvent.kind === 'assistant_text' ? 'markdown' : 'text'}
                 copyLabel="复制"
                 copied={copiedKey === 'main_text'}
                 onCopy={(text) => void onCopy('main_text', text)}
               />
               <SourceFilesBlock
-                sourceFiles={event.source_files}
+                sourceFiles={displayEvent.source_files}
                 copied={copiedKey === 'source_files'}
                 onCopy={(text) => void onCopy('source_files', text)}
                 onView={onViewSourceFile}
               />
 
-              {event.kind === 'tool_call' ? (
+              {displayEvent.kind === 'tool_call' ? (
                 <>
                   <DetailBlock
                     title="工具名"
-                    value={event.tool_name || ''}
+                    value={displayEvent.tool_name || ''}
                     variant="text"
                     copyLabel="复制"
                     copied={copiedKey === 'tool_name'}
@@ -326,13 +377,13 @@ export function DetailPanel({ event }: DetailPanelProps) {
                   />
                   <DetailBlock
                     title="工具参数"
-                    value={event.tool_args ?? {}}
+                    value={displayEvent.tool_args ?? {}}
                     variant="code"
                     copyLabel="复制"
                     copied={copiedKey === 'tool_args'}
                     onCopy={(text) => void onCopy('tool_args', text)}
                   />
-                  {event.tool_def ? (
+                  {displayEvent.tool_def ? (
                     <>
                       <DetailBlock
                         title="工具定义 · 名称"
@@ -367,7 +418,7 @@ export function DetailPanel({ event }: DetailPanelProps) {
                 <summary>完整事件 JSON</summary>
                 <DetailBlock
                   title="完整事件"
-                  value={event}
+                  value={displayEvent}
                   variant="code"
                   copyLabel="复制"
                   copied={copiedKey === 'full'}

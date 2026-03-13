@@ -337,8 +337,9 @@ select {
 }
 
 .stats-summary-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
@@ -355,10 +356,13 @@ select {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
 .stats-open-btn {
-  justify-self: end;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .filters-row {
@@ -496,13 +500,30 @@ select {
 }
 
 .swimlane-body {
-  display: flex;
-  flex-direction: column;
+  position: relative;
 }
 
 .swimlane-row {
   display: grid;
   border-top: 1px solid #eef3f8;
+}
+
+.swimlane-body-virtual {
+  position: relative;
+}
+
+.swimlane-row-virtual {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  min-height: 56px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(234, 241, 249, 0.2) 0%,
+      rgba(247, 251, 255, 0.08) 100%
+    );
 }
 
 .swimlane-row:first-child {
@@ -518,6 +539,10 @@ select {
 
 .swimlane-cell:last-child {
   border-right: 0;
+}
+
+.swimlane-cell-active {
+  background: transparent;
 }
 
 .swimlane-cell.empty {
@@ -1289,11 +1314,11 @@ select {
   }
 
   .stats-summary-strip {
-    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .stats-open-btn {
-    justify-self: start;
+    margin-left: 0;
   }
 
   .stats-kv-grid {

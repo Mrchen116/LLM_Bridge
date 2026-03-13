@@ -2,6 +2,7 @@ import type {
   KeywordPresetsResponse,
   LogFileContentResponse,
   SessionsResponse,
+  TimelineEventDetailResponse,
   TimelineResponse,
 } from './contracts'
 import type { TimelineFilters } from '../state/types'
@@ -9,6 +10,7 @@ import type { TimelineFilters } from '../state/types'
 const API_BASE = '/api/session-inspector'
 
 async function requestJson<T>(url: string): Promise<T> {
+  const requestStartedAt = performance.now()
   const response = await fetch(url, {
     headers: {
       Accept: 'application/json',
@@ -20,7 +22,20 @@ async function requestJson<T>(url: string): Promise<T> {
     throw new Error(text || `HTTP ${response.status}`)
   }
 
-  return (await response.json()) as T
+  const jsonStartedAt = performance.now()
+  const payload = (await response.json()) as T
+  const jsonEndedAt = performance.now()
+
+  if (typeof window !== 'undefined') {
+    console.info('[session-inspector] request timing', {
+      url,
+      fetchMs: Number((jsonStartedAt - requestStartedAt).toFixed(2)),
+      jsonParseMs: Number((jsonEndedAt - jsonStartedAt).toFixed(2)),
+      totalMs: Number((jsonEndedAt - requestStartedAt).toFixed(2)),
+    })
+  }
+
+  return payload
 }
 
 async function requestJsonWithBody<T>(url: string, method: 'PUT', body: unknown): Promise<T> {
@@ -57,10 +72,12 @@ export async function fetchTimeline(
   sessionId: string,
   filters: TimelineFilters,
   summaryChars = 120,
+  includeDetail = false,
 ): Promise<TimelineResponse> {
   const params = new URLSearchParams()
   params.set('include_non_tool', filters.includeNonTool ? 'true' : 'false')
   params.set('summary_chars', String(summaryChars))
+  params.set('include_detail', includeDetail ? 'true' : 'false')
 
   if (filters.agent) {
     params.set('agent', filters.agent)
@@ -77,6 +94,18 @@ export async function fetchTimeline(
 
   return requestJson<TimelineResponse>(
     `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/timeline?${params.toString()}`,
+  )
+}
+
+export async function fetchTimelineEventDetail(
+  sessionId: string,
+  eventId: string,
+  summaryChars = 120,
+): Promise<TimelineEventDetailResponse> {
+  const params = new URLSearchParams()
+  params.set('summary_chars', String(summaryChars))
+  return requestJson<TimelineEventDetailResponse>(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}?${params.toString()}`,
   )
 }
 

@@ -18,12 +18,15 @@ export interface TimelineGridCell {
 
 export interface TimelineGridRow {
   eventId: string
+  laneId: string
+  laneIndex: number
   timestampLabel: string
-  cells: TimelineGridCell[]
+  event: ParsedTimelineEvent
 }
 
 export interface TimelineGrid {
   laneOrder: TimelineLane[]
+  laneIndexById: Record<string, number>
   rows: TimelineGridRow[]
 }
 
@@ -51,27 +54,39 @@ export function clusterEventsByLane(parsed: ParsedTimeline | null): TimelineLane
 }
 
 export function buildTimelineGrid(parsed: ParsedTimeline | null): TimelineGrid {
-  const clusters = clusterEventsByLane(parsed)
-  const laneOrder = clusters.map((cluster) => cluster.lane)
+  if (!parsed) {
+    return {
+      laneOrder: [],
+      laneIndexById: {},
+      rows: [],
+    }
+  }
 
-  if (!laneOrder.length || !parsed) {
+  const activeLaneIds = new Set(parsed.events.map((event) => event.laneId))
+  const laneOrder = parsed.lanes.filter((lane) => activeLaneIds.has(lane.lane_id))
+  const laneIndexById = Object.fromEntries(
+    laneOrder.map((lane, index) => [lane.lane_id, index]),
+  ) as Record<string, number>
+
+  if (!laneOrder.length) {
     return {
       laneOrder,
+      laneIndexById,
       rows: [],
     }
   }
 
   const rows: TimelineGridRow[] = parsed.events.map((event) => ({
     eventId: event.eventId,
+    laneId: event.laneId,
+    laneIndex: laneIndexById[event.laneId] ?? -1,
     timestampLabel: event.timestampLabel,
-    cells: laneOrder.map((lane) => ({
-      laneId: lane.lane_id,
-      event: lane.lane_id === event.laneId ? event : null,
-    })),
+    event,
   }))
 
   return {
     laneOrder,
+    laneIndexById,
     rows,
   }
 }

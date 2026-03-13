@@ -1,45 +1,12 @@
+import { memo } from 'react'
 import type { ParsedTimelineEvent } from '../../lib/timeline-parser'
-import { formatToolArgsHint, normalizeReadableText } from '../../lib/event-display'
 
 interface EventCardProps {
   event: ParsedTimelineEvent
   selected: boolean
   onSelect: (eventId: string) => void
 }
-
-function normalizeCardLine(value: string): string {
-  return normalizeReadableText(value).replace(/\s+/g, ' ').trim()
-}
-
-function shortLine(value: string, maxLength = 120): string {
-  const text = normalizeCardLine(value)
-  if (text.length <= maxLength) {
-    return text
-  }
-  return `${text.slice(0, maxLength)}...`
-}
-
-function buildCardTitle(event: ParsedTimelineEvent): string {
-  if (event.kind === 'tool_call') {
-    const toolName = shortLine(event.raw.tool_name?.trim() || 'unknown')
-    return `Tool · ${toolName}`
-  }
-  return `Message · ${event.kind}`
-}
-
-function buildSummary(event: ParsedTimelineEvent, toolHint: string): string {
-  if (event.kind === 'tool_call') {
-    return shortLine(toolHint)
-  }
-  const candidate = event.summary || event.preview || event.kind
-  return shortLine(candidate)
-}
-
-export function EventCard({ event, selected, onSelect }: EventCardProps) {
-  const toolHint = event.kind === 'tool_call' ? formatToolArgsHint(event.raw) : ''
-  const title = buildCardTitle(event)
-  const summary = buildSummary(event, toolHint)
-
+function EventCardInner({ event, selected, onSelect }: EventCardProps) {
   return (
     <article
       className={`event-card dense ${selected ? 'active' : ''}`}
@@ -53,14 +20,22 @@ export function EventCard({ event, selected, onSelect }: EventCardProps) {
         }
       }}
     >
-      <div className={`event-title ${event.kindClass}`} title={title}>
-        {title}
+      <div className={`event-title ${event.kindClass}`} title={event.cardTitle}>
+        {event.cardTitle}
       </div>
-      {summary ? (
-        <div className="event-summary" title={summary}>
-          {summary}
+      {event.cardSummary ? (
+        <div className="event-summary" title={event.cardSummary}>
+          {event.cardSummary}
         </div>
       ) : null}
     </article>
   )
 }
+
+export const EventCard = memo(EventCardInner, (prevProps, nextProps) => {
+  return (
+    prevProps.event.eventId === nextProps.event.eventId &&
+    prevProps.selected === nextProps.selected &&
+    prevProps.onSelect === nextProps.onSelect
+  )
+})

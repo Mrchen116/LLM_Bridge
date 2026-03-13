@@ -29,6 +29,14 @@ def list_session_dirs(logs_session_dir: str) -> List[Path]:
     return dirs
 
 
+def session_dir_signature(session_dir: Path) -> Tuple[int, int]:
+    try:
+        stat = session_dir.stat()
+        return (int(stat.st_mtime_ns), int(stat.st_size))
+    except Exception:
+        return (0, 0)
+
+
 def find_session_dirs_by_id(logs_session_dir: str, session_id: str) -> List[Path]:
     matches: List[Path] = []
     for d in list_session_dirs(logs_session_dir):

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.inspector.canonicalize import (
@@ -23,6 +24,7 @@ from src.inspector.files import (
     list_session_dirs,
     parse_ts_to_epoch_ms,
     parse_session_dir_name,
+    session_dir_signature,
 )
 from src.inspector.grouping import AssignedLane, TurnLaneInput, assign_lanes, lane_sort_key
 from src.inspector.types import Lane, SessionSummary, TimelineEvent
@@ -52,6 +54,34 @@ class _LaneMatchState:
     last_prefix_tokens: Tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _SessionSummaryCacheEntry:
+    signature: Tuple[int, int]
+    summary: SessionSummary
+
+
+@dataclass(frozen=True)
+class _RawTimelineBundle:
+    signature: Tuple[int, int]
+    summary_chars: int
+    session_dir_name: str
+    records: List[_TurnRecord]
+    warnings: List[str]
+    raw_events: List[Dict[str, Any]]
+    lane_id_to_label: Dict[str, str]
+
+
+@dataclass(frozen=True)
+class _FilteredTimelineCacheEntry:
+    key: Tuple[Any, ...]
+    payload: Dict[str, Any]
+
+
+_SESSION_SUMMARY_CACHE: Dict[str, _SessionSummaryCacheEntry] = {}
+_RAW_TIMELINE_CACHE: Dict[Tuple[str, int], _RawTimelineBundle] = {}
+_FILTERED_TIMELINE_CACHE: Dict[Tuple[str, Tuple[Any, ...]], _FilteredTimelineCacheEntry] = {}
+
+
 def _to_workspace_relative(path: Path) -> str:
     try:
         return str(path.relative_to(Path.cwd())).replace("\\", "/")
@@ -72,49 +102,67 @@ def _read_json(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _list_session_summaries(logs_session_dir: str, q: Optional[str]) -> List[SessionSummary]:
-    query = (q or "").strip().lower()
-    out: List[SessionSummary] = []
-    for session_dir in list_session_dirs(logs_session_dir):
-        parsed = parse_session_dir_name(session_dir.name)
-        if not parsed:
+def _now_ms() -> float:
+    return time.perf_counter() * 1000
+
+
+def _elapsed_ms(start_ms: float) -> float:
+    return round(_now_ms() - start_ms, 2)
+
+
+def _copy_jsonish(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except Exception:
+        return value
+
+
+def _build_session_summary(session_dir: Path) -> Optional[SessionSummary]:
+    parsed = parse_session_dir_name(session_dir.name)
+    if not parsed:
+        return None
+    dir_ts, session_id = parsed
+    index = build_turn_file_index(session_dir)
+    req_turns = [ts for ts, slots in index.items() if "req" in slots]
+    if req_turns:
+        start_ts = min(req_turns)
+        end_ts = max(req_turns)
+    else:
+        start_ts = dir_ts
+        end_ts = dir_ts
+
+    formats = set()
+    for slots in index.values():
+        req_entry = slots.get("req")
+        if not req_entry:
             continue
-        dir_ts, session_id = parsed
-        if query and query not in session_id.lower():
-            continue
+        req_format, req_path = req_entry
+        req_obj = _read_json(req_path)
+        fmt = infer_downstream_format(req_obj, req_format)
+        formats.add(fmt)
 
-        index = build_turn_file_index(session_dir)
-        req_turns = [ts for ts, slots in index.items() if "req" in slots]
-        if req_turns:
-            start_ts = min(req_turns)
-            end_ts = max(req_turns)
-        else:
-            start_ts = dir_ts
-            end_ts = dir_ts
+    return SessionSummary(
+        session_id=session_id,
+        session_dir=session_dir.name,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        turn_count=len(req_turns),
+        formats=sorted(formats),
+    )
 
-        formats = set()
-        for slots in index.values():
-            req_entry = slots.get("req")
-            if not req_entry:
-                continue
-            req_format, req_path = req_entry
-            req_obj = _read_json(req_path)
-            fmt = infer_downstream_format(req_obj, req_format)
-            formats.add(fmt)
 
-        out.append(
-            SessionSummary(
-                session_id=session_id,
-                session_dir=session_dir.name,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                turn_count=len(req_turns),
-                formats=sorted(formats),
-            )
-        )
+def _get_cached_session_summary(session_dir: Path) -> Tuple[Optional[SessionSummary], bool]:
+    signature = session_dir_signature(session_dir)
+    cache_key = str(session_dir.resolve())
+    cached = _SESSION_SUMMARY_CACHE.get(cache_key)
+    if cached and cached.signature == signature:
+        return cached.summary, True
 
-    out.sort(key=lambda x: x.session_dir, reverse=True)
-    return out
+    summary = _build_session_summary(session_dir)
+    if summary is None:
+        return None, False
+    _SESSION_SUMMARY_CACHE[cache_key] = _SessionSummaryCacheEntry(signature=signature, summary=summary)
+    return summary, False
 
 
 def list_sessions(
@@ -124,19 +172,39 @@ def list_sessions(
     cursor: Optional[str],
     q: Optional[str],
 ) -> Dict[str, Any]:
-    all_items = _list_session_summaries(logs_session_dir, q)
-
+    total_start_ms = _now_ms()
+    query = (q or "").strip().lower()
+    scan_start_ms = _now_ms()
+    all_dirs = list_session_dirs(logs_session_dir)
+    filtered_dirs = [
+        session_dir
+        for session_dir in all_dirs
+        if (parsed := parse_session_dir_name(session_dir.name))
+        and (not query or query in parsed[1].lower())
+    ]
+    dir_scan_ms = _elapsed_ms(scan_start_ms)
     start_idx = 0
     if cursor:
-        for i, item in enumerate(all_items):
-            if item.session_dir == cursor:
+        for i, session_dir in enumerate(filtered_dirs):
+            if session_dir.name == cursor:
                 start_idx = i + 1
                 break
 
-    sliced = all_items[start_idx : start_idx + max(1, limit)]
+    sliced_dirs = filtered_dirs[start_idx : start_idx + max(1, limit)]
+    summary_start_ms = _now_ms()
+    items: List[SessionSummary] = []
+    summary_cache_hits = 0
+    for session_dir in sliced_dirs:
+        summary, cache_hit = _get_cached_session_summary(session_dir)
+        if summary is None:
+            continue
+        if cache_hit:
+            summary_cache_hits += 1
+        items.append(summary)
+    summary_build_ms = _elapsed_ms(summary_start_ms)
     next_cursor = None
-    if start_idx + len(sliced) < len(all_items):
-        next_cursor = sliced[-1].session_dir
+    if start_idx + len(sliced_dirs) < len(filtered_dirs) and sliced_dirs:
+        next_cursor = sliced_dirs[-1].name
 
     return {
         "items": [
@@ -148,9 +216,25 @@ def list_sessions(
                 "turn_count": x.turn_count,
                 "formats": x.formats,
             }
-            for x in sliced
+            for x in items
         ],
         "next_cursor": next_cursor,
+        "meta": {
+            "perf": {
+                "dir_scan_ms": dir_scan_ms,
+                "summary_build_ms": summary_build_ms,
+                "total_ms": _elapsed_ms(total_start_ms),
+            },
+            "cache": {
+                "summary_hits": summary_cache_hits,
+                "summary_misses": max(0, len(sliced_dirs) - summary_cache_hits),
+            },
+            "counts": {
+                "total_dirs": len(all_dirs),
+                "filtered_dirs": len(filtered_dirs),
+                "returned_items": len(items),
+            },
+        },
     }
 
 
@@ -313,6 +397,71 @@ def _build_turn_records(
     return records, warnings
 
 
+def _build_raw_events_bundle(session_dir: Path, summary_chars: int) -> _RawTimelineBundle:
+    records, warnings = _build_turn_records(session_dir=session_dir, summary_chars=summary_chars)
+    raw_events: List[Dict[str, Any]] = []
+    seq = 0
+    for rec in sorted(records, key=lambda x: x.ts):
+        tool_defs = extract_tool_definitions(rec.req_obj)
+        source_files = {
+            "request": rec.req_file,
+            "response": rec.non_stream_file or rec.downstream_file,
+            "non_stream_response": rec.non_stream_file,
+            "downstream_response": rec.downstream_file,
+        }
+
+        req_events = build_request_events(
+            turn_ts=rec.ts,
+            lane_id=rec.lane.lane_id,
+            downstream_format=rec.downstream_format,
+            req_obj=rec.req_obj,
+            summary_chars=summary_chars,
+        )
+        for req_event in req_events:
+            req_event["_seq"] = seq
+            req_event["source_files"] = source_files
+            raw_events.append(req_event)
+            seq += 1
+
+        for ev in build_response_events(
+            turn_ts=rec.ts,
+            lane_id=rec.lane.lane_id,
+            downstream_format=rec.downstream_format,
+            non_stream_obj=rec.non_stream_obj,
+            downstream_obj=rec.downstream_obj,
+            tool_defs=tool_defs,
+            summary_chars=summary_chars,
+        ):
+            ev["_seq"] = seq
+            ev["source_files"] = source_files
+            raw_events.append(ev)
+            seq += 1
+
+    return _RawTimelineBundle(
+        signature=session_dir_signature(session_dir),
+        summary_chars=summary_chars,
+        session_dir_name=session_dir.name,
+        records=records,
+        warnings=warnings,
+        raw_events=raw_events,
+        lane_id_to_label={rec.lane.lane_id: rec.lane.label for rec in records},
+    )
+
+
+def _get_raw_timeline_bundle(
+    session_dir: Path, summary_chars: int
+) -> Tuple[_RawTimelineBundle, bool]:
+    signature = session_dir_signature(session_dir)
+    cache_key = (str(session_dir.resolve()), summary_chars)
+    cached = _RAW_TIMELINE_CACHE.get(cache_key)
+    if cached and cached.signature == signature:
+        return cached, True
+
+    bundle = _build_raw_events_bundle(session_dir=session_dir, summary_chars=summary_chars)
+    _RAW_TIMELINE_CACHE[cache_key] = bundle
+    return bundle, False
+
+
 def _parse_keyword_list(raw: Optional[str]) -> List[str]:
     text = (raw or "").strip()
     if not text:
@@ -457,6 +606,17 @@ def _build_duration_stats(
     }
 
 
+def _compact_event_for_timeline(event: Dict[str, Any], include_detail: bool) -> Dict[str, Any]:
+    compact = dict(event)
+    compact["detail_loaded"] = include_detail
+    if include_detail:
+        return compact
+    compact["detail"] = None
+    compact["tool_args"] = None
+    compact["tool_def"] = None
+    return compact
+
+
 def get_timeline(
     *,
     logs_session_dir: str,
@@ -467,58 +627,51 @@ def get_timeline(
     q: Optional[str],
     q_not: Optional[str],
     summary_chars: int,
+    include_detail: bool,
 ) -> Optional[Dict[str, Any]]:
+    total_start_ms = _now_ms()
     session_dir = _resolve_session_dir(logs_session_dir, session_id)
     if not session_dir:
         return None
 
-    records, warnings = _build_turn_records(session_dir=session_dir, summary_chars=summary_chars)
+    bundle_start_ms = _now_ms()
+    bundle, bundle_cache_hit = _get_raw_timeline_bundle(session_dir=session_dir, summary_chars=summary_chars)
+    bundle_prepare_ms = _elapsed_ms(bundle_start_ms)
 
-    raw_events: List[Dict[str, Any]] = []
-    seq = 0
-    for rec in sorted(records, key=lambda x: x.ts):
-        tool_defs = extract_tool_definitions(rec.req_obj)
-        source_files = {
-            "request": rec.req_file,
-            "response": rec.non_stream_file or rec.downstream_file,
-            "non_stream_response": rec.non_stream_file,
-            "downstream_response": rec.downstream_file,
+    filter_cache_key = (
+        include_non_tool,
+        agent or "",
+        tool or "",
+        q or "",
+        q_not or "",
+        summary_chars,
+        include_detail,
+        bundle.signature,
+    )
+    cached_payload = _FILTERED_TIMELINE_CACHE.get((str(session_dir.resolve()), filter_cache_key))
+    if cached_payload:
+        payload = _copy_jsonish(cached_payload.payload)
+        meta = payload.setdefault("meta", {})
+        perf = meta.setdefault("perf", {})
+        perf["bundle_prepare_ms"] = bundle_prepare_ms
+        perf["total_ms"] = _elapsed_ms(total_start_ms)
+        meta["cache"] = {
+            "bundle_hit": bundle_cache_hit,
+            "filtered_hit": True,
         }
+        return payload
 
-        req_events = build_request_events(
-            turn_ts=rec.ts,
-            lane_id=rec.lane.lane_id,
-            downstream_format=rec.downstream_format,
-            req_obj=rec.req_obj,
-            summary_chars=summary_chars,
-        )
-        for req_event in req_events:
-            req_event["_seq"] = seq
-            req_event["source_files"] = source_files
-            raw_events.append(req_event)
-            seq += 1
-
-        for ev in build_response_events(
-            turn_ts=rec.ts,
-            lane_id=rec.lane.lane_id,
-            downstream_format=rec.downstream_format,
-            non_stream_obj=rec.non_stream_obj,
-            downstream_obj=rec.downstream_obj,
-            tool_defs=tool_defs,
-            summary_chars=summary_chars,
-        ):
-            ev["_seq"] = seq
-            ev["source_files"] = source_files
-            raw_events.append(ev)
-            seq += 1
-
+    warnings = list(bundle.warnings)
+    records = bundle.records
+    raw_events = bundle.raw_events
     events_filtered: List[Dict[str, Any]] = []
     agent_filter = (agent or "").strip().lower()
     tool_filter = (tool or "").strip()
     include_keywords = _parse_keyword_list(q)
     exclude_keywords = _parse_keyword_list(q_not)
 
-    lane_id_to_label = {rec.lane.lane_id: rec.lane.label for rec in records}
+    lane_id_to_label = bundle.lane_id_to_label
+    filter_start_ms = _now_ms()
     turn_events_map: Dict[str, List[Dict[str, Any]]] = {}
     for ev in raw_events:
         turn_events_map.setdefault(str(ev.get("turn_ts") or ""), []).append(ev)
@@ -552,13 +705,15 @@ def get_timeline(
         elif tool_filter and ev.get("kind") != "tool_call":
             continue
 
-        events_filtered.append(ev)
+        events_filtered.append(_compact_event_for_timeline(ev, include_detail))
 
     keyword_scope_events = [ev for ev in raw_events if str(ev.get("turn_ts") or "") in turns_selected]
+    filter_ms = _elapsed_ms(filter_start_ms)
 
     # Build keyword-scope statistical aggregates.
     # The token usage selection follows /session/{session_id}/stats style:
     # prefer *-non-stream-res-* files when present in session, otherwise fallback to *res.json style.
+    stats_start_ms = _now_ms()
     has_non_stream_files = any(bool(rec.non_stream_file) for rec in records)
     session_tokens = _new_token_bucket()
     agent_token_buckets: Dict[str, Dict[str, int]] = {}
@@ -625,7 +780,9 @@ def get_timeline(
         )
 
     events_filtered.sort(key=lambda x: (x.get("ts") or "", int(x.get("_seq") or 0)))
+    stats_ms = _elapsed_ms(stats_start_ms)
 
+    lanes_start_ms = _now_ms()
     lane_stats: Dict[str, Dict[str, Any]] = {}
     for ev in events_filtered:
         lane_id = str(ev.get("lane_id") or "")
@@ -654,7 +811,9 @@ def get_timeline(
             )
         )
     lanes.sort(key=lambda x: lane_sort_key(x.label))
+    lanes_ms = _elapsed_ms(lanes_start_ms)
 
+    serialize_start_ms = _now_ms()
     out_events: List[TimelineEvent] = []
     for ev in events_filtered:
         ev.pop("_seq", None)
@@ -666,6 +825,7 @@ def get_timeline(
                 kind=str(ev.get("kind") or ""),
                 summary=str(ev.get("summary") or ""),
                 detail=ev.get("detail"),
+                detail_loaded=bool(ev.get("detail_loaded", True)),
                 tool_name=ev.get("tool_name"),
                 tool_args=ev.get("tool_args"),
                 tool_def=ev.get("tool_def"),
@@ -678,9 +838,9 @@ def get_timeline(
     tool_events = sum(1 for ev in out_events if ev.kind == "tool_call")
     total_events = len(out_events)
 
-    return {
+    payload = {
         "session_id": session_id,
-        "session_dir": session_dir.name,
+        "session_dir": bundle.session_dir_name,
         "lanes": [
             {
                 "lane_id": x.lane_id,
@@ -699,6 +859,7 @@ def get_timeline(
                 "kind": x.kind,
                 "summary": x.summary,
                 "detail": x.detail,
+                "detail_loaded": x.detail_loaded,
                 "tool_name": x.tool_name,
                 "tool_args": x.tool_args,
                 "tool_def": x.tool_def,
@@ -727,5 +888,73 @@ def get_timeline(
         "meta": {
             "warnings": warnings,
             "summary_chars": summary_chars,
+            "perf": {
+                "bundle_prepare_ms": bundle_prepare_ms,
+                "filter_ms": filter_ms,
+                "stats_ms": stats_ms,
+                "lanes_ms": lanes_ms,
+                "serialize_ms": _elapsed_ms(serialize_start_ms),
+                "total_ms": _elapsed_ms(total_start_ms),
+            },
+            "cache": {
+                "bundle_hit": bundle_cache_hit,
+                "filtered_hit": False,
+            },
         },
     }
+    _FILTERED_TIMELINE_CACHE[(str(session_dir.resolve()), filter_cache_key)] = _FilteredTimelineCacheEntry(
+        key=filter_cache_key,
+        payload=_copy_jsonish(payload),
+    )
+    return payload
+
+
+def get_timeline_event_detail(
+    *,
+    logs_session_dir: str,
+    session_id: str,
+    event_id: str,
+    summary_chars: int,
+) -> Optional[Dict[str, Any]]:
+    session_dir = _resolve_session_dir(logs_session_dir, session_id)
+    if not session_dir:
+        return None
+
+    bundle, _cache_hit = _get_raw_timeline_bundle(session_dir=session_dir, summary_chars=summary_chars)
+    for raw_event in bundle.raw_events:
+        if str(raw_event.get("event_id") or "") != event_id:
+            continue
+        event = TimelineEvent(
+            event_id=str(raw_event.get("event_id") or ""),
+            ts=str(raw_event.get("ts") or ""),
+            lane_id=str(raw_event.get("lane_id") or ""),
+            kind=str(raw_event.get("kind") or ""),
+            summary=str(raw_event.get("summary") or ""),
+            detail=raw_event.get("detail"),
+            detail_loaded=True,
+            tool_name=raw_event.get("tool_name"),
+            tool_args=raw_event.get("tool_args"),
+            tool_def=raw_event.get("tool_def"),
+            source_files=raw_event.get("source_files"),
+            turn_ts=str(raw_event.get("turn_ts") or ""),
+            format=str(raw_event.get("format") or ""),
+        )
+        detail_payload = {
+            "event": {
+                "event_id": event.event_id,
+                "ts": event.ts,
+                "lane_id": event.lane_id,
+                "kind": event.kind,
+                "summary": event.summary,
+                "detail": event.detail,
+                "tool_name": event.tool_name,
+                "tool_args": event.tool_args,
+                "tool_def": event.tool_def,
+                "source_files": event.source_files,
+                "turn_ts": event.turn_ts,
+                "format": event.format,
+                "detail_loaded": True,
+            }
+        }
+        return detail_payload
+    return None

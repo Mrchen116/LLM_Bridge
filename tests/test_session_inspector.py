@@ -134,6 +134,27 @@ def test_session_inspector_sessions_and_timeline(client: TestClient, monkeypatch
     assert tool_only_payload["events"]
     assert all(ev["kind"] == "tool_call" for ev in tool_only_payload["events"])
 
+    resp_compact_timeline = client.get(
+        "/api/session-inspector/sessions/demo-session/timeline",
+        params={"include_non_tool": "true", "include_detail": "false"},
+    )
+    assert resp_compact_timeline.status_code == 200
+    compact_payload = resp_compact_timeline.json()
+    compact_tool_event = next(ev for ev in compact_payload["events"] if ev["kind"] == "tool_call")
+    assert compact_tool_event["detail_loaded"] is False
+    assert compact_tool_event["detail"] is None
+    assert compact_tool_event["tool_args"] is None
+    assert compact_tool_event["tool_def"] is None
+
+    resp_event_detail = client.get(
+        "/api/session-inspector/sessions/demo-session/events/2026-02-22_12-34-56_789:tool_call:0"
+    )
+    assert resp_event_detail.status_code == 200
+    event_payload = resp_event_detail.json()["event"]
+    assert event_payload["detail_loaded"] is True
+    assert event_payload["tool_name"] == "Bash"
+    assert event_payload["tool_args"] == {"cmd": "ls"}
+
 
 def test_session_inspector_log_file_endpoint(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")

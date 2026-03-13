@@ -1,4 +1,5 @@
 import type { TimelineEvent, TimelineResponse } from '../api/contracts'
+import { formatToolArgsHint, normalizeReadableText } from './event-display'
 
 export interface ParsedTimelineEvent {
   eventId: string
@@ -10,6 +11,9 @@ export interface ParsedTimelineEvent {
   kindClass: 'tool' | 'message'
   summary: string
   preview: string
+  cardTitle: string
+  cardSummary: string
+  detailLoaded: boolean
   raw: TimelineEvent
 }
 
@@ -41,6 +45,8 @@ export function parseTimelineEvent(event: TimelineEvent): ParsedTimelineEvent {
   const kindClass = event.kind === 'tool_call' ? 'tool' : 'message'
   const kindLabel = kindClass === 'tool' ? 'Tool' : 'Message'
   const preview = event.summary || (kindClass === 'tool' ? event.tool_name || event.kind : event.kind)
+  const cardTitle = buildCardTitle(event)
+  const cardSummary = buildCardSummary(event, preview)
 
   return {
     eventId: event.event_id,
@@ -52,8 +58,39 @@ export function parseTimelineEvent(event: TimelineEvent): ParsedTimelineEvent {
     kindClass,
     summary: event.summary,
     preview,
+    cardTitle,
+    cardSummary,
+    detailLoaded: event.detail_loaded !== false,
     raw: event,
   }
+}
+
+function normalizeCardLine(value: string): string {
+  return normalizeReadableText(value).replace(/\s+/g, ' ').trim()
+}
+
+function shortLine(value: string, maxLength = 120): string {
+  const text = normalizeCardLine(value)
+  if (text.length <= maxLength) {
+    return text
+  }
+  return `${text.slice(0, maxLength)}...`
+}
+
+function buildCardTitle(event: TimelineEvent): string {
+  if (event.kind === 'tool_call') {
+    const toolName = shortLine((event.tool_name ?? 'unknown').trim())
+    return `Tool · ${toolName}`
+  }
+  return `Message · ${event.kind}`
+}
+
+function buildCardSummary(event: TimelineEvent, preview: string): string {
+  if (event.kind === 'tool_call') {
+    const toolHint = formatToolArgsHint(event)
+    return shortLine(toolHint || preview || event.kind)
+  }
+  return shortLine(event.summary || preview || event.kind)
 }
 
 export function formatTimestampLabel(timestamp: string): string {

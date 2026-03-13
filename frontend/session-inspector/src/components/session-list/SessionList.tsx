@@ -19,7 +19,7 @@ function formatSessionStartTag(startTs: string): string {
   if (!matched) {
     return normalized
   }
-  const [, _year, month, day, hour, minute, second] = matched
+  const [, , month, day, hour, minute, second] = matched
   return `${month}-${day}_${hour}-${minute}-${second}`
 }
 

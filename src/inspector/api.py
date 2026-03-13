@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from src.inspector.keyword_presets import load_keyword_presets, save_keyword_presets
-from src.inspector.service import get_timeline, list_sessions
+from src.inspector.service import get_timeline, get_timeline_event_detail, list_sessions
 
 
 ROUTER = APIRouter(tags=["session-inspector"])
@@ -87,6 +87,7 @@ async def session_inspector_timeline(
     q: Optional[str] = Query(default=None),
     q_not: Optional[str] = Query(default=None),
     summary_chars: int = Query(default=120, ge=40, le=400),
+    include_detail: bool = Query(default=True),
 ):
     _require_enabled()
     payload = get_timeline(
@@ -98,9 +99,28 @@ async def session_inspector_timeline(
         q=q,
         q_not=q_not,
         summary_chars=summary_chars,
+        include_detail=include_detail,
     )
     if not payload:
         raise HTTPException(status_code=404, detail=f"session_id {session_id} not found")
+    return payload
+
+
+@ROUTER.get("/api/session-inspector/sessions/{session_id}/events/{event_id}")
+async def session_inspector_event_detail(
+    session_id: str,
+    event_id: str,
+    summary_chars: int = Query(default=120, ge=40, le=400),
+):
+    _require_enabled()
+    payload = get_timeline_event_detail(
+        logs_session_dir=DEFAULT_LOGS_SESSION_DIR,
+        session_id=session_id,
+        event_id=event_id,
+        summary_chars=summary_chars,
+    )
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"event_id {event_id} not found")
     return payload
 
 

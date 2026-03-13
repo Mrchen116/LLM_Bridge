@@ -10,7 +10,6 @@ import {
 import {
   buildTimelineFilterOptions,
   buildTimelineGrid,
-  clusterEventsByLane,
 } from '../lib/timeline-cluster'
 import { parseTimelineResponse } from '../lib/timeline-parser'
 import { inspectorActions } from '../state/actions'
@@ -20,6 +19,13 @@ import type { TimelineFilters } from '../state/types'
 
 const SESSION_SEARCH_DEBOUNCE_MS = 180
 const TIMELINE_SUMMARY_CHARS = 120
+
+function logPerf(label: string, payload: Record<string, unknown>) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  console.info(`[session-inspector] ${label}`, payload)
+}
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -44,12 +50,20 @@ export function useSessionInspectorController() {
     const requestId = sessionsRequestId.current + 1
     sessionsRequestId.current = requestId
     dispatch(inspectorActions.sessionsLoading())
+    const startedAt = performance.now()
 
     try {
       const payload = await fetchSessions(query, 80)
       if (sessionsRequestId.current !== requestId) {
         return
       }
+
+       logPerf('sessions loaded', {
+        totalMs: Number((performance.now() - startedAt).toFixed(2)),
+        serverPerf: payload.meta?.perf ?? null,
+        serverCache: payload.meta?.cache ?? null,
+        counts: payload.meta?.counts ?? null,
+      })
 
       dispatch(inspectorActions.sessionsLoaded(payload.items ?? [], payload.next_cursor ?? null))
     } catch (error) {
@@ -64,12 +78,21 @@ export function useSessionInspectorController() {
     const requestId = timelineRequestId.current + 1
     timelineRequestId.current = requestId
     dispatch(inspectorActions.timelineLoading())
+    const startedAt = performance.now()
 
     try {
-      const payload = await fetchTimeline(sessionId, filters, TIMELINE_SUMMARY_CHARS)
+      const payload = await fetchTimeline(sessionId, filters, TIMELINE_SUMMARY_CHARS, false)
       if (timelineRequestId.current !== requestId) {
         return
       }
+      logPerf('timeline loaded', {
+        sessionId,
+        totalMs: Number((performance.now() - startedAt).toFixed(2)),
+        serverPerf: payload.meta?.perf ?? null,
+        serverCache: payload.meta?.cache ?? null,
+        totalEvents: payload.stats.total_events,
+        laneCount: payload.stats.lane_count,
+      })
       dispatch(inspectorActions.timelineLoaded(payload))
     } catch (error) {
       if (timelineRequestId.current !== requestId) {
@@ -131,13 +154,28 @@ export function useSessionInspectorController() {
   }, [applyPresetToFilters])
 
   useEffect(() => {
-    void loadKeywordPresets()
+    const timer = window.setTimeout(() => {
+      void loadKeywordPresets()
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [loadKeywordPresets])
 
   const parsedTimeline = useMemo(() => parseTimelineResponse(state.timeline), [state.timeline])
-  const laneClusters = useMemo(() => clusterEventsByLane(parsedTimeline), [parsedTimeline])
   const timelineGrid = useMemo(() => buildTimelineGrid(parsedTimeline), [parsedTimeline])
   const filterOptions = useMemo(() => buildTimelineFilterOptions(parsedTimeline), [parsedTimeline])
+
+  useEffect(() => {
+    if (!state.timeline || !parsedTimeline) {
+      return
+    }
+    logPerf('timeline derived data', {
+      eventCount: state.timeline.events.length,
+      rowCount: timelineGrid.rows.length,
+      laneCount: timelineGrid.laneOrder.length,
+      laneOptionCount: filterOptions.laneOptions.length,
+      toolOptionCount: filterOptions.toolOptions.length,
+    })
+  }, [filterOptions.laneOptions.length, filterOptions.toolOptions.length, parsedTimeline, state.timeline, timelineGrid.laneOrder.length, timelineGrid.rows.length])
 
   const selectedEvent = useMemo<TimelineEvent | null>(() => {
     if (!state.timeline || !state.selectedEventId) {
@@ -295,7 +333,7 @@ export function useSessionInspectorController() {
     timelineGrid,
     filterOptions,
     selectedEvent,
-    activeLaneCount: laneClusters.length,
+    activeLaneCount: timelineGrid.laneOrder.length,
     actions: {
       setSessionQuery,
       selectSession,

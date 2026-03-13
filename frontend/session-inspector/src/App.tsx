@@ -69,7 +69,7 @@ export default function App() {
         onSelectEvent={actions.selectEvent}
       />
 
-      <DetailPanel event={selectedEvent} />
+      <DetailPanel event={selectedEvent} sessionId={state.selectedSessionId} />
     </div>
   )
 }
