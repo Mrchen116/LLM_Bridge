@@ -704,6 +704,29 @@ async def set_codex_account_enabled(label: str, enabled: bool) -> Dict[str, Any]
         return _public_account_view(record, default_label=default_label)
 
 
+async def set_codex_account_priority(label: str, priority: int) -> Dict[str, Any]:
+    clean = _validate_label(label)
+    async with _lock:
+        root = _load_pool_locked()
+        default_label = str(root.get("default_label") or "")
+        accounts = root.get("accounts") or []
+        idx = -1
+        for i, item in enumerate(accounts):
+            if isinstance(item, dict) and _label_key(str(item.get("label") or "")) == _label_key(clean):
+                idx = i
+                break
+        if idx < 0:
+            raise RuntimeError(f"label 不存在: {clean}")
+
+        record = dict(accounts[idx])
+        record["priority"] = int(priority)
+        record["updated_at"] = _now_ts()
+        accounts[idx] = record
+        root["accounts"] = accounts
+        _write_store(root)
+        return _public_account_view(record, default_label=default_label)
+
+
 async def switch_codex_default_account(label: str) -> Dict[str, Any]:
     clean = _validate_label(label)
     async with _lock:

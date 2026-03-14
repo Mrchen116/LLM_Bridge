@@ -92,7 +92,7 @@ def test_codex_pool_marks_429_and_switches_to_backup(tmp_path, monkeypatch):
     assert second['Authorization'] == 'Bearer token-backup'
 
 
-def test_codex_pool_switch_remove_enable_disable_by_label(tmp_path, monkeypatch):
+def test_codex_pool_switch_priority_remove_enable_disable_by_label(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     Path('.codex_oauth.json').write_text(
         json.dumps(
@@ -138,6 +138,12 @@ def test_codex_pool_switch_remove_enable_disable_by_label(tmp_path, monkeypatch)
 
     enabled = asyncio.run(token_auth.set_codex_account_enabled('b', True))
     assert enabled['enabled'] is True
+
+    updated_priority = asyncio.run(token_auth.set_codex_account_priority('b', 50))
+    assert updated_priority['priority'] == 50
+
+    ordered = asyncio.run(token_auth.list_codex_accounts())
+    assert [item['label'] for item in ordered['accounts']] == ['b', 'a']
 
     removed = asyncio.run(token_auth.remove_codex_account('a'))
     assert removed['label'] == 'a'

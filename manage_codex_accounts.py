@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import time
 
 from token_auth import (
     add_codex_account_via_browser_oauth,
@@ -8,105 +9,255 @@ from token_auth import (
     login_all_codex_accounts,
     remove_codex_account,
     set_codex_account_enabled,
-    switch_codex_default_account,
+    set_codex_account_priority,
 )
 
 
-def _prompt_select(title: str, options: list[str], default_index: int = 0) -> str:
-    print(f"\n{title}")
-    for idx, text in enumerate(options, start=1):
-        mark = " (default)" if idx - 1 == default_index else ""
-        print(f"  {idx}) {text}{mark}")
-    raw = input("请选择编号: ").strip()
-    if not raw:
-        return options[default_index]
-    try:
-        idx = int(raw)
-    except Exception:
-        return options[default_index]
-    if idx < 1 or idx > len(options):
-        return options[default_index]
-    return options[idx - 1]
+def _prompt_select(title: str, options: list[str], default_index: int = 0) -> int:
+    while True:
+        print(f"\n{title}")
+        for idx, text in enumerate(options, start=1):
+            mark = " (default)" if idx - 1 == default_index else ""
+            print(f"  {idx}) {text}{mark}")
+        raw = input("请选择编号: ").strip()
+        if not raw:
+            return default_index
+        try:
+            idx = int(raw)
+        except Exception:
+            print("[accounts] 请输入数字编号。")
+            continue
+        if 1 <= idx <= len(options):
+            return idx - 1
+        print(f"[accounts] 请输入 1 到 {len(options)} 之间的编号。")
 
 
-def _prompt_field(title: str, default: str = "") -> str:
-    suffix = f" [{default}]" if default else ""
-    raw = input(f"{title}{suffix}: ")
-    val = raw.strip()
-    if not val:
-        return default
-    return val
+def _prompt_field(title: str, default: str = "", *, required: bool = False) -> str:
+    while True:
+        suffix = f" [{default}]" if default else ""
+        raw = input(f"{title}{suffix}: ")
+        val = raw.strip()
+        if val:
+            return val
+        if default:
+            return default
+        if not required:
+            return ""
+        print(f"[accounts] {title} 不能为空，请重新输入。")
+
+
+def _prompt_int(title: str, default: int) -> int:
+    while True:
+        raw = _prompt_field(title, default=str(default))
+        try:
+            return int(raw)
+        except Exception:
+            print("[accounts] 请输入整数。")
+
+
+def _prompt_confirm(title: str, *, default: bool = False) -> bool:
+    suffix = " [y/N]" if not default else " [Y/n]"
+    while True:
+        raw = input(f"{title}{suffix}: ").strip().lower()
+        if not raw:
+            return default
+        if raw in {"y", "yes", "1", "是"}:
+            return True
+        if raw in {"n", "no", "0", "否"}:
+            return False
+        print("[accounts] 请输入 y 或 n。")
+
+
+def _format_duration(seconds: int) -> str:
+    remain = max(0, int(seconds))
+    hours, remain = divmod(remain, 3600)
+    minutes, secs = divmod(remain, 60)
+    if hours > 0:
+        return f"{hours}h{minutes}m"
+    if minutes > 0:
+        return f"{minutes}m{secs}s"
+    return f"{secs}s"
+
+
+def _format_ts(ts: int) -> str:
+    if int(ts or 0) <= 0:
+        return "-"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts)))
+
+
+def _account_summary(item: dict) -> str:
+    now = int(time.time())
+    label = str(item.get("label") or "")
+    priority = int(item.get("priority") or 100)
+    enabled = bool(item.get("enabled"))
+    cooldown_until = int(item.get("cooldown_until") or 0)
+    expires_at = int(item.get("expires_at") or 0)
+    last_error = str(item.get("last_error") or "").strip()
+
+    if not enabled:
+        state = "已禁用"
+    elif cooldown_until > now:
+        state = f"冷却中，还需 {_format_duration(cooldown_until - now)}"
+    else:
+        state = "可用"
+
+    summary = f"{label} | 优先级 {priority} | 状态 {state} | 过期 { _format_ts(expires_at) }"
+    if last_error:
+        summary += f" | 最近错误 {last_error[:80]}"
+    return summary
+
+
+async def _choose_account(
+    title: str,
+    *,
+    enabled: bool | None = None,
+    empty_message: str,
+) -> dict | None:
+    status = await _print_accounts_list()
+    accounts = status.get("accounts") or []
+    filtered = []
+    for item in accounts:
+        if enabled is True and not bool(item.get("enabled")):
+            continue
+        if enabled is False and bool(item.get("enabled")):
+            continue
+        filtered.append(item)
+
+    if not filtered:
+        print(f"[accounts] {empty_message}")
+        return None
+
+    options = [_account_summary(item) for item in filtered] + ["返回主菜单"]
+    idx = _prompt_select(title, options, default_index=0)
+    if idx == len(options) - 1:
+        return None
+    return filtered[idx]
 
 
 async def _print_accounts_list() -> None:
     status = await list_codex_accounts()
-    default_label = str(status.get("default_label") or "")
-    print(f"[accounts] default={default_label or '-'}")
-    for item in status.get("accounts") or []:
-        print(
-            f"- label={item['label']} default={item['is_default']} enabled={item['enabled']} "
-            f"priority={item['priority']} cooldown_until={item['cooldown_until']} "
-            f"expires_at={item['expires_at']} account_id={item['account_id']}"
-        )
+    accounts = status.get("accounts") or []
+    print("\n[accounts] 账号列表（优先级越小越先被使用）")
+    if not accounts:
+        print("  暂无账号。")
+        return status
+
+    enabled_count = 0
+    for idx, item in enumerate(accounts, start=1):
+        if bool(item.get("enabled")):
+            enabled_count += 1
+        print(f"  {idx}) {_account_summary(item)}")
+    print(f"[accounts] 共 {len(accounts)} 个账号，启用中 {enabled_count} 个。")
+    return status
 
 
 async def _run_wizard() -> int:
+    menu_options = [
+        "新增账号",
+        "查看账号列表",
+        "修改账号优先级",
+        "启用账号",
+        "禁用账号",
+        "删除账号",
+        "批量校验并刷新(login-all)",
+        "退出",
+    ]
     while True:
-        action = _prompt_select(
-            title="账户操作",
-            options=[
-                "新增账号",
-                "查看账号列表",
-                "启用账号",
-                "禁用账号",
-                "删除账号",
-                "切换默认账号",
-                "批量校验(login-all)",
-                "退出",
-            ],
-            default_index=0,
-        )
+        action = menu_options[_prompt_select(title="账户操作", options=menu_options, default_index=0)]
 
         if action == "退出":
             return 0
 
         try:
             if action == "新增账号":
-                method = _prompt_select("登录方式", ["browser", "headless"], default_index=0)
-                label = _prompt_field("label (账号标签，必须唯一)")
-                priority_raw = _prompt_field("priority (数字越小优先级越高)", default="100")
-                priority = int(priority_raw or "100")
+                status = await list_codex_accounts()
+                existing_labels = {
+                    str(item.get("label") or "").strip().casefold() for item in status.get("accounts") or []
+                }
+                methods = ["browser", "headless"]
+                method = methods[_prompt_select("登录方式", methods, default_index=0)]
+                while True:
+                    label = _prompt_field("label (账号标签，必须唯一)", required=True)
+                    if label.strip().casefold() in existing_labels:
+                        print(f"[accounts] label 已存在: {label}")
+                        continue
+                    break
+                priority = _prompt_int("priority (数字越小优先级越高)", default=100)
                 if method == "browser":
                     rec = await add_codex_account_via_browser_oauth(label=label, priority=priority)
                 else:
                     rec = await add_codex_account_via_device_oauth(label=label, priority=priority)
                 print(f"[accounts] added label={rec['label']} account_id={rec['account_id']}")
+                await _print_accounts_list()
             elif action == "查看账号列表":
                 await _print_accounts_list()
+            elif action == "修改账号优先级":
+                item = await _choose_account(
+                    "选择要修改优先级的账号",
+                    empty_message="当前没有可调整优先级的账号。",
+                )
+                if not item:
+                    continue
+                current = int(item.get("priority") or 100)
+                priority = _prompt_int(
+                    f"新的 priority（当前 {current}，数字越小优先级越高）",
+                    default=current,
+                )
+                if priority == current:
+                    print("[accounts] 优先级未变化。")
+                    continue
+                rec = await set_codex_account_priority(label=str(item["label"]), priority=priority)
+                print(f"[accounts] priority updated label={rec['label']} priority={rec['priority']}")
+                await _print_accounts_list()
             elif action == "启用账号":
-                label = _prompt_field("label (要启用的账号)")
-                rec = await set_codex_account_enabled(label=label, enabled=True)
+                item = await _choose_account(
+                    "选择要启用的账号",
+                    enabled=False,
+                    empty_message="当前没有已禁用的账号。",
+                )
+                if not item:
+                    continue
+                rec = await set_codex_account_enabled(label=str(item["label"]), enabled=True)
                 print(f"[accounts] enabled label={rec['label']}")
+                await _print_accounts_list()
             elif action == "禁用账号":
-                label = _prompt_field("label (要禁用的账号)")
+                item = await _choose_account(
+                    "选择要禁用的账号",
+                    enabled=True,
+                    empty_message="当前没有可禁用的账号。",
+                )
+                if not item:
+                    continue
+                label = str(item["label"])
+                if not _prompt_confirm(f"确认禁用账号 {label} 吗？", default=False):
+                    print("[accounts] 已取消禁用。")
+                    continue
                 rec = await set_codex_account_enabled(label=label, enabled=False)
                 print(f"[accounts] disabled label={rec['label']}")
+                await _print_accounts_list()
             elif action == "删除账号":
-                label = _prompt_field("label (要删除的账号)")
+                item = await _choose_account(
+                    "选择要删除的账号",
+                    empty_message="当前没有可删除的账号。",
+                )
+                if not item:
+                    continue
+                label = str(item["label"])
+                if not _prompt_confirm(f"确认删除账号 {label} 吗？该操作不可恢复", default=False):
+                    print("[accounts] 已取消删除。")
+                    continue
                 rec = await remove_codex_account(label=label)
                 print(f"[accounts] removed label={rec['label']}")
-            elif action == "切换默认账号":
-                label = _prompt_field("label (切为默认)")
-                rec = await switch_codex_default_account(label=label)
-                print(f"[accounts] default switched to label={rec['label']}")
-            elif action == "批量校验(login-all)":
+                await _print_accounts_list()
+            elif action == "批量校验并刷新(login-all)":
                 result = await login_all_codex_accounts()
-                print(f"[accounts] login-all ok={result['ok']} failed={result['failed']}")
+                print(f"[accounts] login-all 完成：成功 {result['ok']}，失败 {result['failed']}")
                 for item in result.get("details") or []:
                     if item.get("ok"):
-                        print(f"- label={item['label']} ok=true")
+                        print(f"- {item['label']}: ok")
                     else:
-                        print(f"- label={item['label']} ok=false error={item.get('error', '')}")
+                        print(f"- {item['label']}: failed error={item.get('error', '')}")
+                await _print_accounts_list()
             else:
                 raise SystemExit(f"Unknown wizard action: {action}")
         except Exception as e:
@@ -148,19 +299,19 @@ async def _run_command(args: argparse.Namespace) -> int:
         print(f"[accounts] disabled label={rec['label']}")
         return 0
 
-    if cmd == "switch":
-        rec = await switch_codex_default_account(label=args.label)
-        print(f"[accounts] default switched to label={rec['label']}")
+    if cmd == "priority":
+        rec = await set_codex_account_priority(label=args.label, priority=int(args.priority))
+        print(f"[accounts] priority updated label={rec['label']} priority={rec['priority']}")
         return 0
 
     if cmd == "login-all":
         result = await login_all_codex_accounts()
-        print(f"[accounts] login-all ok={result['ok']} failed={result['failed']}")
+        print(f"[accounts] login-all 完成：成功 {result['ok']}，失败 {result['failed']}")
         for item in result.get("details") or []:
             if item.get("ok"):
-                print(f"- label={item['label']} ok=true")
+                print(f"- {item['label']}: ok")
             else:
-                print(f"- label={item['label']} ok=false error={item.get('error', '')}")
+                print(f"- {item['label']}: failed error={item.get('error', '')}")
         return 0
 
     raise SystemExit(f"Unknown command: {cmd}")
@@ -186,8 +337,9 @@ def _build_parser() -> argparse.ArgumentParser:
     disable_parser = subparsers.add_parser("disable", help="Disable account by label")
     disable_parser.add_argument("--label", required=True)
 
-    switch_parser = subparsers.add_parser("switch", help="Switch default account by label")
-    switch_parser.add_argument("--label", required=True)
+    priority_parser = subparsers.add_parser("priority", help="Update account priority by label")
+    priority_parser.add_argument("--label", required=True)
+    priority_parser.add_argument("--priority", type=int, required=True, help="Lower value means higher priority")
 
     subparsers.add_parser("login-all", help="Refresh/check all enabled accounts")
     return parser
