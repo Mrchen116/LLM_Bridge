@@ -64,6 +64,9 @@ def _normalize_non_stream_obj(obj: Dict[str, Any], downstream_format: str) -> Di
     # Already normalized chat completion
     if isinstance(obj.get("choices"), list) and obj.get("object") == "chat.completion":
         return obj
+    status_code = obj.get("status_code")
+    if isinstance(status_code, int) and status_code >= 400:
+        return obj
     # Typical stored wrappers: {json:{...}}
     if isinstance(obj.get("json"), dict):
         return build_session_non_stream_openai_chat(obj, downstream_format)

@@ -6,7 +6,7 @@ import uuid
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional
 
 import httpx
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from src.adapters.codex_oauth_adapter import collect_with_retry
 from src.adapters.upstream_executor import (
@@ -30,7 +30,13 @@ from proxy_logging import (
 )
 
 
-def build_openai_bridge_streaming_response(
+async def _prepend_stream_chunk(first_chunk: bytes, iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    yield first_chunk
+    async for chunk in iterator:
+        yield chunk
+
+
+async def build_openai_bridge_streaming_response(
     *,
     auth_type: str,
     model: str,
@@ -47,16 +53,38 @@ def build_openai_bridge_streaming_response(
     expose_thinking: bool,
     codex_reinject_trace: Optional[Dict[str, Any]],
     turn_logs: TurnLogPaths,
-) -> StreamingResponse:
+ ) -> Response:
+    stream_result: Dict[str, Any] = {}
+
     async def sse() -> AsyncIterator[bytes]:
         up_chunks = []
         down_events = []
+        downstream_response_obj: Dict[str, Any] = {"type": "anthropic_sse_capture", "events": down_events}
+        non_stream_resp: Optional[Dict[str, Any]] = None
 
         def emit(event: str, data: Dict[str, Any]) -> bytes:
             if isinstance(data, dict) and "type" not in data:
                 data = {"type": event, **data}
             down_events.append({"event": event, "data": data})
             return _sse_event(event, data)
+
+        def set_error_response(*, status_code: int, body: str, media_type: str = "application/json") -> None:
+            nonlocal downstream_response_obj, non_stream_resp
+            error_obj = {
+                "type": "passthrough_error",
+                "status_code": status_code,
+                "media_type": media_type,
+                "body": body,
+            }
+            downstream_response_obj = error_obj
+            non_stream_resp = error_obj
+            stream_result["error_response"] = error_obj
+
+        def error_body_json(message: str, error_type: str, code: Optional[int] = None) -> str:
+            err_obj: Dict[str, Any] = {"message": message, "type": error_type}
+            if code is not None:
+                err_obj["code"] = code
+            return json.dumps({"error": err_obj}, ensure_ascii=False)
 
         msg_id = f"msg_{uuid.uuid4().hex}"
 
@@ -136,8 +164,19 @@ def build_openai_bridge_streaming_response(
                     up_chunks.extend(result.get("chunks") or [])
                     if not bool(result.get("ok")):
                         err_text = str(result.get("error_text") or "")
-                        yield emit("error", {"upstream_status": int(result.get("status_code") or 500), "upstream_body": err_text})
-                        yield emit("message_stop", {})
+                        upstream_status = int(result.get("status_code") or 0)
+                        is_connection_error = any(
+                            isinstance(chunk, dict) and chunk.get("type") == "transport_error"
+                            for chunk in (result.get("chunks") or [])
+                        )
+                        set_error_response(
+                            status_code=502 if is_connection_error or upstream_status <= 0 else upstream_status,
+                            body=error_body_json(
+                                err_text or "上游返回异常状态，但响应体为空",
+                                "upstream_connection_error" if is_connection_error else "upstream_http_error",
+                                502 if is_connection_error or upstream_status <= 0 else upstream_status,
+                            ),
+                        )
                         return
 
                     codex_resp_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
@@ -153,6 +192,12 @@ def build_openai_bridge_streaming_response(
                         else ""
                     )
                     tool_uses = codex_response_extract_tool_uses(codex_resp_json)
+                    if not text and not tool_uses:
+                        set_error_response(
+                            status_code=502,
+                            body=error_body_json("上游返回成功，但未生成任何文本或工具调用", "upstream_empty_stream"),
+                        )
+                        return
 
                     yield emit("message_start", {
                         "message": {
@@ -242,8 +287,14 @@ def build_openai_bridge_streaming_response(
                             err = await r.aread()
                             err_text = err.decode("utf-8", "ignore")
                             up_chunks.append({"type": "error_body", "text": err_text})
-                            yield emit("error", {"upstream_status": r.status_code, "upstream_body": err_text})
-                            yield emit("message_stop", {})
+                            set_error_response(
+                                status_code=r.status_code,
+                                body=error_body_json(
+                                    err_text or "上游返回异常状态，但响应体为空",
+                                    "upstream_http_error",
+                                    r.status_code,
+                                ),
+                            )
                             return
 
                         async for line in r.aiter_lines():
@@ -381,6 +432,12 @@ def build_openai_bridge_streaming_response(
                                         })
 
                         if connection_established:
+                            if not down_events:
+                                set_error_response(
+                                    status_code=502,
+                                    body=error_body_json("上游建立了流式连接，但未返回任何事件", "upstream_empty_stream"),
+                                )
+                                return
                             if current_block_type is not None:
                                 yield emit("content_block_stop", {"index": current_block_index})
 
@@ -401,12 +458,30 @@ def build_openai_bridge_streaming_response(
                         retry_headers = await refresh_headers()
 
                 if not connection_established and last_retry_status is not None and is_rate_limit_status(last_retry_status):
-                    yield emit("error", {"upstream_status": last_retry_status, "upstream_body": last_retry_err_text})
-                    yield emit("message_stop", {})
+                    set_error_response(
+                        status_code=last_retry_status,
+                        body=error_body_json(
+                            last_retry_err_text or "上游返回异常状态，但响应体为空",
+                            "upstream_http_error",
+                            last_retry_status,
+                        ),
+                    )
                     return
+                if not connection_established:
+                    set_error_response(
+                        status_code=502,
+                        body=error_body_json("上游流式请求未建立连接", "upstream_no_response"),
+                    )
+                    return
+        except httpx.HTTPError as e:
+            set_error_response(
+                status_code=502,
+                body=error_body_json(f"{type(e).__name__}: {e}", "upstream_connection_error"),
+            )
 
         finally:
-            non_stream_resp = _build_anthropic_non_stream_from_events(down_events, model)
+            if non_stream_resp is None:
+                non_stream_resp = _build_anthropic_non_stream_from_events(down_events, model)
             if non_stream_resp is None:
                 non_stream_resp = {
                     "id": f"msg_{uuid.uuid4().hex}",
@@ -421,8 +496,22 @@ def build_openai_bridge_streaming_response(
             log_response_phase(
                 turn_logs,
                 upstream_response_obj={"type": "openai_sse_capture", "chunks": up_chunks},
-                downstream_response_obj={"type": "anthropic_sse_capture", "events": down_events},
+                downstream_response_obj=downstream_response_obj,
                 non_stream_response_obj=non_stream_resp,
             )
 
-    return StreamingResponse(sse(), media_type="text/event-stream")
+    iterator = sse()
+    try:
+        first_chunk = await anext(iterator)
+    except StopAsyncIteration:
+        error_obj = stream_result.get("error_response") or {
+            "status_code": 502,
+            "media_type": "application/json",
+            "body": json.dumps({"error": {"message": "上游流式请求未返回任何内容", "type": "upstream_empty_stream"}}, ensure_ascii=False),
+        }
+        return Response(
+            content=str(error_obj.get("body") or ""),
+            status_code=int(error_obj.get("status_code") or 502),
+            media_type=str(error_obj.get("media_type") or "application/json"),
+        )
+    return StreamingResponse(_prepend_stream_chunk(first_chunk, iterator), media_type="text/event-stream")

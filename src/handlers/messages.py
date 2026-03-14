@@ -69,6 +69,12 @@ from upstream_config import (
 )
 
 
+async def _prepend_stream_chunk(first_chunk: bytes, iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    yield first_chunk
+    async for chunk in iterator:
+        yield chunk
+
+
 async def _forward_anthropic_native_messages(
     *,
     stream: bool,
@@ -123,9 +129,26 @@ async def _forward_anthropic_native_messages(
             media_type=r.headers.get("content-type", "application/json"),
         )
 
+    stream_result: Dict[str, Any] = {}
+
     async def sse_passthrough() -> AsyncIterator[bytes]:
         up_chunks: List[Any] = []
         down_chunks: List[Any] = []
+        downstream_response_obj: Dict[str, Any] = {"type": "anthropic_native_sse_capture", "chunks": down_chunks}
+        non_stream_resp: Optional[Dict[str, Any]] = None
+
+        def set_error_response(*, status_code: int, body: str, media_type: str = "application/json") -> None:
+            nonlocal downstream_response_obj, non_stream_resp
+            error_obj = {
+                "type": "passthrough_error",
+                "status_code": status_code,
+                "media_type": media_type,
+                "body": body,
+            }
+            downstream_response_obj = error_obj
+            non_stream_resp = error_obj
+            stream_result["error_response"] = error_obj
+
         try:
             async with httpx.AsyncClient(
                 verify=verify,
@@ -159,6 +182,19 @@ async def _forward_anthropic_native_messages(
                         async for chunk in r.aiter_raw():
                             down_chunks.append(chunk.decode("utf-8", errors="replace"))
                             yield chunk
+                        if not down_chunks:
+                            set_error_response(
+                                status_code=502,
+                                body=json.dumps(
+                                    {
+                                        "error": {
+                                            "message": "上游建立了流式连接，但未返回任何数据块",
+                                            "type": "upstream_empty_stream",
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
                         return
 
                     if not connection_established and attempt < max_retries - 1:
@@ -166,12 +202,50 @@ async def _forward_anthropic_native_messages(
                         retry_headers = await refresh_headers()
 
                 if (not connection_established) and (last_retry_status is not None):
-                    if last_retry_err_text:
-                        yield last_retry_err_text.encode("utf-8", errors="replace")
+                    set_error_response(
+                        status_code=last_retry_status,
+                        body=last_retry_err_text or json.dumps(
+                            {
+                                "error": {
+                                    "message": "上游返回异常状态，但响应体为空",
+                                    "type": "upstream_http_error",
+                                }
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
                     return
+                if not connection_established:
+                    set_error_response(
+                        status_code=502,
+                        body=json.dumps(
+                            {
+                                "error": {
+                                    "message": "上游流式请求未建立连接",
+                                    "type": "upstream_no_response",
+                                }
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                    return
+        except httpx.HTTPError as e:
+            set_error_response(
+                status_code=502,
+                body=json.dumps(
+                    {
+                        "error": {
+                            "message": f"{type(e).__name__}: {e}",
+                            "type": "upstream_connection_error",
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+            )
         finally:
             events = _parse_anthropic_sse_chunks_to_events(down_chunks)
-            non_stream_resp = _build_anthropic_non_stream_from_events(events, model)
+            if non_stream_resp is None:
+                non_stream_resp = _build_anthropic_non_stream_from_events(events, model)
             if non_stream_resp is None:
                 non_stream_resp = {
                     "id": f"msg_{uuid.uuid4().hex}",
@@ -186,11 +260,33 @@ async def _forward_anthropic_native_messages(
             log_response_phase(
                 turn_logs,
                 upstream_response_obj={"type": "anthropic_native_sse_capture", "chunks": up_chunks},
-                downstream_response_obj={"type": "anthropic_native_sse_capture", "chunks": down_chunks},
+                downstream_response_obj=downstream_response_obj,
                 non_stream_response_obj=non_stream_resp,
             )
 
-    return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
+    iterator = sse_passthrough()
+    try:
+        first_chunk = await anext(iterator)
+    except StopAsyncIteration:
+        error_obj = stream_result.get("error_response") or {
+            "status_code": 502,
+            "media_type": "application/json",
+            "body": json.dumps(
+                {
+                    "error": {
+                        "message": "上游流式请求未返回任何内容",
+                        "type": "upstream_empty_stream",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+        }
+        return Response(
+            content=str(error_obj.get("body") or ""),
+            status_code=int(error_obj.get("status_code") or 502),
+            media_type=str(error_obj.get("media_type") or "application/json"),
+        )
+    return StreamingResponse(_prepend_stream_chunk(first_chunk, iterator), media_type="text/event-stream")
 
 
 def _build_openai_bridge_payload(
@@ -643,7 +739,7 @@ async def run_messages_flow(
             refresh_headers=refresh_upstream_headers,
         )
 
-    return build_openai_bridge_streaming_response(
+    return await build_openai_bridge_streaming_response(
         auth_type=auth_type,
         model=model,
         profile=profile,

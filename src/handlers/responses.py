@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
@@ -48,6 +49,12 @@ from upstream_config import (
     get_runtime_options,
     resolve_profile,
 )
+
+
+async def _prepend_stream_chunk(first_chunk: bytes, iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    yield first_chunk
+    async for chunk in iterator:
+        yield chunk
 
 
 async def run_responses_flow(
@@ -252,13 +259,29 @@ async def run_responses_flow(
             media_type=r.headers.get("content-type", "application/json"),
         )
 
+    stream_result: Dict[str, Any] = {}
+
     async def sse_passthrough() -> AsyncIterator[bytes]:
         chunks: List[Any] = []
         down_chunks: List[Any] = []
+        downstream_obj: Dict[str, Any] = {"type": "responses_sse_capture", "chunks": down_chunks}
+        non_stream_obj: Optional[Dict[str, Any]] = None
 
         def emit_bytes(raw: bytes) -> bytes:
             down_chunks.append(raw.decode("utf-8", errors="replace"))
             return raw
+
+        def set_error_response(*, status_code: int, body: str, media_type: str = "application/json") -> None:
+            nonlocal downstream_obj, non_stream_obj
+            error_obj = {
+                "type": "passthrough_error",
+                "status_code": status_code,
+                "media_type": media_type,
+                "body": body,
+            }
+            downstream_obj = error_obj
+            non_stream_obj = error_obj
+            stream_result["error_response"] = error_obj
 
         try:
             async with httpx.AsyncClient(
@@ -299,7 +322,18 @@ async def run_responses_flow(
                                     await asyncio.sleep(1 * (2 ** attempt))
                                     retry_headers = await refresh_upstream_headers()
                                     continue
-                            yield emit_bytes(err)
+                            set_error_response(
+                                status_code=r.status_code,
+                                body=last_retry_err_text or json.dumps(
+                                    {
+                                        "error": {
+                                            "message": "上游返回异常状态，但响应体为空",
+                                            "type": "upstream_http_error",
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
                             return
 
                         connected = True
@@ -307,6 +341,20 @@ async def run_responses_flow(
                         async for raw in r.aiter_raw():
                             chunks.append(raw.decode("utf-8", errors="replace"))
                             yield emit_bytes(raw)
+                        if not down_chunks:
+                            set_error_response(
+                                status_code=502,
+                                body=json.dumps(
+                                    {
+                                        "error": {
+                                            "message": "上游建立了流式连接，但未返回任何数据块",
+                                            "type": "upstream_empty_stream",
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
+                            return
                         break
 
                 if not connected and last_retry_status is not None:
@@ -316,14 +364,63 @@ async def run_responses_flow(
                         else is_rate_limit_status(last_retry_status)
                     )
                     if not should_emit_last:
+                        set_error_response(
+                            status_code=last_retry_status,
+                            body=last_retry_err_text or json.dumps(
+                                {
+                                    "error": {
+                                        "message": "上游返回异常状态，但响应体为空",
+                                        "type": "upstream_http_error",
+                                    }
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
                         return
-                    if last_retry_err_text is not None:
-                        yield emit_bytes(last_retry_err_text.encode("utf-8", errors="replace"))
+                    set_error_response(
+                        status_code=last_retry_status,
+                        body=last_retry_err_text or json.dumps(
+                            {
+                                "error": {
+                                    "message": "上游返回异常状态，但响应体为空",
+                                    "type": "upstream_http_error",
+                                }
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
                     return
+                if not connected:
+                    set_error_response(
+                        status_code=502,
+                        body=json.dumps(
+                            {
+                                "error": {
+                                    "message": "上游流式请求未建立连接",
+                                    "type": "upstream_no_response",
+                                }
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                    return
+        except httpx.HTTPError as e:
+            set_error_response(
+                status_code=502,
+                body=json.dumps(
+                    {
+                        "error": {
+                            "message": f"{type(e).__name__}: {e}",
+                            "type": "upstream_connection_error",
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+            )
         finally:
             upstream_obj = {"type": "responses_passthrough_sse_capture", "chunks": chunks}
-            downstream_obj = {"type": "responses_sse_capture", "chunks": down_chunks}
-            non_stream_obj = build_openai_responses_non_stream_from_sse_chunks(down_chunks)
+            if non_stream_obj is None:
+                non_stream_obj = build_openai_responses_non_stream_from_sse_chunks(down_chunks)
             log_response_phase(
                 turn_logs,
                 upstream_response_obj=upstream_obj,
@@ -335,4 +432,26 @@ async def run_responses_flow(
                 if isinstance(resp_obj, dict):
                     _update_codex_reasoning_reinject_cache_for_responses(codex_reinject_trace, resp_obj)
 
-    return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
+    iterator = sse_passthrough()
+    try:
+        first_chunk = await anext(iterator)
+    except StopAsyncIteration:
+        error_obj = stream_result.get("error_response") or {
+            "status_code": 502,
+            "media_type": "application/json",
+            "body": json.dumps(
+                {
+                    "error": {
+                        "message": "上游流式请求未返回任何内容",
+                        "type": "upstream_empty_stream",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+        }
+        return Response(
+            content=str(error_obj.get("body") or ""),
+            status_code=int(error_obj.get("status_code") or 502),
+            media_type=str(error_obj.get("media_type") or "application/json"),
+        )
+    return StreamingResponse(_prepend_stream_chunk(first_chunk, iterator), media_type="text/event-stream")

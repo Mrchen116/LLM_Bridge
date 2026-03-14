@@ -60,6 +60,12 @@ from upstream_config import (
 )
 
 
+async def _prepend_stream_chunk(first_chunk: bytes, iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    yield first_chunk
+    async for chunk in iterator:
+        yield chunk
+
+
 async def run_chat_completions_flow(
     req: Request,
     *,
@@ -295,13 +301,29 @@ async def run_chat_completions_flow(
             media_type=r.headers.get("content-type", "application/json"),
         )
 
+    stream_result: Dict[str, Any] = {}
+
     async def sse_passthrough() -> AsyncIterator[bytes]:
         up_chunks: List[Any] = []
         down_chunks: List[Any] = []
+        downstream_obj: Dict[str, Any] = {"type": "openai_chat_sse_capture", "chunks": down_chunks}
+        non_stream_obj: Optional[Dict[str, Any]] = None
 
         def emit_bytes(raw: bytes) -> bytes:
             down_chunks.append(raw.decode("utf-8", errors="replace"))
             return raw
+
+        def set_error_response(*, status_code: int, body: str, media_type: str = "application/json") -> None:
+            nonlocal downstream_obj, non_stream_obj
+            error_obj = {
+                "type": "passthrough_error",
+                "status_code": status_code,
+                "media_type": media_type,
+                "body": body,
+            }
+            downstream_obj = error_obj
+            non_stream_obj = error_obj
+            stream_result["error_response"] = error_obj
 
         try:
             if auth_type == "codex_oauth":
@@ -341,20 +363,19 @@ async def run_chat_completions_flow(
                     up_chunks.extend(result.get("chunks") or [])
                     if not bool(result.get("ok")):
                         err_text = str(result.get("error_text") or "")
-                        error_data = {
-                            "id": "chatcmpl-error",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": model,
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
-                            "error": {
-                                "message": err_text,
-                                "type": "upstream_error",
-                                "code": int(result.get("status_code") or 500),
-                            },
-                        }
-                        yield emit_bytes(f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8"))
-                        yield emit_bytes(b"data: [DONE]\n\n")
+                        set_error_response(
+                            status_code=int(result.get("status_code") or 500),
+                            body=err_text or json.dumps(
+                                {
+                                    "error": {
+                                        "message": "上游返回异常状态，但响应体为空",
+                                        "type": "upstream_http_error",
+                                        "code": int(result.get("status_code") or 500),
+                                    }
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
                         return
 
                     codex_json = result.get("response_json") if isinstance(result.get("response_json"), dict) else {}
@@ -386,6 +407,21 @@ async def run_chat_completions_flow(
                             "choices": [{"index": 0, "delta": {"content": content_text}, "finish_reason": None}],
                         }
                         yield emit_bytes(f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
+
+                    if not content_text and not tool_calls:
+                        set_error_response(
+                            status_code=502,
+                            body=json.dumps(
+                                {
+                                    "error": {
+                                        "message": "上游返回成功，但未生成任何文本或工具调用",
+                                        "type": "upstream_empty_stream",
+                                    }
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                        return
 
                     if tool_calls:
                         normalized_tool_calls: List[Dict[str, Any]] = []
@@ -469,31 +505,19 @@ async def run_chat_completions_flow(
                             err = await r.aread()
                             err_text = err.decode("utf-8", errors="replace")
                             up_chunks.append({"type": "error_body", "body": err_text})
-                            error_data = {
-                                "id": "chatcmpl-error",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": body.get("model", "unknown"),
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {},
-                                    "finish_reason": "error"
-                                }]
-                            }
-
-                            try:
-                                error_json = json.loads(err_text)
-                                if isinstance(error_json, dict):
-                                    error_data["error"] = error_json
-                            except Exception:
-                                error_data["error"] = {
-                                    "message": err_text,
-                                    "type": "upstream_error",
-                                    "code": r.status_code
-                                }
-
-                            yield emit_bytes(f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n".encode("utf-8"))
-                            yield emit_bytes(b"data: [DONE]\n\n")
+                            set_error_response(
+                                status_code=r.status_code,
+                                body=err_text or json.dumps(
+                                    {
+                                        "error": {
+                                            "message": "上游返回异常状态，但响应体为空",
+                                            "type": "upstream_http_error",
+                                            "code": r.status_code,
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
                             return
 
                         async for line in r.aiter_lines():
@@ -593,18 +617,19 @@ async def run_chat_completions_flow(
 
                     if connection_established:
                         if not has_valid_content:
-                            empty_chunk = {
-                                "id": "chatcmpl-empty",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": body.get("model", "unknown"),
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {},
-                                    "finish_reason": "stop"
-                                }]
-                            }
-                            yield emit_bytes(f"data: {json.dumps(empty_chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
+                            set_error_response(
+                                status_code=502,
+                                body=json.dumps(
+                                    {
+                                        "error": {
+                                            "message": "上游建立了流式连接，但未返回任何有效内容",
+                                            "type": "upstream_empty_stream",
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
+                            return
 
                         yield emit_bytes(b"data: [DONE]\n\n")
                         break
@@ -614,14 +639,50 @@ async def run_chat_completions_flow(
                         retry_headers = await refresh_upstream_headers()
 
                 if not connection_established and last_retry_status is not None and is_rate_limit_status(last_retry_status):
-                    if last_retry_err_text is not None:
-                        yield emit_bytes(last_retry_err_text.encode("utf-8", errors="replace"))
-                    yield emit_bytes(b"data: [DONE]\n\n")
+                    set_error_response(
+                        status_code=last_retry_status,
+                        body=last_retry_err_text or json.dumps(
+                            {
+                                "error": {
+                                    "message": "上游返回异常状态，但响应体为空",
+                                    "type": "upstream_http_error",
+                                }
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
                     return
+                if not connection_established:
+                    set_error_response(
+                        status_code=502,
+                        body=json.dumps(
+                            {
+                                "error": {
+                                    "message": "上游流式请求未建立连接",
+                                    "type": "upstream_no_response",
+                                }
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                    return
+        except httpx.HTTPError as e:
+            set_error_response(
+                status_code=502,
+                body=json.dumps(
+                    {
+                        "error": {
+                            "message": f"{type(e).__name__}: {e}",
+                            "type": "upstream_connection_error",
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+            )
         finally:
             upstream_obj = {"type": "openai_passthrough_sse_capture", "chunks": up_chunks}
-            downstream_obj = {"type": "openai_chat_sse_capture", "chunks": down_chunks}
-            non_stream_obj = build_openai_chat_non_stream_from_sse_chunks(down_chunks, model)
+            if non_stream_obj is None:
+                non_stream_obj = build_openai_chat_non_stream_from_sse_chunks(down_chunks, model)
             log_response_phase(
                 turn_logs,
                 upstream_response_obj=upstream_obj,
@@ -629,4 +690,26 @@ async def run_chat_completions_flow(
                 non_stream_response_obj=non_stream_obj,
             )
 
-    return StreamingResponse(sse_passthrough(), media_type="text/event-stream")
+    iterator = sse_passthrough()
+    try:
+        first_chunk = await anext(iterator)
+    except StopAsyncIteration:
+        error_obj = stream_result.get("error_response") or {
+            "status_code": 502,
+            "media_type": "application/json",
+            "body": json.dumps(
+                {
+                    "error": {
+                        "message": "上游流式请求未返回任何内容",
+                        "type": "upstream_empty_stream",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+        }
+        return Response(
+            content=str(error_obj.get("body") or ""),
+            status_code=int(error_obj.get("status_code") or 502),
+            media_type=str(error_obj.get("media_type") or "application/json"),
+        )
+    return StreamingResponse(_prepend_stream_chunk(first_chunk, iterator), media_type="text/event-stream")

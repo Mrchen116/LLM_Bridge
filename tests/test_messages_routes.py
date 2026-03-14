@@ -282,8 +282,8 @@ def test_messages_codex_oauth_non_stream_connect_error_returns_502(tmp_path, mon
     assert body["error"]["type"] == "upstream_connection_error"
 
 
-def test_messages_codex_oauth_stream_connect_error_emits_error_event(tmp_path, monkeypatch):
-    """测试 codex 上游连接异常时 /v1/messages 流式返回 error 事件。"""
+def test_messages_codex_oauth_stream_connect_error_returns_502(tmp_path, monkeypatch):
+    """测试 codex 上游连接异常时 /v1/messages 流式直接返回 502 错误。"""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
     Path(".codex_oauth.json").write_text(
@@ -322,10 +322,10 @@ def test_messages_codex_oauth_stream_connect_error_emits_error_event(tmp_path, m
     }
     with local_client.stream("POST", "/v1/messages", json=payload) as resp:
         data = "".join(resp.iter_text())
-    assert resp.status_code == 200
-    assert "event: error" in data
-    assert "ConnectError: mock connect failure" in data
-    assert "event: message_stop" in data
+    assert resp.status_code == 502
+    body = json.loads(data)
+    assert body["error"]["type"] == "upstream_connection_error"
+    assert "ConnectError: mock connect failure" in body["error"]["message"]
 
 
 def test_messages_codex_oauth_all_accounts_cooling_down_returns_429(tmp_path, monkeypatch):

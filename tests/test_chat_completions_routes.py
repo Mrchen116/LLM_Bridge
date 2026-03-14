@@ -359,6 +359,24 @@ def test_chat_completions_codex_oauth_stream_bridge(client: TestClient):
     assert "data: [DONE]" in data
 
 
+def test_chat_completions_codex_oauth_stream_empty_response_returns_502(client: TestClient):
+    """测试 codex_oauth 流式上游空返回时直接返回 502。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=["data: [DONE]"],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "只回复 pong"}],
+        "stream": True,
+    }
+    with client.stream("POST", "/v1/chat/completions", json=payload) as resp:
+        data = "".join(resp.iter_text())
+    assert resp.status_code == 502
+    body = json.loads(data)
+    assert body["error"]["type"] == "upstream_empty_stream"
+
+
 def test_chat_completions_codex_oauth_stream_logs_non_stream_with_tool_calls(client_with_logs: TestClient):
     """测试 codex_oauth 流式时 non-stream 日志保留 tool_calls。"""
     FakeAsyncClient.stream_response = FakeStreamResponse(
