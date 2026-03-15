@@ -1158,6 +1158,7 @@ select {
 .file-viewer-modal {
   width: min(1200px, 96vw);
   max-height: min(88vh, 980px);
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: #f8fbff;
@@ -1233,6 +1234,100 @@ select {
   flex: 1;
   min-height: 200px;
   overflow: auto;
+}
+
+.file-viewer-json {
+  padding: 0;
+  background: #f5f8fc;
+  min-height: 0;
+  overflow: auto;
+}
+
+.jsoneditor-host {
+  min-height: 100%;
+}
+
+.file-viewer-raw-json {
+  background: #f5f8fc;
+}
+
+.raw-json-pre {
+  margin: 0;
+  min-width: max-content;
+  white-space: pre;
+  word-break: normal;
+  overflow: visible;
+}
+
+.json-sticky-path {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: rgba(245, 248, 252, 0.96);
+  backdrop-filter: blur(6px);
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #4b5f74;
+}
+
+.json-sticky-path-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.json-sticky-path-separator {
+  color: #7e90a4;
+}
+
+.file-viewer-json .jsoneditor {
+  height: auto;
+  min-height: 100%;
+  border: 0;
+}
+
+.file-viewer-json .jsoneditor,
+.file-viewer-json .jsoneditor-tree,
+.file-viewer-json .jsoneditor-outer {
+  background: #f5f8fc;
+}
+
+.file-viewer-json .jsoneditor-tree,
+.file-viewer-json .jsoneditor-outer {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+.file-viewer-json .jsoneditor-tree,
+.file-viewer-json .jsoneditor textarea,
+.file-viewer-json .jsoneditor input,
+.file-viewer-json .jsoneditor td,
+.file-viewer-json .jsoneditor th,
+.file-viewer-json .jsoneditor-field,
+.file-viewer-json .jsoneditor-value,
+.file-viewer-json .jsoneditor-readonly {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.file-viewer-json.rendered .jsoneditor-value,
+.file-viewer-json.rendered .jsoneditor-readonly,
+.file-viewer-json.rendered .jsoneditor-field {
+  white-space: pre-wrap;
+}
+
+.file-viewer-json .jsoneditor-navigation-bar,
+.file-viewer-json .jsoneditor-statusbar,
+.file-viewer-json .jsoneditor-menu {
+  display: none;
 }
 
 .raw-event {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeSanitize from 'rehype-sanitize'
@@ -19,9 +19,60 @@ interface DetailPanelProps {
 
 type BlockVariant = 'text' | 'code' | 'markdown'
 type FileViewerMode = 'rendered' | 'raw'
+type JsonTreeData = Record<string, unknown> | unknown[]
+
+type JsonEditorInstance = {
+  destroy: () => void
+  set: (json: JsonTreeData) => void
+  expandAll: () => void
+  node?: JsonEditorNode
+}
+
+type JsonEditorConstructor = new (
+  container: HTMLElement,
+  options: {
+    mode: 'view'
+    mainMenuBar: boolean
+    navigationBar: boolean
+    search: boolean
+  },
+) => JsonEditorInstance
+
+type JsonEditorNode = {
+  parent?: JsonEditorNode | null
+  type?: string
+  getPath: () => Array<string | number>
+}
+
+type JsonEditorRow = HTMLTableRowElement & {
+  node?: JsonEditorNode
+}
+
+type JsonSourceMapLoc = {
+  line: number
+  column: number
+  pos: number
+}
+
+type JsonSourceMapPointer = {
+  value?: JsonSourceMapLoc
+  valueEnd?: JsonSourceMapLoc
+}
+
+type RawJsonPathEntry = {
+  pathSegments: string[]
+  stickySegments: string[]
+  startLine: number
+  endLine: number
+  depth: number
+}
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isJsonTreeData(value: unknown): value is JsonTreeData {
+  return Array.isArray(value) || isObjectRecord(value)
 }
 
 function formatCopyValue(value: unknown): string {
@@ -68,6 +119,390 @@ function formatDisplayValue(value: unknown, variant: BlockVariant): string {
     return normalizeReadableText(typeof value === 'string' ? value : formatCopyValue(value))
   }
   return formatCodeValue(value)
+}
+
+function tryParseJsonTree(content: string): JsonTreeData | null {
+  const trimmed = content.trim()
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(content)
+    return isJsonTreeData(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function applyRenderedJsonTreeStrings(container: HTMLElement): void {
+  const stringNodes = container.querySelectorAll<HTMLElement>('.jsoneditor-value.jsoneditor-string')
+  stringNodes.forEach((node) => {
+    const currentText = node.textContent ?? ''
+    const normalizedText = normalizeEscapedText(currentText)
+    if (normalizedText !== currentText) {
+      node.textContent = normalizedText
+    }
+  })
+}
+
+function formatJsonPathSegment(segment: string | number): string {
+  return typeof segment === 'number' ? `[${segment}]` : segment
+}
+
+function decodeJsonPointerSegment(segment: string): string {
+  return segment.replace(/~1/g, '/').replace(/~0/g, '~')
+}
+
+function jsonPointerToSegments(pointer: string): string[] {
+  if (!pointer) {
+    return []
+  }
+  return pointer
+    .split('/')
+    .slice(1)
+    .map((segment) => decodeJsonPointerSegment(segment))
+}
+
+function getJsonValueBySegments(data: unknown, segments: string[]): unknown {
+  let current = data
+  for (const segment of segments) {
+    if (Array.isArray(current)) {
+      const index = Number(segment)
+      current = Number.isInteger(index) ? current[index] : undefined
+      continue
+    }
+    if (isObjectRecord(current)) {
+      current = current[segment]
+      continue
+    }
+    return undefined
+  }
+  return current
+}
+
+function isContainerValue(value: unknown): boolean {
+  return Array.isArray(value) || isObjectRecord(value)
+}
+
+function isExpandableJsonNode(node: JsonEditorNode | null | undefined): boolean {
+  return node?.type === 'array' || node?.type === 'object'
+}
+
+function getStickyPathSegments(node: JsonEditorNode | null | undefined): string[] {
+  if (!node) {
+    return []
+  }
+
+  const targetNode = isExpandableJsonNode(node) ? node : (node.parent ?? null)
+  if (!targetNode) {
+    return []
+  }
+
+  return targetNode.getPath().map((segment) => formatJsonPathSegment(segment))
+}
+
+function arePathSegmentsEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function RawJsonViewer({ content, data }: { content: string; data: JsonTreeData | null }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const preRef = useRef<HTMLPreElement | null>(null)
+  const stickyRef = useRef<HTMLDivElement | null>(null)
+  const pathEntriesRef = useRef<RawJsonPathEntry[]>([])
+  const [stickyPathSegments, setStickyPathSegments] = useState<string[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!data) {
+      pathEntriesRef.current = []
+      setStickyPathSegments([])
+      return
+    }
+
+    void import('json-source-map')
+      .then((module) => {
+        if (cancelled) {
+          return
+        }
+
+        const parser = (
+          module as unknown as {
+            parse: (source: string) => {
+              pointers: Record<string, JsonSourceMapPointer>
+            }
+          }
+        ).parse
+
+        const parsed = parser(content)
+        const entries = Object.entries(parsed.pointers)
+          .map(([pointer, loc]) => {
+            const pathSegments = jsonPointerToSegments(pointer)
+            const value = getJsonValueBySegments(data, pathSegments)
+            const stickySegments = isContainerValue(value)
+              ? pathSegments.map((segment) => formatJsonPathSegment(segment))
+              : pathSegments.slice(0, -1).map((segment) => formatJsonPathSegment(segment))
+
+            return {
+              pathSegments,
+              stickySegments,
+              startLine: loc.value?.line ?? 0,
+              endLine: loc.valueEnd?.line ?? loc.value?.line ?? 0,
+              depth: pathSegments.length,
+            }
+          })
+          .sort((left, right) => {
+            if (left.startLine !== right.startLine) {
+              return left.startLine - right.startLine
+            }
+            return right.depth - left.depth
+          })
+
+        pathEntriesRef.current = entries
+      })
+      .catch(() => {
+        pathEntriesRef.current = []
+        setStickyPathSegments([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [content, data])
+
+  useEffect(() => {
+    const scrollEl = scrollRef.current
+    const preEl = preRef.current
+    if (!scrollEl || !preEl) {
+      return
+    }
+
+    const getLineHeight = () => {
+      const computed = window.getComputedStyle(preEl)
+      const parsed = Number.parseFloat(computed.lineHeight)
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 18
+    }
+
+    let rafId = 0
+    const updateStickyPath = () => {
+      const lineHeight = getLineHeight()
+      const stickyHeight = stickyRef.current?.offsetHeight ?? 0
+      const currentLine = Math.max(0, Math.floor((scrollEl.scrollTop + stickyHeight) / lineHeight))
+      const entries = pathEntriesRef.current
+
+      let nextSegments: string[] = []
+      for (const entry of entries) {
+        if (entry.startLine <= currentLine && entry.endLine >= currentLine) {
+          nextSegments = entry.stickySegments
+          break
+        }
+      }
+
+      if (nextSegments.length === 0) {
+        for (let index = entries.length - 1; index >= 0; index -= 1) {
+          const entry = entries[index]
+          if (entry.startLine <= currentLine) {
+            nextSegments = entry.stickySegments
+            break
+          }
+        }
+      }
+
+      setStickyPathSegments((current) => (arePathSegmentsEqual(current, nextSegments) ? current : nextSegments))
+    }
+
+    const onScroll = () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId)
+      }
+      rafId = window.requestAnimationFrame(updateStickyPath)
+    }
+
+    scrollEl.addEventListener('scroll', onScroll)
+    onScroll()
+
+    return () => {
+      scrollEl.removeEventListener('scroll', onScroll)
+      if (rafId) {
+        window.cancelAnimationFrame(rafId)
+      }
+    }
+  }, [content, data])
+
+  return (
+    <div className="file-viewer-content file-viewer-raw-json" ref={scrollRef}>
+      {stickyPathSegments.length > 0 ? (
+        <div className="json-sticky-path" ref={stickyRef}>
+          {stickyPathSegments.map((segment, index) => (
+            <span className="json-sticky-path-segment" key={`${segment}-${index}`}>
+              {index > 0 ? <span className="json-sticky-path-separator">/</span> : null}
+              <span>{segment}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <pre className="code raw-json-pre" ref={preRef}>
+        {content}
+      </pre>
+    </div>
+  )
+}
+
+function JsonTreeViewer({ data, mode }: { data: JsonTreeData; mode: FileViewerMode }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const stickyRef = useRef<HTMLDivElement | null>(null)
+  const editorRef = useRef<JsonEditorInstance | null>(null)
+  const latestDataRef = useRef<JsonTreeData>(data)
+  const [loadError, setLoadError] = useState('')
+  const [stickyPathSegments, setStickyPathSegments] = useState<string[]>([])
+
+  latestDataRef.current = data
+
+  const updateStickyPath = () => {
+    const scrollEl = scrollRef.current
+    const hostEl = containerRef.current
+    if (!scrollEl || !hostEl) {
+      return
+    }
+
+    const stickyHeight = stickyRef.current?.offsetHeight ?? 0
+    const scrollRect = scrollEl.getBoundingClientRect()
+    const targetTop = scrollRect.top + stickyHeight + 4
+    const targetBottom = scrollRect.bottom
+    const rows = Array.from(hostEl.querySelectorAll('tr')) as JsonEditorRow[]
+
+    let nextSegments: string[] = []
+    for (const row of rows) {
+      const rect = row.getBoundingClientRect()
+      if (rect.bottom > targetTop && rect.top < targetBottom) {
+        nextSegments = getStickyPathSegments(row.node)
+        break
+      }
+    }
+
+    setStickyPathSegments((current) => (arePathSegmentsEqual(current, nextSegments) ? current : nextSegments))
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
+    void import('jsoneditor')
+      .then((module) => {
+        if (cancelled || !containerRef.current) {
+          return
+        }
+
+        const JSONEditor = (module.default ?? module) as JsonEditorConstructor
+        const editor = new JSONEditor(containerRef.current, {
+          mode: 'view',
+          mainMenuBar: false,
+          navigationBar: false,
+          search: false,
+        })
+
+        editor.set(latestDataRef.current)
+        editor.expandAll()
+        editorRef.current = editor
+        setLoadError('')
+        updateStickyPath()
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setLoadError(error instanceof Error ? error.message : String(error))
+        }
+      })
+
+    return () => {
+      cancelled = true
+      editorRef.current?.destroy()
+      editorRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    editorRef.current?.set(data)
+    editorRef.current?.expandAll()
+    updateStickyPath()
+  }, [data, mode])
+
+  useEffect(() => {
+    if (!containerRef.current) {
+      return
+    }
+
+    if (mode === 'rendered') {
+      applyRenderedJsonTreeStrings(containerRef.current)
+    }
+
+    const observer = new MutationObserver(() => {
+      if (containerRef.current) {
+        if (mode === 'rendered') {
+          applyRenderedJsonTreeStrings(containerRef.current)
+        }
+        updateStickyPath()
+      }
+    })
+
+    observer.observe(containerRef.current, {
+      childList: true,
+      subtree: true,
+    })
+
+    return () => observer.disconnect()
+  }, [mode, data])
+
+  useEffect(() => {
+    const scrollEl = scrollRef.current
+    if (!scrollEl) {
+      return
+    }
+
+    let rafId = 0
+    const onScroll = () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId)
+      }
+      rafId = window.requestAnimationFrame(() => {
+        updateStickyPath()
+      })
+    }
+
+    scrollEl.addEventListener('scroll', onScroll)
+    onScroll()
+
+    return () => {
+      scrollEl.removeEventListener('scroll', onScroll)
+      if (rafId) {
+        window.cancelAnimationFrame(rafId)
+      }
+    }
+  }, [data, mode])
+
+  if (loadError) {
+    return <div className="subtle">JSON 视图加载失败：{loadError}</div>
+  }
+
+  return (
+    <div
+      className={`file-viewer-content file-viewer-json ${mode === 'rendered' ? 'rendered' : 'raw'}`}
+      ref={scrollRef}
+    >
+      {stickyPathSegments.length > 0 ? (
+        <div className="json-sticky-path" ref={stickyRef}>
+          {stickyPathSegments.map((segment, index) => (
+            <span className="json-sticky-path-segment" key={`${segment}-${index}`}>
+              {index > 0 ? <span className="json-sticky-path-separator">/</span> : null}
+              <span>{segment}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="jsoneditor-host" ref={containerRef} />
+    </div>
+  )
 }
 
 function DetailBlock({
@@ -214,6 +649,8 @@ export function DetailPanel({ event, sessionId }: DetailPanelProps) {
     () => extractToolDefinitionFields(displayEvent?.tool_def),
     [displayEvent],
   )
+  const viewerParsedJson = useMemo(() => tryParseJsonTree(viewerContent), [viewerContent])
+  const viewerJsonData = useMemo(() => viewerParsedJson, [viewerParsedJson])
   const viewerDisplayContent = useMemo(() => {
     if (viewerMode === 'raw') {
       return viewerContent
@@ -463,7 +900,16 @@ export function DetailPanel({ event, sessionId }: DetailPanelProps) {
               <div className="subtle">读取失败：{viewerError}</div>
             ) : null}
             {!viewerLoading && !viewerError ? (
-              <pre className="code file-viewer-content">{viewerDisplayContent}</pre>
+              viewerMode === 'raw' && viewerParsedJson ? (
+                <RawJsonViewer content={viewerContent} data={viewerParsedJson} />
+              ) : viewerJsonData ? (
+                <JsonTreeViewer data={viewerJsonData} mode={viewerMode} />
+              ) : (
+                <pre className="code file-viewer-content">{viewerDisplayContent}</pre>
+              )
+            ) : null}
+            {!viewerLoading && !viewerError && !viewerJsonData && viewerContent.trim() ? (
+              <div className="subtle">当前内容无法解析为 JSON，已回退为文本视图。</div>
             ) : null}
             {!viewerLoading && !viewerError && viewerTruncated ? (
               <div className="subtle">文件过大，已截断展示。</div>
