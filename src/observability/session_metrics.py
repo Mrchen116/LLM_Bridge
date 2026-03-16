@@ -44,14 +44,10 @@ def get_session_stats(
     *,
     session_id: str,
     logs_session_dir: str,
-    logs_codeagent_dir: str,
     collect_usage_tokens: Callable[[Any, str], tuple[int, int, str]],
 ) -> Optional[Dict[str, Any]]:
     session_dirs = sorted(glob.glob(os.path.join(logs_session_dir, f"*_{session_id}")))
     stats = _scan_session_dirs(session_dirs, collect_usage_tokens) if session_dirs else None
-    if not stats or stats.get("num_turns", 0) == 0:
-        session_dirs = sorted(glob.glob(os.path.join(logs_codeagent_dir, f"*_{session_id}")))
-        stats = _scan_session_dirs(session_dirs, collect_usage_tokens) if session_dirs else None
     if not stats or stats.get("num_turns", 0) == 0:
         return None
     return stats

@@ -30,7 +30,6 @@ UPSTREAM_CONFIG = load_and_validate_config()
 LOGS_ROOT_DIR = "logs"
 LOGS_RAW_DIR = os.path.join(LOGS_ROOT_DIR, "raw")
 LOGS_SESSION_DIR = os.path.join(LOGS_ROOT_DIR, "session")
-LOGS_CODEAGENT_DIR = os.path.join(LOGS_ROOT_DIR, "codeagent")
 
 
 app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)")
@@ -90,7 +89,6 @@ async def session_stats(session_id: str):
     stats = get_session_stats(
         session_id=session_id,
         logs_session_dir=LOGS_SESSION_DIR,
-        logs_codeagent_dir=LOGS_CODEAGENT_DIR,
         collect_usage_tokens=collect_usage_tokens_for_stats,
     )
     if not stats:
