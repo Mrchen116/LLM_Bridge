@@ -19,6 +19,8 @@ from upstream_config import (
 )
 
 RATE_LIMIT_STATUS_CODES = {406, 429}
+# 401/403 多为 token 过期或认证失效，需刷新 token 后重试，不应对账号冷却
+CODEX_AUTH_STATUS_CODES = {401, 403}
 CODEX_FAILOVER_ERROR_CODES = {
     "insufficient_quota",
     "usage_not_included",
@@ -66,14 +68,28 @@ def _extract_error_code_from_text(error_text: str) -> str:
 
 def should_trigger_codex_failover(status_code: int, error_text: str = "") -> bool:
     # TODO: 后续根据线上真实 error body 精细化触发条件。
+    if status_code in CODEX_AUTH_STATUS_CODES:
+        return True
     if is_rate_limit_status(status_code):
         return True
     code = _extract_error_code_from_text(error_text)
     return code in CODEX_FAILOVER_ERROR_CODES
 
 
+def should_mark_codex_cooldown(status_code: int, error_text: str = "") -> bool:
+    """401/403 若带 insufficient_quota 等则为限流类，应冷却；空 body 或纯认证错误则不冷却。"""
+    if status_code in CODEX_AUTH_STATUS_CODES:
+        code = _extract_error_code_from_text(error_text)
+        if code in CODEX_FAILOVER_ERROR_CODES:
+            return True  # 403 + insufficient_quota 等 = 限流，需冷却
+        return False  # 403 空 body 或未知 = 当 token 过期，刷新重试即可
+    return should_trigger_codex_failover(status_code, error_text)
+
+
 def should_retry_codex_result(status_code: int, error_text: str = "") -> bool:
     if status_code >= 500:
+        return True
+    if status_code in CODEX_AUTH_STATUS_CODES:
         return True
     if is_rate_limit_status(status_code):
         return True
@@ -191,7 +207,7 @@ async def mark_retryable_response_for_profile(
     auth_type = get_effective_auth_type(profile)
     if auth_type != "codex_oauth":
         return
-    if not should_trigger_codex_failover(status_code, error_text):
+    if not should_mark_codex_cooldown(status_code, error_text):
         return
     normalized_status = status_code if is_rate_limit_status(status_code) else 429
     await mark_codex_account_rate_limited(
