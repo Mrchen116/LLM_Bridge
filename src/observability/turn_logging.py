@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
 
-from proxy_logging import _dump_json
+from proxy_logging import _discard_session_req, _dump_json
 
 DOWNSTREAM_FORMAT_ANTHROPIC_MESSAGES = "anthropic_messages"
 DOWNSTREAM_FORMAT_OPENAI_CHAT = "openai_chat"
@@ -156,6 +156,8 @@ def log_response_phase(
     _dump_json(paths.raw_downstream_res_path, downstream_response_obj)
     status_code = downstream_response_obj.get("status_code") if isinstance(downstream_response_obj, dict) else None
     session_writable = not (isinstance(status_code, int) and status_code >= 400)
+    if not session_writable and paths.session_req_path:
+        _discard_session_req(paths.session_req_path)
     if session_writable and paths.session_downstream_res_path:
         _dump_json(paths.session_downstream_res_path, with_session_log_meta(downstream_response_obj))
     if session_writable and paths.session_non_stream_res_path:
