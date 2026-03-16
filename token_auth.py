@@ -953,6 +953,28 @@ async def get_codex_upstream_headers(profile: Optional[Dict[str, Any]] = None) -
     raise RuntimeError(f"没有可用的 Codex 账号: {last_error}")
 
 
+async def get_codex_headers_for_label(
+    label: str, *, profile: Optional[Dict[str, Any]] = None
+) -> Dict[str, str]:
+    """
+    获取指定 label 对应的 Codex 请求头，供单账号测试等场景使用。
+    测试场景下不触发冷却（apply_cooldown_on_refresh_failure=False）。
+    """
+    cooldown_seconds, _ = _policy_from_profile(profile)
+    access_token, account_id = await _get_or_refresh_account_token(
+        label,
+        cooldown_seconds=cooldown_seconds,
+        apply_cooldown_on_refresh_failure=False,
+    )
+    headers: Dict[str, str] = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+    }
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+    return headers
+
+
 async def mark_codex_account_rate_limited(
     *,
     headers: Dict[str, str],

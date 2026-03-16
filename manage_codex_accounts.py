@@ -1,16 +1,24 @@
 import argparse
 import asyncio
 import time
+from typing import Any, Dict
 
+import httpx
+
+from proxy_converters import _build_codex_responses_payload_from_chat
 from token_auth import (
     add_codex_account_via_browser_oauth,
     add_codex_account_via_device_oauth,
+    get_codex_headers_for_label,
     list_codex_accounts,
     login_all_codex_accounts,
     remove_codex_account,
     set_codex_account_enabled,
     set_codex_account_priority,
 )
+
+CODEX_ENDPOINT_DEFAULT = "https://chatgpt.com/backend-api/codex/responses"
+CODEX_MODEL_DEFAULT = "gpt-5.4"
 
 
 def _prompt_select(title: str, options: list[str], default_index: int = 0) -> int:
@@ -151,6 +159,97 @@ async def _print_accounts_list() -> None:
     return status
 
 
+def _resolve_codex_profile_for_test() -> tuple[str, str, Dict[str, Any] | None]:
+    """从 upstream 配置解析 Codex 端点、模型与 profile，失败时使用默认值。"""
+    try:
+        from upstream_config import load_and_validate_config
+
+        root = load_and_validate_config()
+        profiles = root.get("profiles") or {}
+        default_name = str(root.get("defaultProfile") or "")
+        profile = None
+        if default_name and profiles.get(default_name):
+            p = profiles[default_name]
+            if str(p.get("provider") or "") == "codex_oauth":
+                profile = p
+        if not profile:
+            for p in profiles.values():
+                if isinstance(p, dict) and str(p.get("provider") or "") == "codex_oauth":
+                    profile = p
+                    break
+        if profile:
+            auth = profile.get("auth") or {}
+            endpoint = str(auth.get("codexEndpoint") or CODEX_ENDPOINT_DEFAULT).rstrip("/")
+            defaults = profile.get("defaults") or {}
+            model = str(defaults.get("model") or CODEX_MODEL_DEFAULT)
+            return endpoint, model, profile
+    except Exception:
+        pass
+    return CODEX_ENDPOINT_DEFAULT, CODEX_MODEL_DEFAULT, None
+
+
+async def batch_test_codex_accounts() -> Dict[str, Any]:
+    """向所有已启用账号发送 hi 请求，返回各账号成功/失败结果。每测完一个立即打印。"""
+    endpoint, model, profile = _resolve_codex_profile_for_test()
+    # Codex API 要求 stream=True
+    chat_body = {"model": model, "messages": [{"role": "user", "content": "hi"}], "stream": True}
+    payload = _build_codex_responses_payload_from_chat(chat_body, model)
+
+    status = await list_codex_accounts()
+    accounts = status.get("accounts") or []
+    ok = 0
+    failed = 0
+    details: list[Dict[str, Any]] = []
+    first = True
+
+    print(f"\n[accounts] 开始批量测试（endpoint={endpoint}）", flush=True)
+    for item in accounts:
+        label = str(item.get("label") or "")
+        enabled = bool(item.get("enabled"))
+        if not label or not enabled:
+            continue
+        # 每个账号测试间隔 2 秒，避免短时间大量建连触发服务器连接级限流
+        if not first:
+            await asyncio.sleep(2)
+        first = False
+
+        headers = await get_codex_headers_for_label(label, profile=profile)
+        last_error: BaseException | None = None
+        for attempt in range(3):  # ConnectError 最多重试 3 次
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(endpoint, json=payload, headers=headers)
+                if resp.status_code < 400:
+                    ok += 1
+                    details.append({"label": label, "ok": True})
+                    print(f"- {label}: ok", flush=True)
+                else:
+                    failed += 1
+                    err_text = (resp.text or "")[:200]
+                    details.append({"label": label, "ok": False, "error": f"{resp.status_code} {err_text}"})
+                    print(f"- {label}: failed error={resp.status_code} {err_text}", flush=True)
+                break
+            except httpx.ConnectError as e:
+                last_error = e
+                if attempt < 2:
+                    await asyncio.sleep(2 * (attempt + 1))  # 第 1、2 次重试前等待 2s、4s
+                    continue
+                failed += 1
+                err_msg = str(e) or type(e).__name__
+                details.append({"label": label, "ok": False, "error": err_msg})
+                print(f"- {label}: failed error={err_msg}", flush=True)
+                break
+            except Exception as e:
+                failed += 1
+                err_msg = str(e) or type(e).__name__
+                details.append({"label": label, "ok": False, "error": err_msg})
+                print(f"- {label}: failed error={err_msg}", flush=True)
+                break
+
+    print(f"[accounts] 批量测试完成：成功 {ok}，失败 {failed}", flush=True)
+    return {"ok": ok, "failed": failed, "details": details, "endpoint": endpoint}
+
+
 async def _run_wizard() -> int:
     menu_options = [
         "新增账号",
@@ -160,6 +259,7 @@ async def _run_wizard() -> int:
         "禁用账号",
         "删除账号",
         "批量校验并刷新(login-all)",
+        "批量测试(向所有账号发送 hi 请求)",
         "退出",
     ]
     while True:
@@ -258,6 +358,8 @@ async def _run_wizard() -> int:
                     else:
                         print(f"- {item['label']}: failed error={item.get('error', '')}")
                 await _print_accounts_list()
+            elif action == "批量测试(向所有账号发送 hi 请求)":
+                await batch_test_codex_accounts()
             else:
                 raise SystemExit(f"Unknown wizard action: {action}")
         except Exception as e:
@@ -314,6 +416,10 @@ async def _run_command(args: argparse.Namespace) -> int:
                 print(f"- {item['label']}: failed error={item.get('error', '')}")
         return 0
 
+    if cmd == "test-all":
+        await batch_test_codex_accounts()
+        return 0
+
     raise SystemExit(f"Unknown command: {cmd}")
 
 
@@ -342,6 +448,7 @@ def _build_parser() -> argparse.ArgumentParser:
     priority_parser.add_argument("--priority", type=int, required=True, help="Lower value means higher priority")
 
     subparsers.add_parser("login-all", help="Refresh/check all enabled accounts")
+    subparsers.add_parser("test-all", help="Batch test: send 'hi' to all enabled accounts")
     return parser
 
 
