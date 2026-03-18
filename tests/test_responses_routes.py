@@ -226,8 +226,8 @@ def test_responses_codex_oauth_forwards_turn_metadata_and_session_id(client: Tes
     assert FakeAsyncClient.last_stream_args["headers"]["session_id"] == session_id
 
 
-def test_responses_codex_oauth_extracts_session_id_from_metadata_user_id(client: TestClient):
-    """测试 session_id 请求头缺失时，会从 metadata.user_id 提取并上游透传。"""
+def test_responses_codex_oauth_extracts_legacy_session_id_from_metadata_user_id(client: TestClient):
+    """测试 session_id 请求头缺失时，会从旧格式 metadata.user_id 提取并上游透传。"""
     upstream_body = {
         "id": "resp_passthrough_meta_user",
         "object": "response",
@@ -248,6 +248,30 @@ def test_responses_codex_oauth_extracts_session_id_from_metadata_user_id(client:
     resp = client.post("/v1/responses", json=payload)
     assert resp.status_code == 200
     assert FakeAsyncClient.last_stream_args["headers"]["session_id"] == "session-from-metadata"
+
+
+def test_responses_codex_oauth_extracts_json_session_id_from_metadata_user_id(client: TestClient):
+    """测试 session_id 请求头缺失时，会从 JSON 字符串 metadata.user_id 提取真实 session_id。"""
+    upstream_body = {
+        "id": "resp_passthrough_meta_user_json",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "input": "hello",
+        "metadata": {"user_id": json.dumps({"session_id": "session-from-json", "uid": "id"}, ensure_ascii=False)},
+    }
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 200
+    assert FakeAsyncClient.last_stream_args["headers"]["session_id"] == "session-from-json"
 
 
 def test_responses_codex_oauth_does_not_forward_turn_metadata_for_non_codex_downstream(client: TestClient):
@@ -337,7 +361,7 @@ def test_responses_with_session_on_upstream_failure_skips_session_response_logs(
     req_files = sorted(session_dir.glob("*-req-openai_responses.json"))
     down_files = sorted(session_dir.glob("*-downstream-res-openai_responses.json"))
     non_stream_files = sorted(session_dir.glob("*-non-stream-res-openai_responses.json"))
-    assert req_files
+    assert not req_files
     assert not down_files
     assert not non_stream_files
 

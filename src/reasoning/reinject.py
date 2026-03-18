@@ -28,6 +28,17 @@ def _extract_session_id_from_body_metadata(body: Dict[str, Any]) -> Optional[str
     if not isinstance(metadata, dict):
         return None
     user_id = metadata.get("user_id") or ""
+    if isinstance(user_id, str):
+        stripped = user_id.strip()
+        if stripped.startswith("{"):
+            try:
+                parsed = json.loads(stripped)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                session_id = str(parsed.get("session_id") or "").strip()
+                if session_id:
+                    return session_id
     m = re.search(r"session_([A-Za-z0-9-]+)", str(user_id))
     if m:
         return m.group(1)

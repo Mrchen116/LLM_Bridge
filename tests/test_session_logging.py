@@ -3,7 +3,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from src.reasoning.reinject import _extract_session_id_from_body_metadata
 from tests.support import FakeAsyncClient, FakeStreamResponse
+
+
+def test_extract_session_id_from_body_metadata_supports_legacy_and_json_string_formats():
+    assert _extract_session_id_from_body_metadata(
+        {"metadata": {"user_id": "user_x_session_legacy-session"}}
+    ) == "legacy-session"
+    assert _extract_session_id_from_body_metadata(
+        {"metadata": {"user_id": '{"session_id":"json-session","uid":"id"}'}}
+    ) == "json-session"
 
 
 def test_messages_codex_oauth_stream_writes_session_logs(client_with_logs: TestClient):
@@ -100,3 +110,28 @@ def test_messages_stream_writes_session_logs(client_with_logs: TestClient):
     assert sorted(raw_log_dir.glob("*-headers-anthropic_messages.json")), "应生成 raw 请求头日志"
     assert sorted(raw_log_dir.glob("*-upstream-res-anthropic_messages.json")), "应生成 raw 上游响应日志"
     assert sorted(raw_log_dir.glob("*-downstream-res-anthropic_messages.json")), "应生成 raw 下游响应日志"
+
+
+def test_messages_stream_json_metadata_user_id_writes_session_logs_with_real_session_id(client_with_logs: TestClient):
+    """测试 JSON 字符串 metadata.user_id 会使用真实 session_id 作为目录后缀。"""
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        lines=[
+            'data: {"id":"chatcmpl_json_session","model":"kimi-k2.5","choices":[{"delta":{"content":"hello"},"finish_reason":null}],"usage":{"prompt_tokens":2,"completion_tokens":1}}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "moonshot:kimi-k2.5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+        "metadata": {"user_id": '{"session_id":"json-streamcase","uid":"id"}'},
+    }
+    with client_with_logs.stream("POST", "/v1/messages", json=payload) as resp:
+        _ = "".join(resp.iter_text())
+
+    assert resp.status_code == 200
+    session_root = Path.cwd() / "logs" / "session"
+    session_dirs = sorted(session_root.glob("*_json-streamcase"))
+    assert session_dirs, "应为 JSON session_id 生成目录"
+    assert not sorted(session_root.glob("*_id")), "不应把 JSON 内的 uid/id 误当作目录后缀"
