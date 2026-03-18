@@ -360,24 +360,31 @@ async def build_openai_bridge_streaming_response(
 
                             txt = delta.get("content")
                             if txt is not None:
-                                if current_block_type is not None and current_block_type != "text":
-                                    yield emit("content_block_stop", {"index": current_block_index})
-                                    current_block_type = None
+                                if txt == "" and not text_started:
+                                    pass
+                                else:
+                                    if current_block_type is not None and current_block_type != "text":
+                                        yield emit("content_block_stop", {"index": current_block_index})
+                                        current_block_type = None
 
-                                if current_block_type is None:
-                                    if not text_started:
-                                        current_block_index = 1 if thinking_started else 0
-                                        text_started = True
-                                    yield emit("content_block_start", {
+                                    if current_block_type is None:
+                                        if not text_started:
+                                            current_block_index = 1 if thinking_started else 0
+                                            text_started = True
+                                        yield emit("content_block_start", {
+                                            "index": current_block_index,
+                                            "content_block": {"type": "text", "text": ""}
+                                        })
+                                        current_block_type = "text"
+
+                                    yield emit("content_block_delta", {
                                         "index": current_block_index,
-                                        "content_block": {"type": "text", "text": ""}
+                                        "delta": {"type": "text_delta", "text": txt}
                                     })
-                                    current_block_type = "text"
 
-                                yield emit("content_block_delta", {
-                                    "index": current_block_index,
-                                    "delta": {"type": "text_delta", "text": txt}
-                                })
+                                    if not text_started:
+                                        text_started = True
+
 
                             tool_calls = delta.get("tool_calls")
                             if tool_calls:
