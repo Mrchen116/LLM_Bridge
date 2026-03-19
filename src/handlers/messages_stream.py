@@ -371,6 +371,9 @@ async def build_openai_bridge_streaming_response(
                                         if not text_started:
                                             current_block_index = 1 if thinking_started else 0
                                             text_started = True
+                                        elif tool_map:
+                                            # 如果正在处理工具调用，则使用工具调用块的索引+1作为文本块的索引
+                                            current_block_index = max(m["block_index"] for m in tool_map.values()) + 1
                                         yield emit("content_block_start", {
                                             "index": current_block_index,
                                             "content_block": {"type": "text", "text": ""}
