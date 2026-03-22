@@ -109,6 +109,8 @@ Optional flags:
 - `--ui`: enable the Session Inspector UI and API
 - `--open-ui`: enable the UI and open the browser automatically at `/ui/session-inspector`
 
+**Agent clients:** To connect Claude Code, Codex CLI, or other agents through this gateway, see [docs/agent-integration.md](docs/agent-integration.md) (中文：[docs/agent-integration-zh.md](docs/agent-integration-zh.md)).
+
 ## Session Inspector
 
 Enable it in one of two ways:
