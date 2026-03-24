@@ -36,7 +36,7 @@ from src.reasoning.reinject import (
     _update_codex_reasoning_reinject_cache_for_responses,
 )
 from token_auth import CodexAccountUnavailableError
-from proxy_converters import _extract_model_and_ban_explore
+from proxy_converters import _extract_model_and_ban_explore, ensure_codex_responses_include_encrypted_reasoning
 from proxy_logging import _resp_to_obj
 from upstream_config import (
     PROTOCOL_OPENAI_RESPONSES,
@@ -128,6 +128,8 @@ async def run_responses_flow(
             model=model,
             payload=body,
         )
+        # 与 chat/completions 转 Codex 路径一致：无状态多轮需要上游返回 reasoning.encrypted_content。
+        ensure_codex_responses_include_encrypted_reasoning(body)
 
     log_body = dict(body)
     log_body["_upstream_profile"] = profile_name

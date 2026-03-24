@@ -47,6 +47,7 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
     assert FakeAsyncClient.last_stream_args["json"]["store"] is False
     assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
     assert "reasoning" not in FakeAsyncClient.last_stream_args["json"]
+    assert FakeAsyncClient.last_stream_args["json"]["include"] == ["reasoning.encrypted_content"]
     assert FakeAsyncClient.last_post_args == {}
 
 
@@ -83,6 +84,7 @@ def test_responses_codex_oauth_can_compress_non_stream_request_body(client: Test
     assert decoded["model"] == "gpt-5.2-codex"
     assert decoded["store"] is False
     assert decoded["stream"] is True
+    assert decoded["include"] == ["reasoning.encrypted_content"]
 
 
 def test_responses_codex_oauth_can_compress_stream_request_body(client: TestClient, monkeypatch):
@@ -111,6 +113,7 @@ def test_responses_codex_oauth_can_compress_stream_request_body(client: TestClie
     assert decoded["model"] == "gpt-5.2-codex"
     assert decoded["stream"] is True
     assert decoded["input"] == "hello"
+    assert decoded["include"] == ["reasoning.encrypted_content"]
 
 
 def test_responses_codex_oauth_all_accounts_cooling_down_returns_429(tmp_path, monkeypatch):
@@ -168,6 +171,7 @@ def test_responses_codex_oauth_model_suffix_sets_reasoning_effort(client: TestCl
     assert resp.status_code == 200
     assert FakeAsyncClient.last_stream_args["json"]["model"] == "gpt-5.2-codex"
     assert FakeAsyncClient.last_stream_args["json"]["reasoning"]["effort"] == "high"
+    assert "reasoning.encrypted_content" in FakeAsyncClient.last_stream_args["json"]["include"]
 
 
 def test_responses_explicit_reasoning_effort_overrides_model_suffix(client: TestClient):
@@ -193,6 +197,33 @@ def test_responses_explicit_reasoning_effort_overrides_model_suffix(client: Test
     assert resp.status_code == 200
     assert FakeAsyncClient.last_stream_args["json"]["model"] == "gpt-5.2-codex"
     assert FakeAsyncClient.last_stream_args["json"]["reasoning"]["effort"] == "low"
+    assert "reasoning.encrypted_content" in FakeAsyncClient.last_stream_args["json"]["include"]
+
+
+def test_responses_codex_oauth_merges_custom_include_with_encrypted_reasoning(client: TestClient):
+    """测试 /v1/responses + codex_oauth 会将 reasoning.encrypted_content 并入用户自定义 include。"""
+    upstream_body = {
+        "id": "resp_include_merge",
+        "object": "response",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+    }
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        200,
+        lines=[
+            f'data: {json.dumps({"type": "response.completed", "response": upstream_body}, ensure_ascii=False)}',
+            "data: [DONE]",
+        ],
+    )
+    payload = {
+        "model": "codexOAuth:gpt-5.2-codex",
+        "input": "hello",
+        "include": ["custom.item"],
+    }
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 200
+    inc = FakeAsyncClient.last_stream_args["json"]["include"]
+    assert "custom.item" in inc
+    assert "reasoning.encrypted_content" in inc
 
 
 def test_responses_codex_oauth_forwards_turn_metadata_and_session_id(client: TestClient):

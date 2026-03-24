@@ -513,6 +513,22 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return None
 
 
+def ensure_codex_responses_include_encrypted_reasoning(
+    payload: Dict[str, Any], *, include_source: Optional[Dict[str, Any]] = None
+) -> None:
+    """为无状态 Codex Responses 补齐 include：保证含 reasoning.encrypted_content（与用户已有 include 并集）。"""
+    src = payload if include_source is None else include_source
+    include_items: List[str] = []
+    raw_include = src.get("include")
+    if isinstance(raw_include, list):
+        include_items = [str(x) for x in raw_include if x is not None]
+    elif isinstance(raw_include, str) and raw_include.strip():
+        include_items = [raw_include.strip()]
+    if "reasoning.encrypted_content" not in include_items:
+        include_items.append("reasoning.encrypted_content")
+    payload["include"] = include_items
+
+
 def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -> Dict[str, Any]:
     messages = body.get("messages")
     if not isinstance(messages, list):
@@ -608,18 +624,8 @@ def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -
     if reasoning_effort is not None:
         payload["reasoning"] = {"effort": reasoning_effort}
 
-    # 关键兼容点 2：
-    # 为了支持无状态多轮推理，强制确保 include 含 reasoning.encrypted_content。
-    # 若用户已传 include，则做并集合并，不覆盖其自定义项。
-    include_items: List[str] = []
-    raw_include = body.get("include")
-    if isinstance(raw_include, list):
-        include_items = [str(x) for x in raw_include if x is not None]
-    elif isinstance(raw_include, str) and raw_include.strip():
-        include_items = [raw_include.strip()]
-    if "reasoning.encrypted_content" not in include_items:
-        include_items.append("reasoning.encrypted_content")
-    payload["include"] = include_items
+    # 关键兼容点 2：与原生 /v1/responses + codex_oauth 路径一致，见 ensure_codex_responses_include_encrypted_reasoning。
+    ensure_codex_responses_include_encrypted_reasoning(payload, include_source=body)
 
     return payload
 
