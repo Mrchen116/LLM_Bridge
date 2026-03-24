@@ -36,7 +36,11 @@ from src.reasoning.reinject import (
     _update_codex_reasoning_reinject_cache_for_responses,
 )
 from token_auth import CodexAccountUnavailableError
-from proxy_converters import _extract_model_and_ban_explore, ensure_codex_responses_include_encrypted_reasoning
+from proxy_converters import (
+    _extract_model_and_ban_explore,
+    ensure_codex_responses_include_encrypted_reasoning,
+    resolve_codex_upstream_reasoning_effort,
+)
 from proxy_logging import _resp_to_obj
 from upstream_config import (
     PROTOCOL_OPENAI_RESPONSES,
@@ -113,14 +117,14 @@ async def run_responses_flow(
     body["model"] = model
     if auth_type == "codex_oauth":
         reasoning = body.get("reasoning")
-        if (
-            resolved.reasoning_effort is not None
-            and body.get("reasoning_effort") is None
-            and (reasoning is None or (isinstance(reasoning, dict) and reasoning.get("effort") is None))
-        ):
-            next_reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
-            next_reasoning["effort"] = resolved.reasoning_effort
-            body["reasoning"] = next_reasoning
+        reasoning_dict: Dict[str, Any] = dict(reasoning) if isinstance(reasoning, dict) else {}
+        reasoning_dict["effort"] = resolve_codex_upstream_reasoning_effort(
+            reasoning_effort_top=body.get("reasoning_effort"),
+            reasoning_dict=reasoning_dict if reasoning_dict else None,
+            model_suffix_effort=resolved.reasoning_effort,
+        )
+        body["reasoning"] = reasoning_dict
+        body.pop("reasoning_effort", None)
         body["store"] = False
         body, codex_reinject_trace = _maybe_reinject_codex_reasoning_for_responses(
             session_id=session_id,

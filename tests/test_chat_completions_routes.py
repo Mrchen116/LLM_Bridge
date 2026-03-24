@@ -166,7 +166,7 @@ def test_chat_completions_codex_oauth_mapping_matches_opencode_style(client: Tes
     assert up["tool_choice"]["name"] == "tool_a"
     assert up["tools"][0]["type"] == "function"
     assert up["tools"][0]["name"] == "tool_a"
-    assert "reasoning" not in up
+    assert up["reasoning"]["effort"] == "medium"
     assert "reasoning.encrypted_content" in up["include"]
 
 

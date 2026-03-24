@@ -60,6 +60,7 @@ def anthropic_request_to_codex_payload(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
+    model_suffix_effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     openai_chat_body = anthropic_request_to_openai_chat_body(
         model=model,
@@ -73,5 +74,5 @@ def anthropic_request_to_codex_payload(
         top_p=top_p,
         stop_sequences=stop_sequences,
     )
-    return openai_chat_body_to_codex_payload(openai_chat_body, model)
+    return openai_chat_body_to_codex_payload(openai_chat_body, model, model_suffix_effort=model_suffix_effort)
 

@@ -95,7 +95,7 @@ def test_messages_codex_oauth_non_stream_bridge(client: TestClient):
     assert up["instructions"] == "You are a helpful assistant."
     assert up["input"][0]["role"] == "user"
     assert up["store"] is False
-    assert "reasoning" not in up
+    assert up["reasoning"]["effort"] == "medium"
     assert "reasoning.encrypted_content" in up["include"]
 
 

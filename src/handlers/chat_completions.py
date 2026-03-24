@@ -121,14 +121,6 @@ async def run_chat_completions_flow(
         )
 
     body["model"] = model
-    if auth_type == "codex_oauth":
-        reasoning = body.get("reasoning")
-        if (
-            resolved.reasoning_effort is not None
-            and body.get("reasoning_effort") is None
-            and not (isinstance(reasoning, dict) and reasoning.get("effort") is not None)
-        ):
-            body["reasoning_effort"] = resolved.reasoning_effort
 
     tools = _strip_task_explore_line(body.get("tools"), ban_explore=ban_explore)
     if tools is not None:
@@ -140,13 +132,16 @@ async def run_chat_completions_flow(
     codex_reinject_trace: Optional[Dict[str, Any]] = None
     if auth_type == "codex_oauth":
         codex_chat_body = dict(body)
-        upstream_request_body = openai_chat_body_to_codex_payload(codex_chat_body, model)
+        upstream_request_body = openai_chat_body_to_codex_payload(
+            codex_chat_body, model, model_suffix_effort=resolved.reasoning_effort
+        )
         upstream_request_body, codex_reinject_trace = _maybe_reinject_codex_reasoning(
             session_id=session_id,
             provider=str(profile.get("provider") or ""),
             model=model,
             codex_chat_body=codex_chat_body,
             codex_payload=upstream_request_body,
+            model_suffix_effort=resolved.reasoning_effort,
         )
 
     log_body = dict(body)

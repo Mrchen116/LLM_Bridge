@@ -513,6 +513,25 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return None
 
 
+def resolve_codex_upstream_reasoning_effort(
+    *,
+    reasoning_effort_top: Any = None,
+    reasoning_dict: Optional[Dict[str, Any]] = None,
+    model_suffix_effort: Optional[str] = None,
+) -> str:
+    """解析发往 Codex 的 reasoning.effort（全下游统一）：显式 body > 模型名 @后缀 > 默认 medium。"""
+    effort: Optional[str] = None
+    if isinstance(reasoning_dict, dict) and reasoning_dict.get("effort") is not None:
+        effort = _normalize_reasoning_effort(reasoning_dict.get("effort"))
+    if effort is None:
+        effort = _normalize_reasoning_effort(reasoning_effort_top)
+    if effort is None:
+        effort = _normalize_reasoning_effort(model_suffix_effort)
+    if effort is None:
+        return "medium"
+    return effort
+
+
 def ensure_codex_responses_include_encrypted_reasoning(
     payload: Dict[str, Any], *, include_source: Optional[Dict[str, Any]] = None
 ) -> None:
@@ -529,7 +548,9 @@ def ensure_codex_responses_include_encrypted_reasoning(
     payload["include"] = include_items
 
 
-def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -> Dict[str, Any]:
+def _build_codex_responses_payload_from_chat(
+    body: Dict[str, Any], model: str, *, model_suffix_effort: Optional[str] = None
+) -> Dict[str, Any]:
     messages = body.get("messages")
     if not isinstance(messages, list):
         messages = []
@@ -615,14 +636,16 @@ def _build_codex_responses_payload_from_chat(body: Dict[str, Any], model: str) -
         if mapped_tools is not None:
             payload["tools"] = mapped_tools
 
-    # 关键兼容点 1：
-    # chat/completions 常用 reasoning_effort；responses 使用 reasoning.effort。
-    # 这里做字段映射，优先读取 chat 字段，兼容已是 responses 风格的传法。
-    reasoning_effort = _normalize_reasoning_effort(body.get("reasoning_effort"))
-    if reasoning_effort is None and isinstance(body.get("reasoning"), dict):
-        reasoning_effort = _normalize_reasoning_effort(body.get("reasoning", {}).get("effort"))
-    if reasoning_effort is not None:
-        payload["reasoning"] = {"effort": reasoning_effort}
+    # 关键兼容点 1：reasoning.effort 统一由 resolve_codex_upstream_reasoning_effort 解析（含模型 @后缀）。
+    raw_reasoning = body.get("reasoning")
+    rd = raw_reasoning if isinstance(raw_reasoning, dict) else None
+    payload["reasoning"] = {
+        "effort": resolve_codex_upstream_reasoning_effort(
+            reasoning_effort_top=body.get("reasoning_effort"),
+            reasoning_dict=rd,
+            model_suffix_effort=model_suffix_effort,
+        )
+    }
 
     # 关键兼容点 2：与原生 /v1/responses + codex_oauth 路径一致，见 ensure_codex_responses_include_encrypted_reasoning。
     ensure_codex_responses_include_encrypted_reasoning(payload, include_source=body)

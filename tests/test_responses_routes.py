@@ -46,7 +46,7 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
     assert FakeAsyncClient.last_stream_args["json"]["model"] == "gpt-5.2-codex"
     assert FakeAsyncClient.last_stream_args["json"]["store"] is False
     assert FakeAsyncClient.last_stream_args["json"]["stream"] is True
-    assert "reasoning" not in FakeAsyncClient.last_stream_args["json"]
+    assert FakeAsyncClient.last_stream_args["json"]["reasoning"]["effort"] == "medium"
     assert FakeAsyncClient.last_stream_args["json"]["include"] == ["reasoning.encrypted_content"]
     assert FakeAsyncClient.last_post_args == {}
 
@@ -84,6 +84,7 @@ def test_responses_codex_oauth_can_compress_non_stream_request_body(client: Test
     assert decoded["model"] == "gpt-5.2-codex"
     assert decoded["store"] is False
     assert decoded["stream"] is True
+    assert decoded["reasoning"]["effort"] == "medium"
     assert decoded["include"] == ["reasoning.encrypted_content"]
 
 
@@ -113,6 +114,7 @@ def test_responses_codex_oauth_can_compress_stream_request_body(client: TestClie
     assert decoded["model"] == "gpt-5.2-codex"
     assert decoded["stream"] is True
     assert decoded["input"] == "hello"
+    assert decoded["reasoning"]["effort"] == "medium"
     assert decoded["include"] == ["reasoning.encrypted_content"]
 
 

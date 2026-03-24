@@ -195,6 +195,7 @@ def _maybe_reinject_codex_reasoning(
     model: str,
     codex_chat_body: Dict[str, Any],
     codex_payload: Dict[str, Any],
+    model_suffix_effort: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     if not session_id:
         return codex_payload, None
@@ -204,7 +205,9 @@ def _maybe_reinject_codex_reasoning(
 
     prefix_msgs, suffix_user_msgs = _split_trailing_user_suffix_oai_messages(messages)
     prefix_body = _build_codex_chat_body_with_messages(codex_chat_body, prefix_msgs)
-    prefix_payload = _build_codex_responses_payload_from_chat(prefix_body, model)
+    prefix_payload = _build_codex_responses_payload_from_chat(
+        prefix_body, model, model_suffix_effort=model_suffix_effort
+    )
     fp = _codex_context_fingerprint(prefix_payload)
 
     key = (session_id, provider, model)
@@ -215,6 +218,7 @@ def _maybe_reinject_codex_reasoning(
         suffix_input_payload = _build_codex_responses_payload_from_chat(
             _build_codex_chat_body_with_messages(codex_chat_body, suffix_user_msgs),
             model,
+            model_suffix_effort=model_suffix_effort,
         )
         suffix_input = suffix_input_payload.get("input") if isinstance(suffix_input_payload.get("input"), list) else []
         payload["input"] = copy.deepcopy(decorated_prefix_input) + list(suffix_input)
@@ -225,6 +229,7 @@ def _maybe_reinject_codex_reasoning(
         "model": model,
         "codex_chat_body": copy.deepcopy(codex_chat_body),
         "sent_input": copy.deepcopy(payload.get("input") if isinstance(payload.get("input"), list) else []),
+        "model_suffix_effort": model_suffix_effort,
     }
     return payload, trace
 
@@ -242,6 +247,9 @@ def _update_codex_reasoning_reinject_cache(trace: Optional[Dict[str, Any]], resp
     if not isinstance(codex_chat_body, dict) or not isinstance(sent_input, list):
         return
 
+    raw_ms = trace.get("model_suffix_effort")
+    model_suffix_effort: Optional[str] = raw_ms if isinstance(raw_ms, str) else None
+
     assistant_msg = _build_assistant_message_from_codex_response(resp_json)
     visible_messages = codex_chat_body.get("messages")
     if not isinstance(visible_messages, list):
@@ -253,6 +261,7 @@ def _update_codex_reasoning_reinject_cache(trace: Optional[Dict[str, Any]], resp
     next_visible_payload = _build_codex_responses_payload_from_chat(
         _build_codex_chat_body_with_messages(codex_chat_body, next_visible_messages),
         model,
+        model_suffix_effort=model_suffix_effort,
     )
     next_fp = _codex_context_fingerprint(next_visible_payload)
 
@@ -261,6 +270,7 @@ def _update_codex_reasoning_reinject_cache(trace: Optional[Dict[str, Any]], resp
         assistant_payload = _build_codex_responses_payload_from_chat(
             _build_codex_chat_body_with_messages(codex_chat_body, [assistant_msg]),
             model,
+            model_suffix_effort=model_suffix_effort,
         )
         raw_assistant_input = assistant_payload.get("input")
         if isinstance(raw_assistant_input, list):
