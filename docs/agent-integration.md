@@ -81,6 +81,44 @@ For more Codex configuration options, see the official references such as [Confi
 
 ---
 
+## Session ID identification
+
+The Session Inspector groups turns by session. The proxy resolves a session ID via a small plugin system: each plugin implements `extract(headers, body) -> Optional[str]`, plugins are tried in ascending `priority`, and the first non-empty result wins.
+
+Built-in plugins (under `src/session_id_plugins/`):
+
+| File | Name | Priority | Reads |
+|------|------|----------|--------|
+| `plugin_headers.py` | `builtin_headers` | 100 | Headers `X-Session-Id`, `x-session-id`, `session_id` |
+| `plugin_metadata.py` | `builtin_metadata` | 200 | `body.metadata.user_id` — JSON `{"session_id":"..."}` or legacy `session_<id>` |
+
+### Adding a plugin for your own agent
+
+1. Create `src/session_id_plugins/plugin_my_agent.py`:
+
+```python
+from src.session_id_plugins import register
+
+class MyAgentPlugin:
+    name = "my_agent"
+    priority = 50  # lower than 100 = tried before built-in plugins
+
+    def extract(self, headers, body):
+        return body.get("my_agent_session_id") or None
+
+register(MyAgentPlugin())
+```
+
+2. Import it at the bottom of `src/session_id_plugins/__init__.py`:
+
+```python
+from . import plugin_my_agent
+```
+
+No other files need to change.
+
+---
+
 ## Other agents
 
 Any client that can call one of the three ingress URLs above can use the same gateway. Use:

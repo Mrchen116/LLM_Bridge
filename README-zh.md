@@ -109,7 +109,7 @@ python start_proxy.py
 - `--ui`：启用 Session Inspector UI 与 API
 - `--open-ui`：启用 UI，并自动打开浏览器（`/ui/session-inspector`）
 
-**接入 Agent：** 若要让 Claude Code、Codex CLI 等通过本网关访问模型，见 [docs/agent-integration-zh.md](docs/agent-integration-zh.md)（英文：[docs/agent-integration.md](docs/agent-integration.md)）。
+**接入 Agent：** 若要让 Claude Code、Codex CLI 等通过本网关访问模型，见 [docs/agent-integration-zh.md](docs/agent-integration-zh.md)（英文：[docs/agent-integration.md](docs/agent-integration.md)）。Session Inspector 所需的 **session ID 如何解析** 也在该文档中说明。
 
 ## Session Inspector（多 Agent 会话分析）
 

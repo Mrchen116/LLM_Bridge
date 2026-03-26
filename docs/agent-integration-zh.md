@@ -81,6 +81,44 @@ codex --profile proxy_gpt54
 
 ---
 
+## Session ID 识别方式
+
+Session Inspector 按 session 聚合 turn。代理通过一套小型插件解析 session ID：每个插件实现 `extract(headers, body) -> Optional[str]`，按 `priority` 升序依次尝试，第一个返回非空字符串的结果即为最终 session ID。
+
+内置插件（代码在 `src/session_id_plugins/`）：
+
+| 文件 | 名称 | 优先级 | 读取位置 |
+|------|------|--------|----------|
+| `plugin_headers.py` | `builtin_headers` | 100 | HTTP 头 `X-Session-Id`、`x-session-id`、`session_id` |
+| `plugin_metadata.py` | `builtin_metadata` | 200 | `body.metadata.user_id` — JSON `{"session_id":"..."}` 或旧格式 `session_<id>` |
+
+### 为自定义 Agent 添加插件
+
+1. 新建 `src/session_id_plugins/plugin_my_agent.py`：
+
+```python
+from src.session_id_plugins import register
+
+class MyAgentPlugin:
+    name = "my_agent"
+    priority = 50  # 小于 100 时先于内置插件执行
+
+    def extract(self, headers, body):
+        return body.get("my_agent_session_id") or None
+
+register(MyAgentPlugin())
+```
+
+2. 在 `src/session_id_plugins/__init__.py` 末尾增加一行导入以激活插件：
+
+```python
+from . import plugin_my_agent
+```
+
+无需再改其他文件。
+
+---
+
 ## 其他 Agent
 
 只要能直接调用上述三种 URL 之一，即可接入同一网关：
