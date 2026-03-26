@@ -24,6 +24,7 @@ CODEX_AUTH_STATUS_CODES = {401, 403}
 CODEX_FAILOVER_ERROR_CODES = {
     "insufficient_quota",
     "usage_not_included",
+    "deactivated_workspace",
 }
 CODEX_RETRYABLE_ERROR_CODES = CODEX_FAILOVER_ERROR_CODES | {
     "server_error",
@@ -54,10 +55,21 @@ def _extract_error_code_from_text(error_text: str) -> str:
         if isinstance(err, dict):
             if isinstance(err.get("code"), str):
                 return str(err.get("code") or "").strip().lower()
+            # 上游偶发把真实 JSON 塞进 error.message，需再解一层
+            msg = err.get("message")
+            if isinstance(msg, str):
+                msg_stripped = msg.strip()
+                if msg_stripped.startswith("{"):
+                    nested = _extract_error_code_from_text(msg_stripped)
+                    if nested:
+                        return nested
             if isinstance(err.get("type"), str):
                 return str(err.get("type") or "").strip().lower()
         if isinstance(err, str):
             return err.strip().lower()
+        detail = obj.get("detail")
+        if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+            return str(detail.get("code") or "").strip().lower()
 
     lowered = text.lower()
     for code in CODEX_FAILOVER_ERROR_CODES:

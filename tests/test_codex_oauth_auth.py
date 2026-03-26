@@ -245,6 +245,87 @@ def test_codex_oauth_failover_on_insufficient_quota_switches_account(client: Tes
     assert int(accounts["primary"]["cooldown_until"]) > 0
 
 
+def test_codex_oauth_failover_on_deactivated_workspace_switches_account(client: TestClient, monkeypatch):
+    """测试 402 + deactivated_workspace 会触发切换账号（与 insufficient_quota 同类可恢复）。"""
+    cfg = copy.deepcopy(app_module.UPSTREAM_CONFIG)
+    codex = cfg["profiles"]["codexOAuth"]
+    codex["defaults"]["retryMax"] = 3
+    codex["auth"] = {
+        "codexEndpoint": "https://chatgpt.com/backend-api/codex/responses",
+        "accountPoolPolicy": {"maxFailoverPerRequest": 2, "cooldownSeconds": 300},
+    }
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", cfg)
+
+    Path(".codex_oauth.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "default_label": "primary",
+                "accounts": [
+                    {
+                        "label": "primary",
+                        "account_id": "org-primary",
+                        "priority": 100,
+                        "enabled": True,
+                        "access_token": "token-a",
+                        "refresh_token": "refresh-a",
+                        "expires_at": 4102444800,
+                        "cooldown_until": 0,
+                        "last_error": "",
+                        "updated_at": 1,
+                    },
+                    {
+                        "label": "backup",
+                        "account_id": "org-backup",
+                        "priority": 200,
+                        "enabled": True,
+                        "access_token": "token-b",
+                        "refresh_token": "refresh-b",
+                        "expires_at": 4102444800,
+                        "cooldown_until": 0,
+                        "last_error": "",
+                        "updated_at": 1,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def fake_collect_codex_response_from_stream(client, upstream_url, profile, headers, request_body):
+        auth = str(headers.get("authorization") or headers.get("Authorization") or "")
+        if auth == "Bearer token-a":
+            err_text = '{"detail":{"code":"deactivated_workspace"}}'
+            return {
+                "ok": False,
+                "status_code": 402,
+                "error_bytes": err_text.encode("utf-8"),
+                "error_text": err_text,
+                "chunks": [{"type": "error_body", "body": err_text}],
+            }
+        return {
+            "ok": True,
+            "status_code": 200,
+            "response_json": {
+                "id": "resp_ok",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+            "chunks": ["data: [DONE]"],
+        }
+
+    monkeypatch.setattr(chat_handler, "collect_codex_response_from_stream", fake_collect_codex_response_from_stream)
+
+    payload = {"model": "codexOAuth:gpt-5.2-codex", "messages": [{"role": "user", "content": "hello"}]}
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "ok"
+
+    store = json.loads(Path(".codex_oauth.json").read_text(encoding="utf-8"))
+    accounts = {item["label"]: item for item in store["accounts"]}
+    assert int(accounts["primary"]["cooldown_until"]) > 0
+
+
 def test_codex_oauth_retry_max_is_not_capped_by_failover_limit(client: TestClient, monkeypatch):
     """测试 server_error 同账号重试次数不受 maxFailoverPerRequest 限制。"""
     cfg = copy.deepcopy(app_module.UPSTREAM_CONFIG)
