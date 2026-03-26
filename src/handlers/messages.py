@@ -40,11 +40,10 @@ from src.observability.turn_logging import (
     resolve_raw_bucket,
 )
 from src.reasoning.reinject import (
-    _extract_session_id_from_headers,
-    _extract_session_id_from_body_metadata,
     _maybe_reinject_codex_reasoning,
     _update_codex_reasoning_reinject_cache,
 )
+from src.session_id_plugins import extract_session_id
 from token_auth import CodexAccountUnavailableError
 from proxy_converters import (
     _extract_model_and_ban_explore,
@@ -600,7 +599,7 @@ async def run_messages_flow(
             },
             status_code=400,
         )
-    session_id = _extract_session_id_from_headers(req.headers) or _extract_session_id_from_body_metadata(body)
+    session_id = extract_session_id(req.headers, body)
 
     body_model = body.get("model")
     model_from_body, ban_explore = _extract_model_and_ban_explore(body_model, ban_explore)

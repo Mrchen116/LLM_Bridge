@@ -30,11 +30,10 @@ from src.observability.turn_logging import (
 )
 from src.reasoning.reinject import (
     _extract_response_completed_object_from_sse_chunks,
-    _extract_session_id_from_headers,
-    _extract_session_id_from_body_metadata,
     _maybe_reinject_codex_reasoning_for_responses,
     _update_codex_reasoning_reinject_cache_for_responses,
 )
+from src.session_id_plugins import extract_session_id
 from token_auth import CodexAccountUnavailableError
 from proxy_converters import (
     _extract_model_and_ban_explore,
@@ -87,7 +86,7 @@ async def run_responses_flow(
     profile = resolved.profile
     model = resolved.model
     auth_type = get_effective_auth_type(profile)
-    session_id = _extract_session_id_from_headers(req.headers) or _extract_session_id_from_body_metadata(body)
+    session_id = extract_session_id(req.headers, body)
     codex_reinject_trace: Optional[Dict[str, Any]] = None
 
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_RESPONSES)

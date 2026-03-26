@@ -36,11 +36,10 @@ from src.observability.turn_logging import (
     resolve_raw_bucket,
 )
 from src.reasoning.reinject import (
-    _extract_session_id_from_headers,
-    _extract_session_id_from_body_metadata,
     _maybe_reinject_codex_reasoning,
     _update_codex_reasoning_reinject_cache,
 )
+from src.session_id_plugins import extract_session_id
 from token_auth import CodexAccountUnavailableError
 from proxy_converters import (
     _extract_model_and_ban_explore,
@@ -93,7 +92,7 @@ async def run_chat_completions_flow(
     model = resolved.model
     auth_type = get_effective_auth_type(profile)
 
-    session_id = _extract_session_id_from_headers(req.headers) or _extract_session_id_from_body_metadata(body)
+    session_id = extract_session_id(req.headers, body)
 
     upstream_url = build_upstream_url(profile, PROTOCOL_OPENAI_CHAT)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)

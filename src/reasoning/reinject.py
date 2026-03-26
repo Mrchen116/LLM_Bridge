@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import re
 import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -22,39 +21,6 @@ _REASONING_STORE: ReasoningStore = InMemoryReasoningStore()
 def get_reasoning_store() -> ReasoningStore:
     return _REASONING_STORE
 
-
-def _extract_session_id_from_body_metadata(body: Dict[str, Any]) -> Optional[str]:
-    metadata = body.get("metadata")
-    if not isinstance(metadata, dict):
-        return None
-    user_id = metadata.get("user_id") or ""
-    if isinstance(user_id, str):
-        stripped = user_id.strip()
-        if stripped.startswith("{"):
-            try:
-                parsed = json.loads(stripped)
-            except Exception:
-                parsed = None
-            if isinstance(parsed, dict):
-                session_id = str(parsed.get("session_id") or "").strip()
-                if session_id:
-                    return session_id
-    m = re.search(r"session_([A-Za-z0-9-]+)", str(user_id))
-    if m:
-        return m.group(1)
-    return None
-
-
-def _extract_session_id_from_headers(headers: Mapping[str, Any]) -> Optional[str]:
-    # Keep backward compatibility with existing X-Session-Id while accepting Codex's session_id header.
-    for key in ("X-Session-Id", "x-session-id", "session_id"):
-        value = headers.get(key)
-        if value is None:
-            continue
-        session_id = str(value).strip()
-        if session_id:
-            return session_id
-    return None
 
 
 def _split_trailing_user_suffix_oai_messages(

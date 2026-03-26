@@ -3,16 +3,18 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src.reasoning.reinject import _extract_session_id_from_body_metadata
+from src.session_id_plugins.plugin_metadata import MetadataPlugin
 from tests.support import FakeAsyncClient, FakeStreamResponse
+
+_metadata_plugin = MetadataPlugin()
 
 
 def test_extract_session_id_from_body_metadata_supports_legacy_and_json_string_formats():
-    assert _extract_session_id_from_body_metadata(
-        {"metadata": {"user_id": "user_x_session_legacy-session"}}
+    assert _metadata_plugin.extract(
+        {}, {"metadata": {"user_id": "user_x_session_legacy-session"}}
     ) == "legacy-session"
-    assert _extract_session_id_from_body_metadata(
-        {"metadata": {"user_id": '{"session_id":"json-session","uid":"id"}'}}
+    assert _metadata_plugin.extract(
+        {}, {"metadata": {"user_id": '{"session_id":"json-session","uid":"id"}'}}
     ) == "json-session"
 
 
