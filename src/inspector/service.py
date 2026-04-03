@@ -28,7 +28,7 @@ from src.inspector.files import (
 )
 from src.inspector.grouping import AssignedLane, TurnLaneInput, assign_lanes, lane_sort_key
 from src.inspector.types import Lane, SessionSummary, TimelineEvent
-from src.observability.token_stats import collect_usage_tokens_for_stats
+from src.observability.token_stats import collect_usage_tokens_for_stats, compute_token_breakdown
 
 
 @dataclass(frozen=True)
@@ -958,3 +958,50 @@ def get_timeline_event_detail(
         }
         return detail_payload
     return None
+
+
+def get_token_breakdown_for_event(
+    *,
+    logs_session_dir: str,
+    session_id: str,
+    event_id: str,
+) -> Optional[Dict[str, Any]]:
+    session_dir = _resolve_session_dir(logs_session_dir, session_id)
+    if not session_dir:
+        return None
+
+    bundle, _ = _get_raw_timeline_bundle(session_dir=session_dir, summary_chars=120)
+
+    # Find the turn_ts from the event_id
+    turn_ts: Optional[str] = None
+    for raw_event in bundle.raw_events:
+        if str(raw_event.get("event_id") or "") == event_id:
+            turn_ts = str(raw_event.get("turn_ts") or "")
+            break
+
+    if not turn_ts:
+        return None
+
+    # Find the turn record by turn_ts
+    record: Optional[_TurnRecord] = None
+    for rec in bundle.records:
+        if rec.ts == turn_ts:
+            record = rec
+            break
+
+    if not record:
+        return None
+
+    # Try to get the authoritative input_tokens total from API response
+    total_input_tokens_from_api: Optional[int] = None
+    res_obj = record.non_stream_obj or record.downstream_obj
+    res_path = record.non_stream_file or record.downstream_file
+    if res_obj is not None and res_path:
+        in_tok, _, _ = collect_usage_tokens_for_stats(res_obj, res_path)
+        if in_tok > 0:
+            total_input_tokens_from_api = in_tok
+
+    return compute_token_breakdown(
+        record.req_obj,
+        total_input_tokens_from_api=total_input_tokens_from_api,
+    )

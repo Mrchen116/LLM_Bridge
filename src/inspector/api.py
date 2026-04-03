@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from src.inspector.keyword_presets import load_keyword_presets, save_keyword_presets
-from src.inspector.service import get_timeline, get_timeline_event_detail, list_sessions
+from src.inspector.service import get_timeline, get_timeline_event_detail, get_token_breakdown_for_event, list_sessions
 
 
 ROUTER = APIRouter(tags=["session-inspector"])
@@ -118,6 +118,22 @@ async def session_inspector_event_detail(
         session_id=session_id,
         event_id=event_id,
         summary_chars=summary_chars,
+    )
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"event_id {event_id} not found")
+    return payload
+
+
+@ROUTER.get("/api/session-inspector/sessions/{session_id}/events/{event_id}/token-breakdown")
+async def session_inspector_token_breakdown(
+    session_id: str,
+    event_id: str,
+):
+    _require_enabled()
+    payload = get_token_breakdown_for_event(
+        logs_session_dir=DEFAULT_LOGS_SESSION_DIR,
+        session_id=session_id,
+        event_id=event_id,
     )
     if not payload:
         raise HTTPException(status_code=404, detail=f"event_id {event_id} not found")

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSessionInspectorController } from './business/use-session-inspector-controller'
 import { SessionList } from './components/session-list/SessionList'
 import { TimelineLanes } from './components/timeline-lanes/TimelineLanes'
@@ -19,6 +19,35 @@ export default function App() {
     selectedKeywordPresetId,
   } = useSessionInspectorController()
   const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false)
+  const [rightPanelWidth, setRightPanelWidth] = useState(320)
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  const onResizeStart = useCallback((startX: number) => {
+    dragRef.current = { startX, startWidth: rightPanelWidth }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [rightPanelWidth])
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragRef.current) return
+      const delta = dragRef.current.startX - e.clientX
+      const next = Math.min(700, Math.max(240, dragRef.current.startWidth + delta))
+      setRightPanelWidth(next)
+    }
+    const onMouseUp = () => {
+      if (!dragRef.current) return
+      dragRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [])
 
   const timelineTitle = state.selectedSessionId || '请选择 Session'
   const timelineSubtitle = state.timeline
@@ -26,7 +55,10 @@ export default function App() {
     : ''
 
   return (
-    <div className={`app-shell ${sidePanelCollapsed ? 'side-panel-collapsed' : ''}`}>
+    <div
+      className={`app-shell ${sidePanelCollapsed ? 'side-panel-collapsed' : ''}`}
+      style={{ '--right-panel-width': `${rightPanelWidth}px` } as React.CSSProperties}
+    >
       <SessionList
         query={state.sessionQuery}
         sessions={state.sessions}
@@ -69,7 +101,7 @@ export default function App() {
         onSelectEvent={actions.selectEvent}
       />
 
-      <DetailPanel event={selectedEvent} sessionId={state.selectedSessionId} />
+      <DetailPanel event={selectedEvent} sessionId={state.selectedSessionId} onResizeStart={onResizeStart} />
     </div>
   )
 }

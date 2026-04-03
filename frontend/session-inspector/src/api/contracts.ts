@@ -135,3 +135,28 @@ export interface LogFileContentResponse {
   size_bytes: number
   truncated: boolean
 }
+
+export interface TokenBreakdownToolResult {
+  tool_name: string
+  tokens: number
+}
+
+export interface TokenBreakdownResponse {
+  total_input_tokens: number
+  total_from_api: boolean
+  estimated_total: number
+  breakdown: {
+    system_prompt: number
+    tool_definitions: number
+    user_messages: number
+    tool_calls: number
+    tool_results: {
+      total: number
+      by_tool: TokenBreakdownToolResult[]
+    }
+    assistant_text: number
+    assistant_reasoning: number
+  }
+  has_encrypted_reasoning: boolean
+  has_uncountable_image_content: boolean
+}

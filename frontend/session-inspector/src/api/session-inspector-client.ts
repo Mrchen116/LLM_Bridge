@@ -4,6 +4,7 @@ import type {
   SessionsResponse,
   TimelineEventDetailResponse,
   TimelineResponse,
+  TokenBreakdownResponse,
 } from './contracts'
 import type { TimelineFilters } from '../state/types'
 
@@ -113,6 +114,15 @@ export async function fetchLogFileContent(path: string): Promise<LogFileContentR
   const params = new URLSearchParams()
   params.set('path', path)
   return requestJson<LogFileContentResponse>(`${API_BASE}/log-file?${params.toString()}`)
+}
+
+export async function fetchTokenBreakdown(
+  sessionId: string,
+  eventId: string,
+): Promise<TokenBreakdownResponse> {
+  return requestJson<TokenBreakdownResponse>(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}/token-breakdown`,
+  )
 }
 
 export async function fetchKeywordPresets(): Promise<KeywordPresetsResponse> {

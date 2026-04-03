@@ -4,7 +4,8 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import type { TimelineEvent, ToolDefinition } from '../../api/contracts'
-import { fetchLogFileContent, fetchTimelineEventDetail } from '../../api/session-inspector-client'
+import { fetchLogFileContent, fetchTimelineEventDetail, fetchTokenBreakdown } from '../../api/session-inspector-client'
+import type { TokenBreakdownResponse } from '../../api/contracts'
 import {
   extractEventMainText,
   formatCodeValue,
@@ -15,6 +16,7 @@ import {
 interface DetailPanelProps {
   event: TimelineEvent | null
   sessionId: string
+  onResizeStart?: (startX: number) => void
 }
 
 type BlockVariant = 'text' | 'code' | 'markdown'
@@ -606,6 +608,178 @@ function SourceFilesBlock({
   )
 }
 
+const TOKEN_CATEGORY_COLORS: Record<string, string> = {
+  system_prompt: '#5b7fa8',
+  tool_definitions: '#7faac8',
+  user_messages: '#5e9e78',
+  tool_calls: '#c08050',
+  tool_results: '#c06060',
+  assistant_text: '#7060b0',
+  assistant_reasoning: '#a090d0',
+}
+
+const TOKEN_CATEGORY_LABELS: Record<string, string> = {
+  system_prompt: 'System Prompt',
+  tool_definitions: 'Tool Definitions',
+  user_messages: 'User Messages',
+  tool_calls: 'Tool Calls',
+  tool_results: 'Tool Results',
+  assistant_text: 'Assistant Text',
+  assistant_reasoning: 'Assistant Reasoning',
+}
+
+function fmt(n: number): string {
+  return n.toLocaleString()
+}
+
+function pct(n: number, total: number): string {
+  if (total === 0) return '0%'
+  return ((n / total) * 100).toFixed(1) + '%'
+}
+
+function TokenBreakdownBlock({
+  sessionId,
+  eventId,
+}: {
+  sessionId: string
+  eventId: string
+}) {
+  const [data, setData] = useState<TokenBreakdownResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const onToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
+    const isOpen = e.currentTarget.open
+    if (isOpen && !data && !loading && !error) {
+      setLoading(true)
+      void fetchTokenBreakdown(sessionId, eventId)
+        .then((payload) => {
+          setData(payload)
+        })
+        .catch((err: unknown) => {
+          setError(err instanceof Error ? err.message : String(err))
+        })
+        .finally(() => {
+          setLoading(false)
+        })
+    }
+  }
+
+  const b = data?.breakdown
+  const categories = b
+    ? ([
+        ['system_prompt', b.system_prompt],
+        ['tool_definitions', b.tool_definitions],
+        ['user_messages', b.user_messages],
+        ['tool_calls', b.tool_calls],
+        ['tool_results', b.tool_results.total],
+        ['assistant_text', b.assistant_text],
+        ['assistant_reasoning', b.assistant_reasoning],
+      ] as [string, number][]).filter(([, v]) => v > 0)
+    : []
+  const estimatedTotal = data?.estimated_total ?? 0
+
+  return (
+    <details className="raw-event token-breakdown-details" onToggle={onToggle}>
+      <summary>Token 分布</summary>
+
+      {loading && <div className="subtle token-breakdown-body">计算中...</div>}
+      {!loading && error && <div className="subtle token-breakdown-body">加载失败：{error}</div>}
+
+      {!loading && data && (
+        <div className="token-breakdown-body">
+          {/* Header: total tokens */}
+          <div className="token-breakdown-header">
+            <span className="token-breakdown-total">
+              {fmt(data.total_input_tokens)} input tokens
+            </span>
+            <span className="token-breakdown-note">
+              {data.total_from_api
+                ? `API 实测 · 估算 ${fmt(data.estimated_total)}`
+                : '全部为估算值'}
+            </span>
+          </div>
+
+          {/* Stacked bar */}
+          {estimatedTotal > 0 && (
+            <div className="token-bar" title="Input token 分布">
+              {categories.map(([key, val]) => (
+                <div
+                  key={key}
+                  className="token-bar-segment"
+                  style={{
+                    width: pct(val, estimatedTotal),
+                    background: TOKEN_CATEGORY_COLORS[key] ?? '#999',
+                  }}
+                  title={`${TOKEN_CATEGORY_LABELS[key] ?? key}: ${fmt(val)} (${pct(val, estimatedTotal)})`}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Legend + values */}
+          <div className="token-breakdown-rows">
+            {categories.map(([key, val]) => (
+              <div className="token-breakdown-row" key={key}>
+                <span
+                  className="token-breakdown-dot"
+                  style={{ background: TOKEN_CATEGORY_COLORS[key] ?? '#999' }}
+                />
+                <span className="token-breakdown-label">{TOKEN_CATEGORY_LABELS[key] ?? key}</span>
+                <span className="token-breakdown-bar-mini">
+                  <span
+                    className="token-breakdown-bar-fill"
+                    style={{
+                      width: pct(val, estimatedTotal),
+                      background: TOKEN_CATEGORY_COLORS[key] ?? '#999',
+                    }}
+                  />
+                </span>
+                <span className="token-breakdown-count">{fmt(val)}</span>
+                <span className="token-breakdown-pct">{pct(val, estimatedTotal)}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Tool results drill-down */}
+          {b && b.tool_results.by_tool.length > 1 && (
+            <div className="token-breakdown-tools">
+              <div className="token-breakdown-tools-title">Tool Results 明细</div>
+              {b.tool_results.by_tool.map((item) => (
+                <div className="token-breakdown-row token-breakdown-row--tool" key={item.tool_name}>
+                  <span className="token-breakdown-tool-name">{item.tool_name}</span>
+                  <span className="token-breakdown-bar-mini">
+                    <span
+                      className="token-breakdown-bar-fill"
+                      style={{
+                        width: pct(item.tokens, b.tool_results.total),
+                        background: TOKEN_CATEGORY_COLORS['tool_results'],
+                      }}
+                    />
+                  </span>
+                  <span className="token-breakdown-count">{fmt(item.tokens)}</span>
+                  <span className="token-breakdown-pct">{pct(item.tokens, b.tool_results.total)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Warnings */}
+          {data.has_uncountable_image_content && (
+            <div className="token-breakdown-warn">
+              ⚠ 部分 Tool Results 包含图片数据（base64），已跳过计数，不计入上述估算，实际 Tool Results 占比可能更高。
+            </div>
+          )}
+          {data.has_encrypted_reasoning && (
+            <div className="token-breakdown-warn">
+              ⚠ 存在加密 reasoning（如 Codex），其 token 数无法统计，未计入上述估算。
+            </div>
+          )}
+        </div>
+      )}
+    </details>
+  )
+}
+
 function extractToolDefinitionFields(toolDef: ToolDefinition | null | undefined): {
   name: string
   description: string
@@ -631,7 +805,7 @@ function extractToolDefinitionFields(toolDef: ToolDefinition | null | undefined)
   }
 }
 
-export function DetailPanel({ event, sessionId }: DetailPanelProps) {
+export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProps) {
   const [copiedKey, setCopiedKey] = useState('')
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerPath, setViewerPath] = useState('')
@@ -757,6 +931,15 @@ export function DetailPanel({ event, sessionId }: DetailPanelProps) {
   return (
     <>
       <section className="panel detail-panel">
+        {onResizeStart ? (
+          <div
+            className="panel-resize-handle"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              onResizeStart(e.clientX)
+            }}
+          />
+        ) : null}
         <header className="panel-header">
           <div className="panel-title-group">
             <h2>事件详情</h2>
@@ -850,6 +1033,8 @@ export function DetailPanel({ event, sessionId }: DetailPanelProps) {
                   ) : null}
                 </>
               ) : null}
+
+              <TokenBreakdownBlock key={displayEvent.event_id} sessionId={sessionId} eventId={displayEvent.event_id} />
 
               <details className="raw-event">
                 <summary>完整事件 JSON</summary>
