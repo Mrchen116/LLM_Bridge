@@ -57,6 +57,7 @@
 - 支持流式（SSE）与非流式透传
 - 可选屏蔽 Task 工具描述中的 `- Explore:` 行
 - 支持会话日志与统计接口（session logs + token 聚合）
+- 为不原生注入 session ID 的 Agent（opencode、OpenClaw）提供客户端插件，见 `agent-client-plugins/`
 - 内置 Session Inspector：
   - 多 agent lane 时间线展示
   - 工具调用参数与工具定义（name/description/schema）查看

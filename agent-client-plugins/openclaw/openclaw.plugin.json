@@ -1,0 +1,10 @@
+{
+  "id": "session-header",
+  "name": "Session Header",
+  "description": "Injects X-Session-Id header into LLM_Bridge provider requests for session tracking",
+  "providers": ["llm-bridge"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

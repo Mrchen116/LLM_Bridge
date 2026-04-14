@@ -92,6 +92,28 @@ Built-in plugins (under `src/session_id_plugins/`):
 | `plugin_headers.py` | `builtin_headers` | 100 | Headers `X-Session-Id`, `x-session-id`, `session_id` |
 | `plugin_metadata.py` | `builtin_metadata` | 200 | `body.metadata.user_id` — JSON `{"session_id":"..."}` or legacy `session_<id>` |
 
+### Which agents send session IDs natively
+
+| Agent | Method | Notes |
+|-------|--------|-------|
+| Claude Code | `x-session-id` header | Injected automatically; no extra setup |
+| Codex CLI | `session_id` header | Injected automatically; no extra setup |
+| opencode | — | Needs a client-side plugin (see below) |
+| OpenClaw | — | Needs a client-side plugin (see below) |
+
+### Agent client plugins (`agent-client-plugins/`)
+
+For agents that do not inject a session ID on their own, this repo ships small client-side plugins under `agent-client-plugins/`. Each sub-directory is a self-contained package; install it into the corresponding agent once and it will inject `X-Session-Id` on every LLM request.
+
+Sub-agent session grouping is also handled: when an agent spawns a sub-agent (a new session with a different ID), the plugin traces the `parentID` chain back to the root session and uses that root ID as `X-Session-Id`, so the entire agent tree is grouped under one session in the Inspector.
+
+| Directory | Target agent | Install method |
+|-----------|-------------|----------------|
+| `agent-client-plugins/opencode/` | [opencode](https://opencode.ai) | Add the directory path to `plugin` in `opencode.json` |
+| `agent-client-plugins/openclaw/` | OpenClaw | `openclaw plugins install /path/to/agent-client-plugins/openclaw` |
+
+See the `GUIDE.md` inside each directory for full installation steps.
+
 ### Adding a plugin for your own agent
 
 1. Create `src/session_id_plugins/plugin_my_agent.py`:

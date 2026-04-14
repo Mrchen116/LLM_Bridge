@@ -1,0 +1,10 @@
+{
+  "name": "opencode-llm-bridge-session",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./index.ts",
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*",
+    "@opencode-ai/sdk": "*"
+  }
+}

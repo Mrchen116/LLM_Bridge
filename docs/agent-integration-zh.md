@@ -92,6 +92,28 @@ Session Inspector 按 session 聚合 turn。代理通过一套小型插件解析
 | `plugin_headers.py` | `builtin_headers` | 100 | HTTP 头 `X-Session-Id`、`x-session-id`、`session_id` |
 | `plugin_metadata.py` | `builtin_metadata` | 200 | `body.metadata.user_id` — JSON `{"session_id":"..."}` 或旧格式 `session_<id>` |
 
+### 哪些 Agent 原生携带 Session ID
+
+| Agent | 注入方式 | 说明 |
+|-------|----------|------|
+| Claude Code | `x-session-id` header | 自动注入，无需额外配置 |
+| Codex CLI | `session_id` header | 自动注入，无需额外配置 |
+| opencode | — | 需要安装客户端插件（见下） |
+| OpenClaw | — | 需要安装客户端插件（见下） |
+
+### Agent 客户端插件（`agent-client-plugins/`）
+
+对于不会主动注入 session ID 的 Agent，本仓库在 `agent-client-plugins/` 目录下提供了对应的客户端插件。每个子目录是一个独立的插件包，安装到对应的 Agent 后，会在每次 LLM 请求中自动注入 `X-Session-Id`。
+
+子 Agent 的 session 归并同样已处理：当 Agent 通过 task 机制派生子 Agent 时（子 Agent 会获得一个新的 session ID），插件会沿 `parentID` 链向上追溯到根 session，并以根 session ID 作为 `X-Session-Id`，使整棵 Agent 树在 Inspector 中归入同一会话。
+
+| 目录 | 目标 Agent | 安装方式 |
+|------|-----------|---------|
+| `agent-client-plugins/opencode/` | [opencode](https://opencode.ai) | 在 `opencode.json` 的 `plugin` 字段中添加该目录路径 |
+| `agent-client-plugins/openclaw/` | OpenClaw | `openclaw plugins install /path/to/agent-client-plugins/openclaw` |
+
+具体安装步骤见各目录下的 `GUIDE.md`。
+
 ### 为自定义 Agent 添加插件
 
 1. 新建 `src/session_id_plugins/plugin_my_agent.py`：

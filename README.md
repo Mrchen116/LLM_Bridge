@@ -57,6 +57,7 @@ Think of it as an LLM gateway built specifically for agent systems:
 - Support both SSE streaming and non-stream passthrough
 - Optionally strip `- Explore:` lines from Task tool descriptions
 - Expose session logs and stats APIs, including token aggregation
+- Agent client plugins for agents that don't inject session IDs natively (opencode, OpenClaw) — see `agent-client-plugins/`
 - Built-in Session Inspector:
   - Multi-agent lane timeline view
   - Tool arguments and tool definition inspection (`name` / `description` / schema)
