@@ -257,24 +257,6 @@ def build_response_events(
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             message = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
 
-    content = str(message.get("content") or "") if isinstance(message, dict) else ""
-    if content:
-        events.append(
-            {
-                "event_id": f"{turn_ts}:assistant_text:0",
-                "ts": turn_ts,
-                "lane_id": lane_id,
-                "kind": "assistant_text",
-                "summary": truncate_text(content, summary_chars),
-                "detail": {"content": content},
-                "tool_name": None,
-                "tool_args": None,
-                "tool_def": None,
-                "turn_ts": turn_ts,
-                "format": downstream_format,
-            }
-        )
-
     reasoning = ""
     if isinstance(message, dict) and isinstance(message.get("reasoning_content"), str):
         reasoning = str(message.get("reasoning_content") or "")
@@ -287,6 +269,24 @@ def build_response_events(
                 "kind": "assistant_reasoning",
                 "summary": truncate_text(reasoning, summary_chars),
                 "detail": {"reasoning_content": reasoning},
+                "tool_name": None,
+                "tool_args": None,
+                "tool_def": None,
+                "turn_ts": turn_ts,
+                "format": downstream_format,
+            }
+        )
+
+    content = str(message.get("content") or "") if isinstance(message, dict) else ""
+    if content:
+        events.append(
+            {
+                "event_id": f"{turn_ts}:assistant_text:0",
+                "ts": turn_ts,
+                "lane_id": lane_id,
+                "kind": "assistant_text",
+                "summary": truncate_text(content, summary_chars),
+                "detail": {"content": content},
                 "tool_name": None,
                 "tool_args": None,
                 "tool_def": None,

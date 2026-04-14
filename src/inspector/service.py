@@ -1004,4 +1004,5 @@ def get_token_breakdown_for_event(
     return compute_token_breakdown(
         record.req_obj,
         total_input_tokens_from_api=total_input_tokens_from_api,
+        downstream_format=record.downstream_format,
     )

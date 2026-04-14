@@ -586,12 +586,16 @@ def compute_token_breakdown(
     req_obj: Dict[str, Any],
     *,
     total_input_tokens_from_api: Optional[int] = None,
+    downstream_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Compute a per-category token breakdown for a request object.
     The breakdown is estimated using tiktoken. The overall total may come from API usage.
     """
-    fmt = detect_token_format_from_request(req_obj)
+    if downstream_format in KNOWN_TOKEN_FORMATS:
+        fmt = str(downstream_format)
+    else:
+        fmt = detect_token_format_from_request(req_obj)
     if fmt == TOKEN_FORMAT_ANTHROPIC:
         raw = _breakdown_anthropic(req_obj)
     elif fmt == TOKEN_FORMAT_OPENAI_CHAT:

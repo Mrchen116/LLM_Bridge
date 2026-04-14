@@ -178,6 +178,110 @@ def test_session_inspector_log_file_endpoint(client: TestClient, monkeypatch):
     assert blocked.status_code == 400
 
 
+def test_session_inspector_reasoning_event_precedes_assistant_text(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-36-00_000_reasoning-order-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-36-00_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "请先思考再回答"}],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-36-00_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_reasoning_first",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "reasoning_content": "这是推理内容",
+                        "content": "这是最终回答",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    )
+
+    resp_timeline = client.get(
+        "/api/session-inspector/sessions/reasoning-order-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp_timeline.status_code == 200
+    payload = resp_timeline.json()
+    events = [ev for ev in payload["events"] if ev["turn_ts"] == "2026-02-22_12-36-00_001"]
+    kinds = [ev["kind"] for ev in events]
+    assert "assistant_reasoning" in kinds
+    assert "assistant_text" in kinds
+    assert kinds.index("assistant_reasoning") < kinds.index("assistant_text")
+
+
+def test_session_inspector_token_breakdown_counts_openai_chat_system_prompt(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-37-00_000_system-token-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-37-00_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "openai_compatible",
+            "model": "demo-model",
+            "messages": [
+                {"role": "system", "content": "你是代码助手。请先给出结构化分析。"},
+                {"role": "user", "content": "hi"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "description": "read file",
+                        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-37-00_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_system_tokens",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 123, "completion_tokens": 5, "total_tokens": 128},
+        },
+    )
+
+    resp_timeline = client.get(
+        "/api/session-inspector/sessions/system-token-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp_timeline.status_code == 200
+    timeline_payload = resp_timeline.json()
+    event_id = next(ev["event_id"] for ev in timeline_payload["events"] if ev["kind"] == "assistant_text")
+
+    resp_breakdown = client.get(
+        f"/api/session-inspector/sessions/system-token-session/events/{event_id}/token-breakdown"
+    )
+    assert resp_breakdown.status_code == 200
+    payload = resp_breakdown.json()
+    assert payload["breakdown"]["system_prompt"] > 0
+    assert payload["breakdown"]["tool_definitions"] > 0
+    assert payload["total_input_tokens"] == 123
+    assert payload["total_from_api"] is True
+
+
 def test_session_inspector_lane_grouping_uses_full_context(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
 
