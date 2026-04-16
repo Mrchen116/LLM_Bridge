@@ -1,35 +1,34 @@
-import type { Plugin, PluginInput, Hooks } from "@opencode-ai/plugin"
+import type { PluginInput, Hooks } from "@opencode-ai/plugin"
 
-export const id = "llm-bridge-session"
+const rootCache = new Map<string, string>()
 
-export const server: Plugin = async (input: PluginInput): Promise<Hooks> => {
-  // Cache: sessionID → root sessionID
-  // Prevents redundant API calls when the same session fires multiple LLM requests.
-  const rootCache = new Map<string, string>()
+async function resolveRootSessionId(input: PluginInput, sessionID: string): Promise<string> {
+  const cached = rootCache.get(sessionID)
+  if (cached !== undefined) return cached
 
-  async function resolveRootSessionId(sessionID: string): Promise<string> {
-    const cached = rootCache.get(sessionID)
-    if (cached !== undefined) return cached
-
-    try {
-      const result = await input.client.session.get({ path: { id: sessionID } })
-      const parentID = result.data?.parentID
-      if (parentID) {
-        const root = await resolveRootSessionId(parentID)
-        rootCache.set(sessionID, root)
-        return root
-      }
-    } catch {
-      // API unavailable or session not found — fall back to current sessionID.
+  try {
+    const result = await input.client.session.get({ path: { id: sessionID } })
+    const parentID = result.data?.parentID
+    if (parentID) {
+      const root = await resolveRootSessionId(input, parentID)
+      rootCache.set(sessionID, root)
+      return root
     }
-
-    rootCache.set(sessionID, sessionID)
-    return sessionID
+  } catch {
+    // API unavailable or session not found — fall back to current sessionID.
   }
 
-  return {
-    "chat.headers": async (hookInput, output) => {
-      output.headers["X-Session-Id"] = await resolveRootSessionId(hookInput.sessionID)
-    },
-  }
+  rootCache.set(sessionID, sessionID)
+  return sessionID
+}
+
+export default {
+  id: "llm-bridge-session",
+  server: async (input: PluginInput): Promise<Hooks> => {
+    return {
+      "chat.headers": async (hookInput, output) => {
+        output.headers["X-Session-Id"] = await resolveRootSessionId(input, hookInput.sessionID)
+      },
+    }
+  },
 }
