@@ -43,12 +43,22 @@ opencode/
 
 ## 安装
 
-在 opencode 的配置文件（`~/.config/opencode/config.json` 或项目级 `opencode.json`）中添加插件路径：
+在 opencode 的配置文件（`~/.config/opencode/opencode.json` 或项目级 `opencode.json`）中添加插件路径：
 
 ```json
 {
   "plugin": [
-    "/path/to/agent-client-plugins/opencode"
+    "file:///path/to/agent-client-plugins/opencode"
+  ]
+}
+```
+
+Windows 示例：
+
+```json
+{
+  "plugin": [
+    "file:///C:/Users/xxx/path/to/agent-client-plugins/opencode"
   ]
 }
 ```
