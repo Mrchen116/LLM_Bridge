@@ -65,6 +65,101 @@ Windows 示例：
 
 重启 opencode 后生效。
 
+## 模型配置
+
+本插件的作用是在请求到达 LLM_Bridge 时注入 session header。**前提是所有 agent 的 LLM 请求都必须经过 LLM_Bridge**。
+
+### 基本配置
+
+opencode 支持两种方式将请求转发给 LLM_Bridge，取决于你的 LLM_Bridge 对外暴露的 API 格式。
+
+#### 方式一：OpenAI-compatible 格式
+
+LLM_Bridge 对外提供 OpenAI 兼容接口（`/v1/chat/completions`）时，使用自定义 provider：
+
+```json
+{
+  "provider": {
+    "my_bridge": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LLM Bridge",
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "opencode"
+      },
+      "models": {
+        "my-model": { "name": "My Model" }
+      }
+    }
+  },
+  "model": "my_bridge/my-model"
+}
+```
+
+oh-my-openagent 中对应写法：`"model": "my_bridge/my-model"`
+
+#### 方式二：Anthropic 格式
+
+LLM_Bridge 对外提供 Anthropic 兼容接口（`/v1/messages`）时，覆盖内置 `anthropic` provider 的 `baseURL`：
+
+```json
+{
+  "provider": {
+    "anthropic": {
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "opencode"
+      },
+      "models": {
+        "my-model": { "name": "My Model" }
+      }
+    }
+  },
+  "model": "anthropic/my-model"
+}
+```
+
+oh-my-openagent 中对应写法：`"model": "anthropic/my-model"`
+
+> **注意**：两种方式的 `providerID` 不同——前者是你自定义的名称（如 `my_bridge`），后者固定为 `anthropic`。oh-my-openagent 的 model 字段必须与此保持一致，否则子 agent 会回退到内置 provider 绕过 LLM_Bridge。
+
+### 使用 oh-my-opencode / oh-my-openagent
+
+oh-my-opencode（oh-my-openagent）为每个 agent 单独指定模型。若配置不当，子 agent 会使用内置的 `opencode` provider（如 `opencode/gpt-5-nano`），**完全绕过 LLM_Bridge**，导致子 agent 的请求没有日志。
+
+#### 正确配置方式
+
+在 `oh-my-opencode.json` / `oh-my-openagent.json` 中，agent 的 `model` 字段必须使用 `providerID/modelID` 的完整格式，其中 `providerID` 是你在 opencode 里指向 LLM_Bridge 的 provider 名称：
+
+```json
+{
+  "agents": {
+    "sisyphus": { "model": "my_bridge/my-model" },
+    "explore":  { "model": "my_bridge/my-model" },
+    "oracle":   { "model": "my_bridge/my-model" }
+  },
+  "categories": {
+    "quick":    { "model": "my_bridge/my-model" },
+    "deep":     { "model": "my_bridge/my-model" }
+  }
+}
+```
+
+#### 常见错误
+
+| 写法 | 结果 |
+|------|------|
+| `"opencode/gpt-5-nano"` | 走内置 provider，**绕过 LLM_Bridge**，无日志 |
+| `"my-model"` | 格式缺少 provider 前缀，解析失败后回退到内置 provider |
+| `"my_bridge/my-model"` | 正确，走 LLM_Bridge ✓ |
+
+#### 验证方式
+
+重启 opencode 并触发一次带子 agent 的对话，检查 LLM_Bridge 日志目录：
+
+- 若子 agent 的请求出现在**主 session 的同一文件夹**下 → 配置正确
+- 若子 agent 的请求**不存在任何日志** → agent 使用了绕过 LLM_Bridge 的 provider
+
 ## LLM_Bridge 侧
 
 LLM_Bridge 内置的 `HeadersPlugin`（`src/session_id_plugins/plugin_headers.py`）已支持提取 `X-Session-Id`，**无需额外修改**。
@@ -73,3 +168,4 @@ LLM_Bridge 内置的 `HeadersPlugin`（`src/session_id_plugins/plugin_headers.py
 
 - 若 opencode 的 session API 不可达（极少发生），插件会降级为使用当前 `sessionID`，不影响正常功能
 - 插件对所有 provider 均生效，不限于 LLM_Bridge
+- **子 agent 的请求必须走同一 LLM_Bridge provider**，否则 session 归并无意义；请确保所有 oh-my-opencode agent 的 model 均使用 `providerID/modelID` 完整格式
