@@ -40,9 +40,53 @@
           "trustEnv": true
         }
       },
+      "kimiCoding": {
+        "provider": "anthropic",
+        "baseUrl": "https://api.kimi.com/coding",
+        "auth": {
+          "apiKeyEnv": "KIMI_CODING_API_KEY"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages"
+          ]
+        },
+        "defaults": {
+          "model": "kimi-coding",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      },
+      "volcanoArk": {
+        "provider": "openai_compatible",
+        "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+        "auth": {
+          "apiKeyEnv": "ARK_API_KEY"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages",
+            "openai_chat"
+          ]
+        },
+        "defaults": {
+          "model": "doubao-seed-2-0-code-preview-260215",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      },
       "codexOAuth": {
         "provider": "codex_oauth",
         "baseUrl": "https://api.openai.com/v1",
+        "auth": {
+          "accountPoolPolicy": {
+            "maxFailoverPerRequest": 10
+          }
+        },
         "features": {
           "enableRequestCompression": true
         },
