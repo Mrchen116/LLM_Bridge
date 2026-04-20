@@ -15,7 +15,7 @@ from src.inspector.service import (
     get_token_breakdown_for_event,
     list_sessions,
 )
-from src.observability.token_stats import count_text_tokens
+from src.observability.token_stats import count_text_tokens, count_text_tokens_no_images
 
 
 ROUTER = APIRouter(tags=["session-inspector"])
@@ -194,4 +194,4 @@ async def session_inspector_keyword_presets_update(payload: dict):
 @ROUTER.post("/api/session-inspector/text-token-count")
 async def session_inspector_text_token_count(payload: dict):
     _require_enabled()
-    return {"tokens": count_text_tokens(payload.get("text"))}
+    return {"tokens": count_text_tokens_no_images(payload.get("text"))}

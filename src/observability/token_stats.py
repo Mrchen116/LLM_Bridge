@@ -80,6 +80,12 @@ def count_text_tokens(text: Any) -> int:
     return _count_text_tokens(text)
 
 
+def count_text_tokens_no_images(text: Any) -> int:
+    """Count tokens after stripping base64 image data."""
+    toks, _had = _count_text_tokens_no_images(text)
+    return toks
+
+
 def _count_text_tokens_no_images(text: Any) -> Tuple[int, bool]:
     """Count tokens after stripping base64 image data. Returns (count, had_images)."""
     if text is None:

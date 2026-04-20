@@ -237,10 +237,62 @@ function formatCompressedToolResultPlaceholder(path: string, startLine: number, 
   return `[compressed tool result] ${getFileName(path)}:${startLine}-${endLine} (${lineCount} lines)`
 }
 
+function formatBytes(chars: number): string {
+  if (chars >= 1_000_000) {
+    return `${(chars / 1_000_000).toFixed(2)}MB`
+  }
+  if (chars >= 1_000) {
+    return `${(chars / 1_000).toFixed(1)}KB`
+  }
+  return `${chars}B`
+}
+
+function replaceImageBlocks(value: unknown): [unknown, boolean] {
+  if (typeof value !== 'object' || value === null) {
+    return [value, false]
+  }
+  if (Array.isArray(value)) {
+    let replacedAny = false
+    const newArr = value.map((item) => {
+      const [replaced, didReplace] = replaceImageBlocks(item)
+      if (didReplace) replacedAny = true
+      return replaced
+    })
+    return [newArr, replacedAny]
+  }
+  const obj = value as Record<string, unknown>
+  if (obj.type === 'image' && isObjectRecord(obj.source)) {
+    const src = obj.source as Record<string, unknown>
+    const data = typeof src.data === 'string' ? src.data : ''
+    if (data.length > 0) {
+      const placeholder = `[image: ${formatBytes(data.length)} base64 data]`
+      return [
+        {
+          ...obj,
+          source: {
+            ...src,
+            data: placeholder,
+          },
+        },
+        true,
+      ]
+    }
+  }
+  let replacedAny = false
+  const newObj: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(obj)) {
+    const [replaced, didReplace] = replaceImageBlocks(v)
+    newObj[k] = replaced
+    if (didReplace) replacedAny = true
+  }
+  return [newObj, replacedAny]
+}
+
 function formatCompressedRequestCopyNote(
   thresholdTokens: number,
   requestAbsolutePath: string,
   nonStreamAbsolutePath?: string | null,
+  hasImages?: boolean,
 ): string {
   const lines = [
     '',
@@ -252,10 +304,16 @@ function formatCompressedRequestCopyNote(
     lines.push(`[Note] [non-stream-res] absolute path: ${nonStreamAbsolutePath}`)
   }
   lines.push(
-    '[Note] Some tool results were compressed because a single tool result exceeded '
-      + `${thresholdTokens} tokens.`
+    '[Note] Some tool results were compressed in this copied text because a single tool result exceeded '
+      + `${thresholdTokens} tokens. The original agent saw the full, uncompressed results.`
   )
-  lines.push('[Note] If you need a compressed tool result, you must read only the exact referenced line range in [request].')
+  lines.push(
+    "[Note] The compression exists only to reduce noise for trajectory analysis. Including the full uncompressed tool outputs here would add too much irrelevant context and make it harder to analyze how the agent actually operated from start to finish."
+  )
+  if (hasImages) {
+    lines.push('[Note] Image base64 data was replaced with placeholders in this copied text. The original agent saw the full image data.')
+  }
+  lines.push('[Note] If you need a compressed tool result, read only the exact referenced line range in [request]. Do not widen the range.')
   lines.push('[Note] Do not widen the line range. Do not read the full file. Do not read a broader surrounding block.')
   return lines.join('\n')
 }
@@ -299,10 +357,10 @@ async function buildCompressedRequestCopyText(
     return sections.join('\n\n')
   }
 
-  let requestOutput = JSON.stringify(parsedRequest, null, 0)
-  if (!Array.isArray(compression.compressed_items) || compression.compressed_items.length === 0) {
-    requestOutput = JSON.stringify(parsedRequest, null, 0)
-  } else {
+  const [requestWithImagePlaceholders, hasImages] = replaceImageBlocks(parsedRequest)
+
+  let requestOutput = JSON.stringify(requestWithImagePlaceholders, null, 0)
+  if (Array.isArray(compression.compressed_items) && compression.compressed_items.length > 0) {
     const sourceMapModule = (await import('json-source-map')) as RequestCopyJsonSourceMapModule
     const pointerMap = sourceMapModule.parse(requestContent).pointers
     for (const item of compression.compressed_items) {
@@ -310,10 +368,10 @@ async function buildCompressedRequestCopyText(
       const startLine = (loc?.value?.line ?? 0) + 1
       const endLine = (loc?.valueEnd?.line ?? loc?.value?.line ?? 0) + 1
       const replacement = formatCompressedToolResultPlaceholder(logFile.path, startLine, endLine)
-      setJsonValueByPointer(parsedRequest, item.pointer, replacement)
+      setJsonValueByPointer(requestWithImagePlaceholders, item.pointer, replacement)
     }
 
-    requestOutput = JSON.stringify(parsedRequest, null, 0)
+    requestOutput = JSON.stringify(requestWithImagePlaceholders, null, 0)
   }
 
   const sections = [formatCopySection('request', requestOutput)]
@@ -326,6 +384,7 @@ async function buildCompressedRequestCopyText(
       compression.threshold_tokens,
       compression.request_absolute_path,
       compression.non_stream_response_absolute_path,
+      hasImages,
     ),
   )
   return sections.join('\n\n')
