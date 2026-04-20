@@ -215,6 +215,8 @@ Running the service creates logs under:
 - `logs/session/`: per-session turn logs used by Session Inspector
 - `logs/raw/`: raw request/response/header captures, grouped by bucket such as `anthropic`, `openai_chat`, and `openai_codex`
 
+Old logs are cleaned automatically on an hourly cadence. Set `LOG_RETENTION_DAYS` (default 7) to adjust how long they are kept.
+
 ## Tests
 
 ```bash

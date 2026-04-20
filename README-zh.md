@@ -207,6 +207,8 @@ npm run build
 - `logs/session/`：按会话聚合的 turn 日志，供 Session Inspector 使用
 - `logs/raw/`：原始请求、上游请求、响应和 headers 落盘，按 bucket 分组，例如 `anthropic`、`openai_chat`、`openai_codex`
 
+旧日志每小时自动清理一次，保留时长可通过 `LOG_RETENTION_DAYS` 调整（默认 7 天）。
+
 ## 测试
 
 ```bash

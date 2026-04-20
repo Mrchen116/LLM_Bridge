@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from proxy_logging import _discard_session_req, _dump_json
 
+from src.observability.log_cleanup import maybe_cleanup_logs
+
 DOWNSTREAM_FORMAT_ANTHROPIC_MESSAGES = "anthropic_messages"
 DOWNSTREAM_FORMAT_OPENAI_CHAT = "openai_chat"
 DOWNSTREAM_FORMAT_OPENAI_RESPONSES = "openai_responses"
@@ -74,6 +76,7 @@ def build_turn_log_paths(
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
     raw_dir = os.path.join(logs_raw_dir, raw_bucket)
     os.makedirs(raw_dir, exist_ok=True)
+    maybe_cleanup_logs(logs_raw_dir, logs_session_dir)
 
     def raw_file(kind: str) -> str:
         return os.path.join(raw_dir, f"{ts}-{kind}-{downstream_format}.json")
