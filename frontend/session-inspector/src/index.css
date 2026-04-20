@@ -1293,12 +1293,46 @@ select {
   background: #f5f8fc;
 }
 
-.raw-json-pre {
-  margin: 0;
+.file-viewer-raw-text {
+  background: #f5f8fc;
+}
+
+.line-numbered-code {
   min-width: max-content;
+  padding: 10px 0;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre;
   word-break: normal;
+}
+
+.line-numbered-code-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: start;
+}
+
+.line-numbered-code-gutter {
+  padding: 0 10px 0 12px;
+  color: #8a9caf;
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid var(--border-soft);
+}
+
+.line-numbered-code-text {
+  padding: 0 12px;
+  color: #314355;
+}
+
+.raw-json-pre {
+  margin: 0;
   overflow: visible;
+}
+
+.file-viewer-plain-text {
+  margin: 0;
 }
 
 .json-sticky-path {

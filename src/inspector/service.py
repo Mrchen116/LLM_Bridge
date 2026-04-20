@@ -29,7 +29,11 @@ from src.inspector.files import (
 )
 from src.inspector.grouping import AssignedLane, TurnLaneInput, assign_lanes, lane_sort_key
 from src.inspector.types import Lane, SessionSummary, TimelineEvent, session_summary_to_dict
-from src.observability.token_stats import collect_usage_tokens_for_stats, compute_token_breakdown
+from src.observability.token_stats import (
+    collect_usage_tokens_for_stats,
+    compute_token_breakdown,
+    list_compressible_tool_results,
+)
 
 
 @dataclass(frozen=True)
@@ -992,3 +996,47 @@ def get_token_breakdown_for_event(
         total_input_tokens_from_api=total_input_tokens_from_api,
         downstream_format=record.downstream_format,
     )
+
+
+def get_request_copy_compression_for_event(
+    *,
+    logs_session_dir: str,
+    session_id: str,
+    event_id: str,
+    threshold_tokens: int,
+) -> Optional[Dict[str, Any]]:
+    session_dir = _resolve_session_dir(logs_session_dir, session_id)
+    if not session_dir:
+        return None
+
+    bundle, _ = _get_raw_timeline_bundle(session_dir=session_dir, summary_chars=120)
+
+    turn_ts: Optional[str] = None
+    for raw_event in bundle.raw_events:
+        if str(raw_event.get("event_id") or "") == event_id:
+            turn_ts = str(raw_event.get("turn_ts") or "")
+            break
+
+    if not turn_ts:
+        return None
+
+    record: Optional[_TurnRecord] = None
+    for rec in bundle.records:
+        if rec.ts == turn_ts:
+            record = rec
+            break
+
+    if not record:
+        return None
+
+    return {
+        "request_path": record.req_file,
+        "request_absolute_path": str((Path.cwd() / record.req_file).resolve()),
+        "threshold_tokens": threshold_tokens,
+        "format": record.downstream_format,
+        "compressed_items": list_compressible_tool_results(
+            record.req_obj,
+            threshold_tokens=threshold_tokens,
+            downstream_format=record.downstream_format,
+        ),
+    }

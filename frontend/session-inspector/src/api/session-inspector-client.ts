@@ -1,6 +1,7 @@
 import type {
   KeywordPresetsResponse,
   LogFileContentResponse,
+  RequestCopyCompressionResponse,
   SessionsResponse,
   TimelineEventDetailResponse,
   TimelineResponse,
@@ -40,6 +41,24 @@ async function requestJson<T>(url: string): Promise<T> {
 }
 
 async function requestJsonWithBody<T>(url: string, method: 'PUT', body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method,
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || `HTTP ${response.status}`)
+  }
+
+  return (await response.json()) as T
+}
+
+async function requestJsonWithAnyBody<T>(url: string, method: 'POST', body: unknown): Promise<T> {
   const response = await fetch(url, {
     method,
     headers: {
@@ -126,10 +145,29 @@ export async function fetchTokenBreakdown(
   )
 }
 
+export async function fetchRequestCopyCompression(
+  sessionId: string,
+  eventId: string,
+  thresholdTokens = 500,
+): Promise<RequestCopyCompressionResponse> {
+  const params = new URLSearchParams()
+  params.set('threshold_tokens', String(thresholdTokens))
+  return requestJson<RequestCopyCompressionResponse>(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}/request-copy-compression?${params.toString()}`,
+  )
+}
+
 export async function fetchKeywordPresets(): Promise<KeywordPresetsResponse> {
   return requestJson<KeywordPresetsResponse>(`${API_BASE}/keyword-presets`)
 }
 
 export async function saveKeywordPresets(payload: KeywordPresetsResponse): Promise<KeywordPresetsResponse> {
   return requestJsonWithBody<KeywordPresetsResponse>(`${API_BASE}/keyword-presets`, 'PUT', payload)
+}
+
+export async function fetchTextTokenCount(text: string): Promise<number> {
+  const payload = await requestJsonWithAnyBody<{ tokens: number }>(`${API_BASE}/text-token-count`, 'POST', {
+    text,
+  })
+  return Number(payload.tokens || 0)
 }

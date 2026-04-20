@@ -165,3 +165,17 @@ export interface TokenBreakdownResponse {
   has_encrypted_reasoning: boolean
   has_uncountable_image_content: boolean
 }
+
+export interface RequestCopyCompressedItem {
+  pointer: string
+  tool_name: string
+  tokens: number
+}
+
+export interface RequestCopyCompressionResponse {
+  request_path: string
+  request_absolute_path: string
+  threshold_tokens: number
+  format: string
+  compressed_items: RequestCopyCompressedItem[]
+}

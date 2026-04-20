@@ -3,15 +3,19 @@ import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
-import type { TimelineEvent, ToolDefinition } from '../../api/contracts'
-import { fetchLogFileContent, fetchTimelineEventDetail, fetchTokenBreakdown } from '../../api/session-inspector-client'
-import type { TokenBreakdownResponse } from '../../api/contracts'
+import type {
+  TimelineEvent,
+  ToolDefinition,
+  TokenBreakdownResponse,
+} from '../../api/contracts'
 import {
-  extractEventMainText,
-  formatCodeValue,
-  normalizeEscapedText,
-  normalizeReadableText,
-} from '../../lib/event-display'
+  fetchTextTokenCount,
+  fetchLogFileContent,
+  fetchRequestCopyCompression,
+  fetchTimelineEventDetail,
+  fetchTokenBreakdown,
+} from '../../api/session-inspector-client'
+import { extractEventMainText, formatCodeValue, normalizeEscapedText, normalizeReadableText } from '../../lib/event-display'
 
 interface DetailPanelProps {
   event: TimelineEvent | null
@@ -59,6 +63,12 @@ type JsonSourceMapLoc = {
 type JsonSourceMapPointer = {
   value?: JsonSourceMapLoc
   valueEnd?: JsonSourceMapLoc
+}
+
+type RequestCopyJsonSourceMapModule = {
+  parse: (source: string) => {
+    pointers: Record<string, JsonSourceMapPointer>
+  }
 }
 
 type RawJsonPathEntry = {
@@ -166,6 +176,115 @@ function jsonPointerToSegments(pointer: string): string[] {
     .map((segment) => decodeJsonPointerSegment(segment))
 }
 
+function decodeJsonPointerToken(token: string): string {
+  return token.replace(/~1/g, '/').replace(/~0/g, '~')
+}
+
+function setJsonValueByPointer(target: unknown, pointer: string, value: unknown): boolean {
+  if (!pointer.startsWith('/')) {
+    return false
+  }
+
+  const segments = pointer
+    .split('/')
+    .slice(1)
+    .map((segment) => decodeJsonPointerToken(segment))
+  if (segments.length === 0) {
+    return false
+  }
+
+  let current = target
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const segment = segments[index]
+    if (Array.isArray(current)) {
+      const itemIndex = Number(segment)
+      if (!Number.isInteger(itemIndex)) {
+        return false
+      }
+      current = current[itemIndex]
+      continue
+    }
+    if (!isObjectRecord(current)) {
+      return false
+    }
+    current = current[segment]
+  }
+
+  const lastSegment = segments[segments.length - 1]
+  if (Array.isArray(current)) {
+    const itemIndex = Number(lastSegment)
+    if (!Number.isInteger(itemIndex)) {
+      return false
+    }
+    current[itemIndex] = value
+    return true
+  }
+  if (!isObjectRecord(current)) {
+    return false
+  }
+  current[lastSegment] = value
+  return true
+}
+
+function getFileName(path: string): string {
+  const normalized = path.replace(/\\/g, '/')
+  const parts = normalized.split('/')
+  return parts[parts.length - 1] || path
+}
+
+function formatCompressedToolResultPlaceholder(path: string, startLine: number, endLine: number): string {
+  const lineCount = Math.max(1, endLine - startLine + 1)
+  return `[compressed tool result] ${getFileName(path)}:${startLine}-${endLine} (${lineCount} lines)`
+}
+
+function formatCompressedRequestCopyNote(thresholdTokens: number, absolutePath: string): string {
+  return [
+    '',
+    '[Note] Some tool results were compressed because a single tool result exceeded '
+      + `${thresholdTokens} tokens.`,
+    '[Note] Do not read the full request file. You must read only the referenced line range(s) on demand to understand the original content.',
+    `[Note] Request log absolute path: ${absolutePath}`,
+  ].join('\n')
+}
+
+async function buildCompressedRequestCopyText(
+  sessionId: string,
+  eventId: string,
+): Promise<string> {
+  const compression = await fetchRequestCopyCompression(sessionId, eventId, 500)
+  const logFile = await fetchLogFileContent(compression.request_path)
+  const requestContent = logFile.content
+
+  let parsedRequest: unknown
+  try {
+    parsedRequest = JSON.parse(requestContent)
+  } catch {
+    return requestContent
+  }
+
+  if (!Array.isArray(compression.compressed_items) || compression.compressed_items.length === 0) {
+    return JSON.stringify(parsedRequest, null, 0)
+  }
+
+  const sourceMapModule = (await import('json-source-map')) as RequestCopyJsonSourceMapModule
+  const pointerMap = sourceMapModule.parse(requestContent).pointers
+  let replacedAny = false
+  for (const item of compression.compressed_items) {
+    const loc = pointerMap[item.pointer]
+    const startLine = (loc?.value?.line ?? 0) + 1
+    const endLine = (loc?.valueEnd?.line ?? loc?.value?.line ?? 0) + 1
+    const replacement = formatCompressedToolResultPlaceholder(logFile.path, startLine, endLine)
+    if (setJsonValueByPointer(parsedRequest, item.pointer, replacement)) {
+      replacedAny = true
+    }
+  }
+
+  const compactJson = JSON.stringify(parsedRequest, null, 0)
+  return replacedAny
+    ? compactJson + formatCompressedRequestCopyNote(compression.threshold_tokens, compression.request_absolute_path)
+    : compactJson
+}
+
 function getJsonValueBySegments(data: unknown, segments: string[]): unknown {
   let current = data
   for (const segment of segments) {
@@ -208,9 +327,34 @@ function arePathSegmentsEqual(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
+function LineNumberedCodeBlock({
+  content,
+  className,
+  contentRef,
+}: {
+  content: string
+  className?: string
+  contentRef?: React.RefObject<HTMLDivElement | null>
+}) {
+  const lines = content.replace(/\r\n/g, '\n').split('\n')
+
+  return (
+    <div className={`line-numbered-code${className ? ` ${className}` : ''}`} ref={contentRef}>
+      {lines.map((line, index) => (
+        <div className="line-numbered-code-row" key={`line-${index + 1}`}>
+          <span className="line-numbered-code-gutter" aria-hidden="true">
+            {index + 1}
+          </span>
+          <span className="line-numbered-code-text">{line.length > 0 ? line : ' '}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function RawJsonViewer({ content, data }: { content: string; data: JsonTreeData | null }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const preRef = useRef<HTMLPreElement | null>(null)
+  const preRef = useRef<HTMLDivElement | null>(null)
   const stickyRef = useRef<HTMLDivElement | null>(null)
   const pathEntriesRef = useRef<RawJsonPathEntry[]>([])
   const [stickyPathSegments, setStickyPathSegments] = useState<string[]>([])
@@ -345,9 +489,7 @@ function RawJsonViewer({ content, data }: { content: string; data: JsonTreeData 
           ))}
         </div>
       ) : null}
-      <pre className="code raw-json-pre" ref={preRef}>
-        {content}
-      </pre>
+      <LineNumberedCodeBlock content={content} className="raw-json-pre" contentRef={preRef} />
     </div>
   )
 }
@@ -519,7 +661,7 @@ function DetailBlock({
   value: unknown
   variant: BlockVariant
   copyLabel: string
-  copied: boolean
+  copied: string
   onCopy: (text: string) => void
 }) {
   const copyText = formatCopyValue(value)
@@ -530,7 +672,7 @@ function DetailBlock({
       <div className="detail-block-head">
         <div className="detail-title">{title}</div>
         <button className="code-copy" type="button" onClick={() => onCopy(copyText)}>
-          {copied ? '已复制' : copyLabel}
+          {copied || copyLabel}
         </button>
       </div>
       {variant === 'markdown' ? (
@@ -556,8 +698,8 @@ function SourceFilesBlock({
   onView,
 }: {
   sourceFiles: TimelineEvent['source_files']
-  copied: boolean
-  onCopy: (text: string) => void
+  copied: string
+  onCopy: () => void
   onView: (path: string) => void
 }) {
   const rows = [
@@ -571,16 +713,13 @@ function SourceFilesBlock({
     const value = sourceFiles?.[row.key]
     return typeof value === 'string' && value.trim().length > 0
   })
-  const copyPayload = availableRows
-    .map((row) => `${row.key}: ${String(sourceFiles?.[row.key] ?? '')}`)
-    .join('\n')
 
   return (
     <div className="detail-block">
       <div className="detail-block-head">
         <div className="detail-title">日志文件</div>
-        <button className="code-copy" type="button" onClick={() => onCopy(copyPayload)}>
-          {copied ? '已复制' : '复制'}
+        <button className="code-copy" type="button" onClick={onCopy}>
+          {copied || '复制压缩日志'}
         </button>
       </div>
       {availableRows.length > 0 ? (
@@ -806,7 +945,7 @@ function extractToolDefinitionFields(toolDef: ToolDefinition | null | undefined)
 }
 
 export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProps) {
-  const [copiedKey, setCopiedKey] = useState('')
+  const [copiedState, setCopiedState] = useState<{ key: string; label: string }>({ key: '', label: '' })
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerPath, setViewerPath] = useState('')
   const [viewerContent, setViewerContent] = useState('')
@@ -833,13 +972,13 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
   }, [viewerContent, viewerMode])
 
   useEffect(() => {
-    if (!copiedKey) {
+    if (!copiedState.key) {
       return
     }
 
-    const timer = window.setTimeout(() => setCopiedKey(''), 1200)
+    const timer = window.setTimeout(() => setCopiedState({ key: '', label: '' }), 3000)
     return () => window.clearTimeout(timer)
-  }, [copiedKey])
+  }, [copiedState.key])
 
   useEffect(() => {
     if (!viewerOpen) {
@@ -897,10 +1036,35 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
 
   const onCopy = async (key: string, text: string) => {
     try {
-      await navigator.clipboard.writeText(text)
-      setCopiedKey(key)
+      const [, tokens] = await Promise.all([
+        navigator.clipboard.writeText(text),
+        fetchTextTokenCount(text).catch(() => 0),
+      ])
+      setCopiedState({
+        key,
+        label: tokens > 0 ? `已复制 ${tokens} tokens` : '已复制',
+      })
     } catch {
-      setCopiedKey('')
+      setCopiedState({ key: '', label: '' })
+    }
+  }
+
+  const onCopyCompressedRequest = async () => {
+    if (!displayEvent || !sessionId) {
+      return
+    }
+    try {
+      const text = await buildCompressedRequestCopyText(sessionId, displayEvent.event_id)
+      const [, tokens] = await Promise.all([
+        navigator.clipboard.writeText(text),
+        fetchTextTokenCount(text).catch(() => 0),
+      ])
+      setCopiedState({
+        key: 'source_files',
+        label: tokens > 0 ? `已复制 ${tokens} tokens` : '已复制',
+      })
+    } catch {
+      setCopiedState({ key: '', label: '' })
     }
   }
 
@@ -959,7 +1123,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                 value={`${displayEvent.kind} · ${displayEvent.ts}`}
                 variant="text"
                 copyLabel="复制"
-                copied={copiedKey === 'kind'}
+                copied={copiedState.key === 'kind' ? copiedState.label : ''}
                 onCopy={(text) => void onCopy('kind', text)}
               />
               <DetailBlock
@@ -967,7 +1131,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                 value={displayEvent.summary || ''}
                 variant="text"
                 copyLabel="复制"
-                copied={copiedKey === 'summary'}
+                copied={copiedState.key === 'summary' ? copiedState.label : ''}
                 onCopy={(text) => void onCopy('summary', text)}
               />
               <DetailBlock
@@ -975,13 +1139,13 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                 value={mainText}
                 variant={displayEvent.kind === 'assistant_text' ? 'markdown' : 'text'}
                 copyLabel="复制"
-                copied={copiedKey === 'main_text'}
+                copied={copiedState.key === 'main_text' ? copiedState.label : ''}
                 onCopy={(text) => void onCopy('main_text', text)}
               />
               <SourceFilesBlock
                 sourceFiles={displayEvent.source_files}
-                copied={copiedKey === 'source_files'}
-                onCopy={(text) => void onCopy('source_files', text)}
+                copied={copiedState.key === 'source_files' ? copiedState.label : ''}
+                onCopy={() => void onCopyCompressedRequest()}
                 onView={onViewSourceFile}
               />
 
@@ -992,7 +1156,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                     value={displayEvent.tool_name || ''}
                     variant="text"
                     copyLabel="复制"
-                    copied={copiedKey === 'tool_name'}
+                    copied={copiedState.key === 'tool_name' ? copiedState.label : ''}
                     onCopy={(text) => void onCopy('tool_name', text)}
                   />
                   <DetailBlock
@@ -1000,7 +1164,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                     value={displayEvent.tool_args ?? {}}
                     variant="code"
                     copyLabel="复制"
-                    copied={copiedKey === 'tool_args'}
+                    copied={copiedState.key === 'tool_args' ? copiedState.label : ''}
                     onCopy={(text) => void onCopy('tool_args', text)}
                   />
                   {displayEvent.tool_def ? (
@@ -1010,7 +1174,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                         value={toolDefFields.name}
                         variant="text"
                         copyLabel="复制"
-                        copied={copiedKey === 'tool_def_name'}
+                        copied={copiedState.key === 'tool_def_name' ? copiedState.label : ''}
                         onCopy={(text) => void onCopy('tool_def_name', text)}
                       />
                       <DetailBlock
@@ -1018,7 +1182,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                         value={toolDefFields.description}
                         variant="markdown"
                         copyLabel="复制"
-                        copied={copiedKey === 'tool_def_description'}
+                        copied={copiedState.key === 'tool_def_description' ? copiedState.label : ''}
                         onCopy={(text) => void onCopy('tool_def_description', text)}
                       />
                       <DetailBlock
@@ -1026,7 +1190,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                         value={toolDefFields.parameters}
                         variant="code"
                         copyLabel="复制"
-                        copied={copiedKey === 'tool_def_parameters'}
+                        copied={copiedState.key === 'tool_def_parameters' ? copiedState.label : ''}
                         onCopy={(text) => void onCopy('tool_def_parameters', text)}
                       />
                     </>
@@ -1043,7 +1207,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                   value={displayEvent}
                   variant="code"
                   copyLabel="复制"
-                  copied={copiedKey === 'full'}
+                  copied={copiedState.key === 'full' ? copiedState.label : ''}
                   onCopy={(text) => void onCopy('full', text)}
                 />
               </details>
@@ -1090,7 +1254,9 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
               ) : viewerJsonData ? (
                 <JsonTreeViewer data={viewerJsonData} mode={viewerMode} />
               ) : (
-                <pre className="code file-viewer-content">{viewerDisplayContent}</pre>
+                <div className="file-viewer-content file-viewer-raw-text">
+                  <LineNumberedCodeBlock content={viewerDisplayContent} className="file-viewer-plain-text" />
+                </div>
               )
             ) : null}
             {!viewerLoading && !viewerError && !viewerJsonData && viewerContent.trim() ? (

@@ -329,6 +329,84 @@ def test_session_inspector_token_breakdown_counts_openai_chat_system_prompt(clie
     assert payload["total_from_api"] is True
 
 
+def test_session_inspector_request_copy_compression_marks_large_tool_results(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-38-00_000_copy-compression-session"
+    large_tool_output = "x " * 700
+
+    _write_json(
+        session_dir / "2026-02-22_12-38-00_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "openai_compatible",
+            "model": "demo-model",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_large",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": '{"command":"pwd"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_large",
+                    "content": large_tool_output,
+                },
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-38-00_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_copy_compression",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55},
+        },
+    )
+
+    resp_timeline = client.get(
+        "/api/session-inspector/sessions/copy-compression-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp_timeline.status_code == 200
+    timeline_payload = resp_timeline.json()
+    event_id = next(ev["event_id"] for ev in timeline_payload["events"] if ev["kind"] == "tool_result")
+
+    resp_compression = client.get(
+        f"/api/session-inspector/sessions/copy-compression-session/events/{event_id}/request-copy-compression",
+        params={"threshold_tokens": 500},
+    )
+    assert resp_compression.status_code == 200
+    payload = resp_compression.json()
+    assert payload["request_path"].endswith("2026-02-22_12-38-00_001-req-openai_chat.json")
+    assert payload["request_absolute_path"].endswith("2026-02-22_12-38-00_001-req-openai_chat.json")
+    assert payload["threshold_tokens"] == 500
+    assert payload["format"] == "openai_chat"
+    assert payload["compressed_items"] == [
+        {
+            "pointer": "/messages/2/content",
+            "tool_name": "bash",
+            "tokens": payload["compressed_items"][0]["tokens"],
+        }
+    ]
+    assert payload["compressed_items"][0]["tokens"] > 500
+
+
 def test_session_inspector_lane_grouping_uses_full_context(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
 

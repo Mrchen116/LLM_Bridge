@@ -76,6 +76,10 @@ def _count_text_tokens(text: Any) -> int:
     return len(_get_encoder().encode(text))
 
 
+def count_text_tokens(text: Any) -> int:
+    return _count_text_tokens(text)
+
+
 def _count_text_tokens_no_images(text: Any) -> Tuple[int, bool]:
     """Count tokens after stripping base64 image data. Returns (count, had_images)."""
     if text is None:
@@ -654,6 +658,110 @@ def compute_token_breakdown(
         "has_encrypted_reasoning": has_encrypted,
         "has_uncountable_image_content": has_uncountable_images,
     }
+
+
+def list_compressible_tool_results(
+    req_obj: Dict[str, Any],
+    *,
+    threshold_tokens: int,
+    downstream_format: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    if downstream_format in KNOWN_TOKEN_FORMATS:
+        fmt = str(downstream_format)
+    else:
+        fmt = detect_token_format_from_request(req_obj)
+
+    results: List[Dict[str, Any]] = []
+
+    if fmt == TOKEN_FORMAT_ANTHROPIC:
+        messages = req_obj.get("messages") or []
+        id_to_name = _build_tool_id_to_name_map(messages)
+        for msg_index, msg in enumerate(messages):
+            if not isinstance(msg, dict) or str(msg.get("role") or "") != "user":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block_index, block in enumerate(content):
+                if not isinstance(block, dict) or str(block.get("type") or "") != "tool_result":
+                    continue
+                tool_id = str(block.get("tool_use_id") or "")
+                tool_name = id_to_name.get(tool_id, "(unknown)")
+                inner = block.get("content")
+                tokens = _count_text_tokens(_extract_text_from_blocks(inner))
+                if tokens <= threshold_tokens:
+                    continue
+                results.append(
+                    {
+                        "pointer": f"/messages/{msg_index}/content/{block_index}/content",
+                        "tool_name": tool_name,
+                        "tokens": tokens,
+                    }
+                )
+        return results
+
+    if fmt == TOKEN_FORMAT_OPENAI_CHAT:
+        messages = req_obj.get("messages") or []
+        id_to_name = _build_tool_id_to_name_map(messages)
+        for msg_index, msg in enumerate(messages):
+            if not isinstance(msg, dict) or str(msg.get("role") or "") != "tool":
+                continue
+            tool_call_id = str(msg.get("tool_call_id") or "")
+            tool_name = id_to_name.get(tool_call_id, "(unknown)")
+            content = msg.get("content")
+            if isinstance(content, str):
+                tokens, _had_img = _count_text_tokens_no_images(content)
+            else:
+                tokens, _had_img = _count_json_tokens_no_images(content)
+            if tokens <= threshold_tokens:
+                continue
+            results.append(
+                {
+                    "pointer": f"/messages/{msg_index}/content",
+                    "tool_name": tool_name,
+                    "tokens": tokens,
+                }
+            )
+        return results
+
+    if fmt == TOKEN_FORMAT_OPENAI_RESPONSES:
+        input_value = req_obj.get("input")
+        if not isinstance(input_value, list):
+            return results
+
+        id_to_name: Dict[str, str] = {}
+        for item in input_value:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            if item_type in {"function_call", "tool_call"}:
+                call_id = str(item.get("call_id") or item.get("id") or "")
+                tool_name = str(item.get("name") or "")
+                if call_id and tool_name:
+                    id_to_name[call_id] = tool_name
+
+        for item_index, item in enumerate(input_value):
+            if not isinstance(item, dict) or str(item.get("type") or "") != "function_call_output":
+                continue
+            call_id = str(item.get("call_id") or "")
+            tool_name = id_to_name.get(call_id, "(unknown)")
+            output = item.get("output")
+            if isinstance(output, str):
+                tokens, _had_img = _count_text_tokens_no_images(output)
+            else:
+                tokens, _had_img = _count_json_tokens_no_images(output)
+            if tokens <= threshold_tokens:
+                continue
+            results.append(
+                {
+                    "pointer": f"/input/{item_index}/output",
+                    "tool_name": tool_name,
+                    "tokens": tokens,
+                }
+            )
+        return results
+
+    return results
 
 
 def collect_usage_tokens_for_stats(obj: Any, path: str = "") -> Tuple[int, int, str]:

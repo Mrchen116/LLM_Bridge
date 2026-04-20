@@ -8,7 +8,14 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from src.inspector.keyword_presets import load_keyword_presets, save_keyword_presets
-from src.inspector.service import get_timeline, get_timeline_event_detail, get_token_breakdown_for_event, list_sessions
+from src.inspector.service import (
+    get_request_copy_compression_for_event,
+    get_timeline,
+    get_timeline_event_detail,
+    get_token_breakdown_for_event,
+    list_sessions,
+)
+from src.observability.token_stats import count_text_tokens
 
 
 ROUTER = APIRouter(tags=["session-inspector"])
@@ -140,6 +147,24 @@ async def session_inspector_token_breakdown(
     return payload
 
 
+@ROUTER.get("/api/session-inspector/sessions/{session_id}/events/{event_id}/request-copy-compression")
+async def session_inspector_request_copy_compression(
+    session_id: str,
+    event_id: str,
+    threshold_tokens: int = Query(default=500, ge=1, le=100000),
+):
+    _require_enabled()
+    payload = get_request_copy_compression_for_event(
+        logs_session_dir=DEFAULT_LOGS_SESSION_DIR,
+        session_id=session_id,
+        event_id=event_id,
+        threshold_tokens=threshold_tokens,
+    )
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"event_id {event_id} not found")
+    return payload
+
+
 @ROUTER.get("/api/session-inspector/log-file")
 async def session_inspector_log_file(path: str = Query(...)):
     _require_enabled()
@@ -164,3 +189,9 @@ async def session_inspector_keyword_presets():
 async def session_inspector_keyword_presets_update(payload: dict):
     _require_enabled()
     return save_keyword_presets(payload)
+
+
+@ROUTER.post("/api/session-inspector/text-token-count")
+async def session_inspector_text_token_count(payload: dict):
+    _require_enabled()
+    return {"tokens": count_text_tokens(payload.get("text"))}
