@@ -237,14 +237,39 @@ function formatCompressedToolResultPlaceholder(path: string, startLine: number, 
   return `[compressed tool result] ${getFileName(path)}:${startLine}-${endLine} (${lineCount} lines)`
 }
 
-function formatCompressedRequestCopyNote(thresholdTokens: number, absolutePath: string): string {
-  return [
+function formatCompressedRequestCopyNote(
+  thresholdTokens: number,
+  requestAbsolutePath: string,
+  nonStreamAbsolutePath?: string | null,
+): string {
+  const lines = [
     '',
+    '[Note] [request] is the request log file shown above.',
+    `[Note] [request] absolute path: ${requestAbsolutePath}`,
+  ]
+  if (nonStreamAbsolutePath) {
+    lines.push('[Note] [non-stream-res] is the non-stream response log file shown above.')
+    lines.push(`[Note] [non-stream-res] absolute path: ${nonStreamAbsolutePath}`)
+  }
+  lines.push(
     '[Note] Some tool results were compressed because a single tool result exceeded '
-      + `${thresholdTokens} tokens.`,
-    '[Note] Do not read the full request file. You must read only the referenced line range(s) on demand to understand the original content.',
-    `[Note] Request log absolute path: ${absolutePath}`,
-  ].join('\n')
+      + `${thresholdTokens} tokens.`
+  )
+  lines.push('[Note] If you need a compressed tool result, you must read only the exact referenced line range in [request].')
+  lines.push('[Note] Do not widen the line range. Do not read the full file. Do not read a broader surrounding block.')
+  return lines.join('\n')
+}
+
+function formatCopySection(title: string, content: string): string {
+  return [`[${title}]`, content].join('\n')
+}
+
+function tryCompactJsonText(content: string): string {
+  try {
+    return JSON.stringify(JSON.parse(content), null, 0)
+  } catch {
+    return content
+  }
 }
 
 async function buildCompressedRequestCopyText(
@@ -259,30 +284,51 @@ async function buildCompressedRequestCopyText(
   try {
     parsedRequest = JSON.parse(requestContent)
   } catch {
-    return requestContent
-  }
-
-  if (!Array.isArray(compression.compressed_items) || compression.compressed_items.length === 0) {
-    return JSON.stringify(parsedRequest, null, 0)
-  }
-
-  const sourceMapModule = (await import('json-source-map')) as RequestCopyJsonSourceMapModule
-  const pointerMap = sourceMapModule.parse(requestContent).pointers
-  let replacedAny = false
-  for (const item of compression.compressed_items) {
-    const loc = pointerMap[item.pointer]
-    const startLine = (loc?.value?.line ?? 0) + 1
-    const endLine = (loc?.valueEnd?.line ?? loc?.value?.line ?? 0) + 1
-    const replacement = formatCompressedToolResultPlaceholder(logFile.path, startLine, endLine)
-    if (setJsonValueByPointer(parsedRequest, item.pointer, replacement)) {
-      replacedAny = true
+    const sections = [formatCopySection('request', requestContent)]
+    if (compression.non_stream_response_path) {
+      const nonStreamLogFile = await fetchLogFileContent(compression.non_stream_response_path)
+      sections.push(formatCopySection('non-stream-res', tryCompactJsonText(nonStreamLogFile.content)))
     }
+    sections.push(
+      formatCompressedRequestCopyNote(
+        compression.threshold_tokens,
+        compression.request_absolute_path,
+        compression.non_stream_response_absolute_path,
+      ),
+    )
+    return sections.join('\n\n')
   }
 
-  const compactJson = JSON.stringify(parsedRequest, null, 0)
-  return replacedAny
-    ? compactJson + formatCompressedRequestCopyNote(compression.threshold_tokens, compression.request_absolute_path)
-    : compactJson
+  let requestOutput = JSON.stringify(parsedRequest, null, 0)
+  if (!Array.isArray(compression.compressed_items) || compression.compressed_items.length === 0) {
+    requestOutput = JSON.stringify(parsedRequest, null, 0)
+  } else {
+    const sourceMapModule = (await import('json-source-map')) as RequestCopyJsonSourceMapModule
+    const pointerMap = sourceMapModule.parse(requestContent).pointers
+    for (const item of compression.compressed_items) {
+      const loc = pointerMap[item.pointer]
+      const startLine = (loc?.value?.line ?? 0) + 1
+      const endLine = (loc?.valueEnd?.line ?? loc?.value?.line ?? 0) + 1
+      const replacement = formatCompressedToolResultPlaceholder(logFile.path, startLine, endLine)
+      setJsonValueByPointer(parsedRequest, item.pointer, replacement)
+    }
+
+    requestOutput = JSON.stringify(parsedRequest, null, 0)
+  }
+
+  const sections = [formatCopySection('request', requestOutput)]
+  if (compression.non_stream_response_path) {
+    const nonStreamLogFile = await fetchLogFileContent(compression.non_stream_response_path)
+    sections.push(formatCopySection('non-stream-res', tryCompactJsonText(nonStreamLogFile.content)))
+  }
+  sections.push(
+    formatCompressedRequestCopyNote(
+      compression.threshold_tokens,
+      compression.request_absolute_path,
+      compression.non_stream_response_absolute_path,
+    ),
+  )
+  return sections.join('\n\n')
 }
 
 function getJsonValueBySegments(data: unknown, segments: string[]): unknown {

@@ -1032,6 +1032,10 @@ def get_request_copy_compression_for_event(
     return {
         "request_path": record.req_file,
         "request_absolute_path": str((Path.cwd() / record.req_file).resolve()),
+        "non_stream_response_path": record.non_stream_file,
+        "non_stream_response_absolute_path": (
+            str((Path.cwd() / record.non_stream_file).resolve()) if record.non_stream_file else None
+        ),
         "threshold_tokens": threshold_tokens,
         "format": record.downstream_format,
         "compressed_items": list_compressible_tool_results(

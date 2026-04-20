@@ -175,6 +175,8 @@ export interface RequestCopyCompressedItem {
 export interface RequestCopyCompressionResponse {
   request_path: string
   request_absolute_path: string
+  non_stream_response_path?: string | null
+  non_stream_response_absolute_path?: string | null
   threshold_tokens: number
   format: string
   compressed_items: RequestCopyCompressedItem[]
