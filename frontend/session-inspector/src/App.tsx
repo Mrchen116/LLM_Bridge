@@ -66,7 +66,13 @@ export default function App() {
         loading={state.sessionsLoading}
         error={state.sessionsError}
         collapsed={sidePanelCollapsed}
+        page={state.sessionPage}
+        totalPages={state.sessionsTotalPages}
+        totalItems={state.sessionsTotalItems}
+        hasPrev={state.sessionsHasPrev}
+        hasNext={state.sessionsHasNext}
         onQueryChange={actions.setSessionQuery}
+        onPageChange={actions.setSessionPage}
         onRefresh={actions.refreshSessions}
         onSelectSession={actions.selectSession}
         onToggleCollapse={() => setSidePanelCollapsed((previous) => !previous)}

@@ -10,6 +10,12 @@ export function inspectorReducer(
       return {
         ...state,
         sessionQuery: action.payload,
+        sessionPage: 1,
+      }
+    case 'SET_SESSION_PAGE':
+      return {
+        ...state,
+        sessionPage: Math.max(1, action.payload),
       }
     case 'SESSIONS_LOADING':
       return {
@@ -21,7 +27,12 @@ export function inspectorReducer(
       return {
         ...state,
         sessions: action.payload.items,
-        sessionsNextCursor: action.payload.nextCursor,
+        sessionPage: action.payload.page,
+        sessionPageSize: action.payload.pageSize,
+        sessionsTotalItems: action.payload.totalItems,
+        sessionsTotalPages: action.payload.totalPages,
+        sessionsHasPrev: action.payload.hasPrev,
+        sessionsHasNext: action.payload.hasNext,
         sessionsLoading: false,
         sessionsError: '',
       }
@@ -29,6 +40,10 @@ export function inspectorReducer(
       return {
         ...state,
         sessions: [],
+        sessionsTotalItems: 0,
+        sessionsTotalPages: 1,
+        sessionsHasPrev: false,
+        sessionsHasNext: false,
         sessionsLoading: false,
         sessionsError: action.payload,
       }

@@ -46,33 +46,45 @@ export function useSessionInspectorController() {
   const sessionsRequestId = useRef(0)
   const timelineRequestId = useRef(0)
 
-  const loadSessions = useCallback(async (query: string) => {
+  const loadSessions = useCallback(async (query: string, page: number) => {
     const requestId = sessionsRequestId.current + 1
     sessionsRequestId.current = requestId
     dispatch(inspectorActions.sessionsLoading())
     const startedAt = performance.now()
 
     try {
-      const payload = await fetchSessions(query, 80)
+      const payload = await fetchSessions(query, page, state.sessionPageSize)
       if (sessionsRequestId.current !== requestId) {
         return
       }
 
        logPerf('sessions loaded', {
+        page: payload.page,
+        pageSize: payload.page_size,
         totalMs: Number((performance.now() - startedAt).toFixed(2)),
         serverPerf: payload.meta?.perf ?? null,
         serverCache: payload.meta?.cache ?? null,
         counts: payload.meta?.counts ?? null,
       })
 
-      dispatch(inspectorActions.sessionsLoaded(payload.items ?? [], payload.next_cursor ?? null))
+      dispatch(
+        inspectorActions.sessionsLoaded(
+          payload.items ?? [],
+          payload.page,
+          payload.page_size,
+          payload.total_items,
+          payload.total_pages,
+          payload.has_prev,
+          payload.has_next,
+        ),
+      )
     } catch (error) {
       if (sessionsRequestId.current !== requestId) {
         return
       }
       dispatch(inspectorActions.sessionsFailed(toErrorMessage(error)))
     }
-  }, [])
+  }, [state.sessionPageSize])
 
   const loadTimeline = useCallback(async (sessionId: string, filters: TimelineFilters) => {
     const requestId = timelineRequestId.current + 1
@@ -104,13 +116,13 @@ export function useSessionInspectorController() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadSessions(state.sessionQuery)
+      void loadSessions(state.sessionQuery, state.sessionPage)
     }, SESSION_SEARCH_DEBOUNCE_MS)
 
     return () => {
       window.clearTimeout(timer)
     }
-  }, [loadSessions, state.sessionQuery])
+  }, [loadSessions, state.sessionPage, state.sessionQuery])
 
   useEffect(() => {
     if (!state.selectedSessionId && state.sessions.length > 0) {
@@ -189,6 +201,10 @@ export function useSessionInspectorController() {
     dispatch(inspectorActions.setSessionQuery(query))
   }, [])
 
+  const setSessionPage = useCallback((page: number) => {
+    dispatch(inspectorActions.setSessionPage(page))
+  }, [])
+
   const selectSession = useCallback((sessionId: string, sessionDir: string) => {
     dispatch(inspectorActions.selectSession(sessionId, sessionDir))
   }, [])
@@ -209,8 +225,8 @@ export function useSessionInspectorController() {
   }, [])
 
   const refreshSessions = useCallback(() => {
-    void loadSessions(state.sessionQuery)
-  }, [loadSessions, state.sessionQuery])
+    void loadSessions(state.sessionQuery, state.sessionPage)
+  }, [loadSessions, state.sessionPage, state.sessionQuery])
 
   const refreshTimeline = useCallback(() => {
     if (!state.selectedSessionId) {
@@ -336,6 +352,7 @@ export function useSessionInspectorController() {
     activeLaneCount: timelineGrid.laneOrder.length,
     actions: {
       setSessionQuery,
+      setSessionPage,
       selectSession,
       setFilter,
       setFilters,

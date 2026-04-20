@@ -26,12 +26,30 @@ describe('inspectorReducer', () => {
             formats: ['openai_chat'],
           },
         ],
-        null,
+        2,
+        50,
+        120,
+        3,
+        true,
+        false,
       ),
     )
 
     expect(loaded.sessionsLoading).toBe(false)
     expect(loaded.sessions[0].session_id).toBe('demo-session')
+    expect(loaded.sessionPage).toBe(2)
+    expect(loaded.sessionsTotalItems).toBe(120)
+  })
+
+  it('resets session page when query changes', () => {
+    const seeded = {
+      ...initialInspectorState,
+      sessionPage: 4,
+    }
+
+    const next = inspectorReducer(seeded, inspectorActions.setSessionQuery('demo'))
+    expect(next.sessionQuery).toBe('demo')
+    expect(next.sessionPage).toBe(1)
   })
 
   it('resets selected event when filter changes', () => {

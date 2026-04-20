@@ -57,9 +57,10 @@ async function requestJsonWithBody<T>(url: string, method: 'PUT', body: unknown)
   return (await response.json()) as T
 }
 
-export async function fetchSessions(query: string, limit = 80): Promise<SessionsResponse> {
+export async function fetchSessions(query: string, page: number, limit = 50): Promise<SessionsResponse> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
+  params.set('page', String(page))
 
   const normalizedQuery = query.trim()
   if (normalizedQuery) {

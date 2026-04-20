@@ -9,7 +9,12 @@ export interface SessionSummary {
 
 export interface SessionsResponse {
   items: SessionSummary[]
-  next_cursor: string | null
+  page: number
+  page_size: number
+  total_items: number
+  total_pages: number
+  has_prev: boolean
+  has_next: boolean
   meta?: {
     perf?: Record<string, number>
     cache?: Record<string, number | boolean>

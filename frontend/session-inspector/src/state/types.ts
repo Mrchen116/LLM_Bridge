@@ -10,10 +10,15 @@ export interface TimelineFilters {
 
 export interface InspectorState {
   sessions: SessionSummary[]
-  sessionsNextCursor: string | null
   sessionsLoading: boolean
   sessionsError: string
   sessionQuery: string
+  sessionPage: number
+  sessionPageSize: number
+  sessionsTotalItems: number
+  sessionsTotalPages: number
+  sessionsHasPrev: boolean
+  sessionsHasNext: boolean
 
   selectedSessionId: string
   selectedSessionDir: string
@@ -36,10 +41,15 @@ export const defaultFilters: TimelineFilters = {
 
 export const initialInspectorState: InspectorState = {
   sessions: [],
-  sessionsNextCursor: null,
   sessionsLoading: false,
   sessionsError: '',
   sessionQuery: '',
+  sessionPage: 1,
+  sessionPageSize: 50,
+  sessionsTotalItems: 0,
+  sessionsTotalPages: 1,
+  sessionsHasPrev: false,
+  sessionsHasNext: false,
 
   selectedSessionId: '',
   selectedSessionDir: '',

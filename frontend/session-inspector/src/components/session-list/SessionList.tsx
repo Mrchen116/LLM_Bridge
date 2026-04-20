@@ -7,7 +7,13 @@ interface SessionListProps {
   loading: boolean
   error: string
   collapsed: boolean
+  page: number
+  totalPages: number
+  totalItems: number
+  hasPrev: boolean
+  hasNext: boolean
   onQueryChange: (value: string) => void
+  onPageChange: (page: number) => void
   onRefresh: () => void
   onSelectSession: (sessionId: string, sessionDir: string) => void
   onToggleCollapse: () => void
@@ -30,7 +36,13 @@ export function SessionList({
   loading,
   error,
   collapsed,
+  page,
+  totalPages,
+  totalItems,
+  hasPrev,
+  hasNext,
   onQueryChange,
+  onPageChange,
   onRefresh,
   onSelectSession,
   onToggleCollapse,
@@ -84,6 +96,58 @@ export function SessionList({
           placeholder="搜索 session_id"
           onChange={(event) => onQueryChange(event.target.value)}
         />
+      </div>
+
+      <div className="sessions-pagination">
+        <div className="sessions-pagination-summary subtle">
+          第 {page} / {Math.max(1, totalPages)} 页 · {totalItems} 个 session
+        </div>
+        <div className="sessions-pagination-controls">
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={!hasPrev}
+            onClick={() => onPageChange(page - 1)}
+          >
+            上一页
+          </button>
+          <input
+            className="input sessions-page-input"
+            type="number"
+            min={1}
+            max={Math.max(1, totalPages)}
+            defaultValue={page}
+            key={`${page}-${totalPages}`}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') {
+                return
+              }
+              const input = event.currentTarget
+              const nextPage = Number(input.value)
+              if (!Number.isFinite(nextPage) || nextPage < 1) {
+                input.value = String(page)
+                return
+              }
+              onPageChange(Math.min(nextPage, Math.max(1, totalPages)))
+            }}
+            onBlur={(event) => {
+              const nextPage = Number(event.target.value)
+              if (Number.isFinite(nextPage) && nextPage >= 1) {
+                onPageChange(Math.min(nextPage, Math.max(1, totalPages)))
+              } else {
+                event.target.value = String(page)
+              }
+            }}
+          />
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={!hasNext}
+            onClick={() => onPageChange(page + 1)}
+          >
+            下一页
+          </button>
+        </div>
       </div>
 
       <div className="panel-scroll sessions-list">

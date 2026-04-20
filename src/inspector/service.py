@@ -21,13 +21,14 @@ from src.inspector.events import (
 from src.inspector.files import (
     build_turn_file_index,
     find_session_dirs_by_id,
+    list_req_files,
     list_session_dirs,
     parse_ts_to_epoch_ms,
     parse_session_dir_name,
     session_dir_signature,
 )
 from src.inspector.grouping import AssignedLane, TurnLaneInput, assign_lanes, lane_sort_key
-from src.inspector.types import Lane, SessionSummary, TimelineEvent
+from src.inspector.types import Lane, SessionSummary, TimelineEvent, session_summary_to_dict
 from src.observability.token_stats import collect_usage_tokens_for_stats, compute_token_breakdown
 
 
@@ -122,32 +123,26 @@ def _build_session_summary(session_dir: Path) -> Optional[SessionSummary]:
     if not parsed:
         return None
     dir_ts, session_id = parsed
-    index = build_turn_file_index(session_dir)
-    req_turns = [ts for ts, slots in index.items() if "req" in slots]
-    if req_turns:
-        start_ts = min(req_turns)
-        end_ts = max(req_turns)
-    else:
-        start_ts = dir_ts
-        end_ts = dir_ts
+    req_files = list_req_files(session_dir)
+    turn_count = len(req_files)
+    start_ts = dir_ts
+    end_ts = req_files[-1][0] if req_files else dir_ts
 
-    formats = set()
-    for slots in index.values():
-        req_entry = slots.get("req")
-        if not req_entry:
-            continue
-        req_format, req_path = req_entry
+    formats: List[str] = []
+    if req_files:
+        req_format, req_path = req_files[0][1], req_files[0][2]
         req_obj = _read_json(req_path)
         fmt = infer_downstream_format(req_obj, req_format)
-        formats.add(fmt)
+        if fmt:
+            formats = [fmt]
 
     return SessionSummary(
         session_id=session_id,
         session_dir=session_dir.name,
         start_ts=start_ts,
         end_ts=end_ts,
-        turn_count=len(req_turns),
-        formats=sorted(formats),
+        turn_count=turn_count,
+        formats=formats,
     )
 
 
@@ -169,7 +164,7 @@ def list_sessions(
     *,
     logs_session_dir: str,
     limit: int,
-    cursor: Optional[str],
+    page: int,
     q: Optional[str],
 ) -> Dict[str, Any]:
     total_start_ms = _now_ms()
@@ -183,14 +178,13 @@ def list_sessions(
         and (not query or query in parsed[1].lower())
     ]
     dir_scan_ms = _elapsed_ms(scan_start_ms)
-    start_idx = 0
-    if cursor:
-        for i, session_dir in enumerate(filtered_dirs):
-            if session_dir.name == cursor:
-                start_idx = i + 1
-                break
-
-    sliced_dirs = filtered_dirs[start_idx : start_idx + max(1, limit)]
+    page_size = max(1, limit)
+    total_items = len(filtered_dirs)
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    current_page = min(max(1, page), total_pages)
+    start_idx = (current_page - 1) * page_size
+    end_idx = start_idx + page_size
+    sliced_dirs = filtered_dirs[start_idx:end_idx]
     summary_start_ms = _now_ms()
     items: List[SessionSummary] = []
     summary_cache_hits = 0
@@ -202,23 +196,15 @@ def list_sessions(
             summary_cache_hits += 1
         items.append(summary)
     summary_build_ms = _elapsed_ms(summary_start_ms)
-    next_cursor = None
-    if start_idx + len(sliced_dirs) < len(filtered_dirs) and sliced_dirs:
-        next_cursor = sliced_dirs[-1].name
 
     return {
-        "items": [
-            {
-                "session_id": x.session_id,
-                "session_dir": x.session_dir,
-                "start_ts": x.start_ts,
-                "end_ts": x.end_ts,
-                "turn_count": x.turn_count,
-                "formats": x.formats,
-            }
-            for x in items
-        ],
-        "next_cursor": next_cursor,
+        "items": [session_summary_to_dict(x) for x in items],
+        "page": current_page,
+        "page_size": page_size,
+        "total_items": total_items,
+        "total_pages": total_pages,
+        "has_prev": current_page > 1,
+        "has_next": end_idx < total_items,
         "meta": {
             "perf": {
                 "dir_scan_ms": dir_scan_ms,

@@ -103,6 +103,9 @@ def test_session_inspector_sessions_and_timeline(client: TestClient, monkeypatch
     sessions_payload = resp_sessions.json()
     assert sessions_payload["items"]
     assert sessions_payload["items"][0]["session_id"] == "demo-session"
+    assert sessions_payload["items"][0]["start_ts"] == "2026-02-22_12-34-56_789"
+    assert sessions_payload["items"][0]["turn_count"] == 2
+    assert sessions_payload["items"][0]["formats"] == ["openai_chat"]
 
     resp_timeline = client.get(
         "/api/session-inspector/sessions/demo-session/timeline",
@@ -154,6 +157,50 @@ def test_session_inspector_sessions_and_timeline(client: TestClient, monkeypatch
     assert event_payload["detail_loaded"] is True
     assert event_payload["tool_name"] == "Bash"
     assert event_payload["tool_args"] == {"cmd": "ls"}
+
+
+def test_session_inspector_sessions_supports_page_navigation(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+
+    logs_root = Path.cwd() / "logs" / "session"
+    for index in range(5):
+        session_dir = logs_root / f"2026-02-22_12-4{index}-00_000_page-session-{index}"
+        _write_json(
+            session_dir / f"2026-02-22_12-4{index}-00_000-req-openai_chat.json",
+            {
+                "_upstream_provider": "openai_compatible",
+                "model": "demo-model",
+                "messages": [{"role": "user", "content": f"hello-{index}"}],
+            },
+        )
+
+    resp_page_1 = client.get(
+        "/api/session-inspector/sessions",
+        params={"q": "page-session", "limit": 2, "page": 1},
+    )
+    assert resp_page_1.status_code == 200
+    payload_page_1 = resp_page_1.json()
+    assert payload_page_1["page"] == 1
+    assert payload_page_1["page_size"] == 2
+    assert payload_page_1["total_items"] == 5
+    assert payload_page_1["total_pages"] == 3
+    assert payload_page_1["has_prev"] is False
+    assert payload_page_1["has_next"] is True
+    assert [item["session_id"] for item in payload_page_1["items"]] == [
+        "page-session-4",
+        "page-session-3",
+    ]
+
+    resp_page_3 = client.get(
+        "/api/session-inspector/sessions",
+        params={"q": "page-session", "limit": 2, "page": 3},
+    )
+    assert resp_page_3.status_code == 200
+    payload_page_3 = resp_page_3.json()
+    assert payload_page_3["page"] == 3
+    assert payload_page_3["has_prev"] is True
+    assert payload_page_3["has_next"] is False
+    assert [item["session_id"] for item in payload_page_3["items"]] == ["page-session-0"]
 
 
 def test_session_inspector_log_file_endpoint(client: TestClient, monkeypatch):

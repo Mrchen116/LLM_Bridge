@@ -66,14 +66,14 @@ async def session_inspector_page():
 @ROUTER.get("/api/session-inspector/sessions")
 async def session_inspector_sessions(
     limit: int = Query(default=50, ge=1, le=200),
-    cursor: Optional[str] = Query(default=None),
+    page: int = Query(default=1, ge=1),
     q: Optional[str] = Query(default=None),
 ):
     _require_enabled()
     return list_sessions(
         logs_session_dir=DEFAULT_LOGS_SESSION_DIR,
         limit=limit,
-        cursor=cursor,
+        page=page,
         q=q,
     )
 

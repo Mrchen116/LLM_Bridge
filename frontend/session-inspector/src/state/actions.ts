@@ -5,8 +5,20 @@ export type FilterKey = keyof TimelineFilters
 
 export type InspectorAction =
   | { type: 'SET_SESSION_QUERY'; payload: string }
+  | { type: 'SET_SESSION_PAGE'; payload: number }
   | { type: 'SESSIONS_LOADING' }
-  | { type: 'SESSIONS_LOADED'; payload: { items: SessionSummary[]; nextCursor: string | null } }
+  | {
+      type: 'SESSIONS_LOADED'
+      payload: {
+        items: SessionSummary[]
+        page: number
+        pageSize: number
+        totalItems: number
+        totalPages: number
+        hasPrev: boolean
+        hasNext: boolean
+      }
+    }
   | { type: 'SESSIONS_FAILED'; payload: string }
   | { type: 'SELECT_SESSION'; payload: { sessionId: string; sessionDir: string } }
   | { type: 'TIMELINE_LOADING' }
@@ -21,10 +33,22 @@ export const inspectorActions = {
     type: 'SET_SESSION_QUERY',
     payload: query,
   }),
+  setSessionPage: (page: number): InspectorAction => ({
+    type: 'SET_SESSION_PAGE',
+    payload: page,
+  }),
   sessionsLoading: (): InspectorAction => ({ type: 'SESSIONS_LOADING' }),
-  sessionsLoaded: (items: SessionSummary[], nextCursor: string | null): InspectorAction => ({
+  sessionsLoaded: (
+    items: SessionSummary[],
+    page: number,
+    pageSize: number,
+    totalItems: number,
+    totalPages: number,
+    hasPrev: boolean,
+    hasNext: boolean,
+  ): InspectorAction => ({
     type: 'SESSIONS_LOADED',
-    payload: { items, nextCursor },
+    payload: { items, page, pageSize, totalItems, totalPages, hasPrev, hasNext },
   }),
   sessionsFailed: (message: string): InspectorAction => ({
     type: 'SESSIONS_FAILED',
