@@ -23,6 +23,7 @@ export ANTHROPIC_AUTH_TOKEN="token"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="codexOAuth:gpt-5.4@high"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="codexOAuth:gpt-5.4"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="codexOAuth:gpt-5.4@low"
+export ENABLE_TOOL_SEARCH=false
 claude
 ```
 
@@ -32,12 +33,15 @@ claude
 |------|------|
 | `ANTHROPIC_BASE_URL` | Anthropic 客户端使用的 API 根地址。只写 **协议 + 主机 + 端口**，不要带 `/v1/messages`；客户端会自动拼 REST 路径。 |
 | `ANTHROPIC_AUTH_TOKEN` | 会以 `Authorization: Bearer <值>` 发给**入口侧**。若本地代理未校验客户端密钥，常用固定占位（如 `token`）；若你在入口加了鉴权，需与代理配置一致。 |
+| `ENABLE_TOOL_SEARCH` | 设为 `false` 可禁用 tool search，避免客户端发送上游提供方无法处理的请求（尤其代理到 OpenAI 兼容提供方时）。 |
 | `ANTHROPIC_DEFAULT_*_MODEL` | Opus / Sonnet / Haiku 三档默认模型 ID。此处使用本网关识别的 **`profile:model`**（如 `codexOAuth:gpt-5.4`），并用 `@high` / `@low` 等后缀表达推理强度（与主 README 一致）。 |
 
 **补充说明**
 
 - 使用非官方 Anthropic 主机时，Claude Code 可能默认关闭部分能力（例如工具搜索）。是否需要 `ENABLE_TOOL_SEARCH=true` 等，以 [Claude Code 文档：LLM 网关 / 环境变量](https://docs.anthropic.com/en/docs/claude-code/llm-gateway) 为准。
 - 可把上述 `export` 写进 shell 配置文件，或在 Claude Code 的 `settings.json` 里用 `env` 持久化。
+- **Billing header 与 KV cache 影响。** Claude Code 每次请求都会在 system prompt 里附带 `x-anthropic-billing-header`，其中 `cch`（conversation context hash）值每轮都会变化。如果你代理到依赖前缀匹配来复用 KV cache 的推理后端（例如 vLLM 等带 prompt cache 的引擎），这个不断变化的 hash 会导致 system prompt 前缀无法命中缓存，使多轮对话的 KV cache 失效。Session inspector 在分析日志时会对该字段做归一化，但向上游转发的原始请求中仍包含变化值。
+- **Tool search 兼容性。** 如果上游提供方不支持 Claude Code 的 tool search 能力（例如代理到 OpenAI 兼容提供方时），建议设置 `ENABLE_TOOL_SEARCH=false`，避免客户端发送提供方无法处理的 tool search 请求。
 
 ---
 

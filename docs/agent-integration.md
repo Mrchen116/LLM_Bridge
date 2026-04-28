@@ -23,6 +23,7 @@ export ANTHROPIC_AUTH_TOKEN="token"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="codexOAuth:gpt-5.4@high"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="codexOAuth:gpt-5.4"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="codexOAuth:gpt-5.4@low"
+export ENABLE_TOOL_SEARCH=false
 claude
 ```
 
@@ -33,11 +34,14 @@ claude
 | `ANTHROPIC_BASE_URL` | API root for the Anthropic client. Use **scheme + host + port** only (no `/v1/messages`); the client appends the REST paths. |
 | `ANTHROPIC_AUTH_TOKEN` | Sent as `Authorization: Bearer <value>`. Use whatever your deployment expects at the **ingress** (many local setups use a fixed placeholder such as `token` if the proxy does not enforce client authentication). |
 | `ANTHROPIC_DEFAULT_*_MODEL` | Default model IDs for Opus / Sonnet / Haiku tiers. Here they are **`profile:model`** strings resolved by this gateway (for example `codexOAuth:gpt-5.4` and reasoning effort via `@high` / `@low`). |
+| `ENABLE_TOOL_SEARCH` | Set to `false` to disable tool search and prevent the client from sending requests that the upstream provider cannot handle (especially when proxying to OpenAI-compatible providers). |
 
 **Notes**
 
 - If you rely on a non-default Anthropic API host, Claude Code may disable some features (for example tool search) unless you opt in per [Claude Code environment variables](https://docs.anthropic.com/en/docs/claude-code/llm-gateway) (e.g. `ENABLE_TOOL_SEARCH=true` when your proxy forwards the relevant payloads).
 - You can persist the same variables in your shell profile or in Claude Code’s `settings.json` under `env` so every session picks them up.
+- **Billing header and KV cache impact.** Claude Code includes a `x-anthropic-billing-header` system message in every request, and the `cch` (conversation context hash) value changes on every turn. If you proxy to a provider that relies on prefix matching for KV cache reuse (for example vLLM or other inference engines with prompt cache), this changing hash prevents cache hits on the system prompt prefix, effectively disabling KV cache for multi-turn sessions. The proxy’s session inspector normalizes this field when analyzing logs, but the raw request forwarded upstream still contains the changing value.
+- **Tool search compatibility.** If your upstream provider does not support Claude Code’s tool search capability (for example when proxying to OpenAI-compatible providers), set `ENABLE_TOOL_SEARCH=false` to prevent the client from sending tool search requests that the provider cannot handle.
 
 ---
 
