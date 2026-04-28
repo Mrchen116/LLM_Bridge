@@ -136,8 +136,59 @@ def _extract_text_from_function_call_output(output: Any) -> str:
     return str(output)
 
 
-def _extract_tail_request_summaries(req_obj: Dict[str, Any], downstream_format: str) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
+def _build_tool_name_by_call_id(req_obj: Dict[str, Any], downstream_format: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+
+    if downstream_format == "openai_responses":
+        input_items = req_obj.get("input") if isinstance(req_obj.get("input"), list) else []
+        for item in input_items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "") != "function_call":
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            for key in ("call_id", "id"):
+                call_id = str(item.get(key) or "").strip()
+                if call_id:
+                    out[call_id] = name
+        return out
+
+    messages = req_obj.get("messages") if isinstance(req_obj.get("messages"), list) else []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if str(part.get("type") or "") != "tool_use":
+                    continue
+                call_id = str(part.get("id") or "").strip()
+                name = str(part.get("name") or "").strip()
+                if call_id and name:
+                    out[call_id] = name
+
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                call_id = str(tool_call.get("id") or "").strip()
+                fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                name = str(fn.get("name") or "").strip()
+                if call_id and name:
+                    out[call_id] = name
+
+    return out
+
+
+def _extract_tail_request_summaries(req_obj: Dict[str, Any], downstream_format: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    tool_name_by_call_id = _build_tool_name_by_call_id(req_obj, downstream_format)
 
     if downstream_format == "openai_responses":
         input_items = req_obj.get("input") if isinstance(req_obj.get("input"), list) else []
@@ -148,7 +199,15 @@ def _extract_tail_request_summaries(req_obj: Dict[str, Any], downstream_format: 
                 text = _extract_text_from_function_call_output(item.get("output"))
                 if not text:
                     break
-                out.append({"kind": "tool_result", "summary": text})
+                call_id = str(item.get("call_id") or item.get("id") or "").strip()
+                out.append(
+                    {
+                        "kind": "tool_result",
+                        "summary": text,
+                        "tool_name": tool_name_by_call_id.get(call_id),
+                        "tool_use_id": call_id or None,
+                    }
+                )
                 continue
             role = str(item.get("role") or "")
             if role == "assistant":
@@ -174,25 +233,39 @@ def _extract_tail_request_summaries(req_obj: Dict[str, Any], downstream_format: 
 
         content = msg.get("content")
         if role == "user" and isinstance(content, list):
-            # anthropic tool_result 常见于 user role；若命中则按工具返回显示。
-            tool_result_texts: List[str] = []
-            for part in content:
+            # anthropic tool_result 常见于 user role；同一个 content 列表中可能有多个结果。
+            # 这里按单个结果产出事件；由于外层稍后会 reverse，内部需倒序追加。
+            tool_results: List[Dict[str, Any]] = []
+            for part in reversed(content):
                 if not isinstance(part, dict):
                     continue
                 if str(part.get("type") or "") != "tool_result":
                     continue
                 text = _extract_text_from_content(part.get("content"))
                 if text:
-                    tool_result_texts.append(text)
-            if tool_result_texts:
-                out.append({"kind": "tool_result", "summary": "".join(tool_result_texts)})
+                    tool_use_id = str(part.get("tool_use_id") or "").strip()
+                    tool_results.append(
+                        {
+                            "kind": "tool_result",
+                            "summary": text,
+                            "tool_name": tool_name_by_call_id.get(tool_use_id),
+                            "tool_use_id": tool_use_id or None,
+                        }
+                    )
+            if tool_results:
+                out.extend(tool_results)
                 continue
 
         text = _extract_text_from_content(content)
         if not text:
             break
         kind = "tool_result" if role == "tool" else "user_input"
-        out.append({"kind": kind, "summary": text})
+        item: Dict[str, Any] = {"kind": kind, "summary": text}
+        if kind == "tool_result":
+            tool_use_id = str(msg.get("tool_call_id") or msg.get("tool_use_id") or "").strip()
+            item["tool_name"] = tool_name_by_call_id.get(tool_use_id)
+            item["tool_use_id"] = tool_use_id or None
+        out.append(item)
     return out
 
 
@@ -220,8 +293,11 @@ def build_request_events(
                 "lane_id": lane_id,
                 "kind": kind,
                 "summary": truncate_text(summary, summary_chars),
-                "detail": {"summary_text": summary},
-                "tool_name": None,
+                "detail": {
+                    "summary_text": summary,
+                    "tool_use_id": req.get("tool_use_id"),
+                },
+                "tool_name": req.get("tool_name"),
                 "tool_args": None,
                 "tool_def": None,
                 "turn_ts": turn_ts,

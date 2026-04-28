@@ -6,6 +6,7 @@ export interface TimelineFilters {
   q: string
   qNot: string
   includeNonTool: boolean
+  expandTools: boolean
 }
 
 export interface InspectorState {
@@ -37,6 +38,7 @@ export const defaultFilters: TimelineFilters = {
   q: '',
   qNot: '',
   includeNonTool: true,
+  expandTools: true,
 }
 
 export const initialInspectorState: InspectorState = {

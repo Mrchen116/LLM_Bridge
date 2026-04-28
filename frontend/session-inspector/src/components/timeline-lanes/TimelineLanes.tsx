@@ -25,6 +25,7 @@ interface TimelineLanesProps {
     q: (value: string) => void
     qNot: (value: string) => void
     includeNonTool: (value: boolean) => void
+    expandTools: (value: boolean) => void
   }
   onSelectKeywordPreset: (presetId: string) => void
   onCreateKeywordPreset: (name: string) => Promise<void>
@@ -333,6 +334,15 @@ export function TimelineLanes({
               onChange={(event) => onFilterChange.includeNonTool(event.target.checked)}
             />
             <span>显示非工具事件</span>
+          </label>
+
+          <label className="check-line">
+            <input
+              type="checkbox"
+              checked={filters.expandTools}
+              onChange={(event) => onFilterChange.expandTools(event.target.checked)}
+            />
+            <span>展开工具</span>
           </label>
         </div>
       </div>

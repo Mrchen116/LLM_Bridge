@@ -615,6 +615,74 @@ def test_session_inspector_request_summary_uses_last_user_payload(client: TestCl
     assert "LAST_USER_TOOL_RESULT_TEXT" in request_events[0]["summary"]
 
 
+def test_session_inspector_request_events_include_anthropic_content_tool_results(
+    client: TestClient, monkeypatch
+):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-42-20_000_multi-tool-tail-anthropic-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-42-20_001-req-anthropic_messages.json",
+        {
+            "_upstream_provider": "codex_oauth",
+            "model": "codexOAuth:gpt-5.2-codex",
+            "messages": [
+                {"role": "user", "content": "OLDER_USER_TEXT"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "call_1", "name": "Read", "input": {"file_path": "README.md"}},
+                        {"type": "tool_use", "id": "call_2", "name": "Read", "input": {"file_path": "upstreams.json"}},
+                        {"type": "tool_use", "id": "call_3", "name": "Bash", "input": {"command": "ls src"}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_1",
+                            "content": [{"type": "text", "text": "ANTHROPIC_TOOL_OUTPUT_1"}],
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_2",
+                            "content": [{"type": "text", "text": "ANTHROPIC_TOOL_OUTPUT_2"}],
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_3",
+                            "content": [{"type": "text", "text": "ANTHROPIC_TOOL_OUTPUT_3"}],
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-42-20_001-non-stream-res-anthropic_messages.json",
+        {
+            "id": "dummy",
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+        },
+    )
+
+    resp = client.get(
+        "/api/session-inspector/sessions/multi-tool-tail-anthropic-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    request_events = [ev for ev in payload["events"] if ":request:" in ev["event_id"]]
+    assert len(request_events) == 3
+    assert [ev["kind"] for ev in request_events] == ["tool_result", "tool_result", "tool_result"]
+    assert [ev["tool_name"] for ev in request_events] == ["Read", "Read", "Bash"]
+    assert "ANTHROPIC_TOOL_OUTPUT_1" in request_events[0]["summary"]
+    assert "ANTHROPIC_TOOL_OUTPUT_2" in request_events[1]["summary"]
+    assert "ANTHROPIC_TOOL_OUTPUT_3" in request_events[2]["summary"]
+
+
 def test_session_inspector_request_event_uses_tool_result_when_last_role_is_tool(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
     session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-42-00_000_tool-result-session"

@@ -48,6 +48,9 @@ export interface TimelineEvent {
   tool_name?: string | null
   tool_args?: unknown
   tool_def?: ToolDefinition | null
+  group_count?: number
+  grouped_events?: TimelineEvent[]
+  representative_event_id?: string
   source_files?: {
     request?: string | null
     response?: string | null

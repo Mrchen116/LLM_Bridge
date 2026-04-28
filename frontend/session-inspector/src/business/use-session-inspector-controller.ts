@@ -172,7 +172,10 @@ export function useSessionInspectorController() {
     return () => window.clearTimeout(timer)
   }, [loadKeywordPresets])
 
-  const parsedTimeline = useMemo(() => parseTimelineResponse(state.timeline), [state.timeline])
+  const parsedTimeline = useMemo(
+    () => parseTimelineResponse(state.timeline, { expandTools: state.filters.expandTools }),
+    [state.filters.expandTools, state.timeline],
+  )
   const timelineGrid = useMemo(() => buildTimelineGrid(parsedTimeline), [parsedTimeline])
   const filterOptions = useMemo(() => buildTimelineFilterOptions(parsedTimeline), [parsedTimeline])
 
@@ -190,12 +193,12 @@ export function useSessionInspectorController() {
   }, [filterOptions.laneOptions.length, filterOptions.toolOptions.length, parsedTimeline, state.timeline, timelineGrid.laneOrder.length, timelineGrid.rows.length])
 
   const selectedEvent = useMemo<TimelineEvent | null>(() => {
-    if (!state.timeline || !state.selectedEventId) {
+    if (!parsedTimeline || !state.selectedEventId) {
       return null
     }
 
-    return state.timeline.events.find((event) => event.event_id === state.selectedEventId) ?? null
-  }, [state.selectedEventId, state.timeline])
+    return parsedTimeline.events.find((event) => event.eventId === state.selectedEventId)?.raw ?? null
+  }, [parsedTimeline, state.selectedEventId])
 
   const setSessionQuery = useCallback((query: string) => {
     dispatch(inspectorActions.setSessionQuery(query))

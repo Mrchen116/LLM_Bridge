@@ -1049,6 +1049,129 @@ function extractToolDefinitionFields(toolDef: ToolDefinition | null | undefined)
   }
 }
 
+function getGroupedEvents(event: TimelineEvent | null): TimelineEvent[] {
+  if (!event || !Array.isArray(event.grouped_events)) {
+    return []
+  }
+  return event.grouped_events
+}
+
+function hasUnloadedGroupedEvents(event: TimelineEvent): boolean {
+  return getGroupedEvents(event).some((child) => child.detail_loaded === false)
+}
+
+function getEventApiId(event: TimelineEvent): string {
+  return event.representative_event_id || event.event_id
+}
+
+function GroupedToolCallContent({
+  events,
+  copiedKey,
+  copiedLabel,
+  onCopy,
+}: {
+  events: TimelineEvent[]
+  copiedKey: string
+  copiedLabel: string
+  onCopy: (key: string, text: string) => void
+}) {
+  return (
+    <div className="detail-block">
+      <div className="detail-block-head">
+        <div className="detail-title">事件内容</div>
+      </div>
+      <div className="grouped-event-list">
+        {events.map((child, index) => {
+          const toolDefFields = extractToolDefinitionFields(child.tool_def)
+          const itemKey = child.event_id || `tool-call-${index}`
+          return (
+            <details className="grouped-event-item" key={itemKey}>
+              <summary className="grouped-event-title">
+                {index + 1}. {child.tool_name || 'unknown'}
+              </summary>
+              <DetailBlock
+                title="工具参数"
+                value={child.tool_args ?? {}}
+                variant="code"
+                copyLabel="复制"
+                copied={copiedKey === `group_tool_args_${index}` ? copiedLabel : ''}
+                onCopy={(text) => onCopy(`group_tool_args_${index}`, text)}
+              />
+              {child.tool_def ? (
+                <>
+                  <DetailBlock
+                    title="工具定义 · 名称"
+                    value={toolDefFields.name}
+                    variant="text"
+                    copyLabel="复制"
+                    copied={copiedKey === `group_tool_def_name_${index}` ? copiedLabel : ''}
+                    onCopy={(text) => onCopy(`group_tool_def_name_${index}`, text)}
+                  />
+                  <DetailBlock
+                    title="工具定义 · 描述"
+                    value={toolDefFields.description}
+                    variant="markdown"
+                    copyLabel="复制"
+                    copied={copiedKey === `group_tool_def_description_${index}` ? copiedLabel : ''}
+                    onCopy={(text) => onCopy(`group_tool_def_description_${index}`, text)}
+                  />
+                  <DetailBlock
+                    title="工具定义 · 参数"
+                    value={toolDefFields.parameters}
+                    variant="code"
+                    copyLabel="复制"
+                    copied={copiedKey === `group_tool_def_parameters_${index}` ? copiedLabel : ''}
+                    onCopy={(text) => onCopy(`group_tool_def_parameters_${index}`, text)}
+                  />
+                </>
+              ) : null}
+            </details>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function GroupedToolResultContent({
+  events,
+  copiedKey,
+  copiedLabel,
+  onCopy,
+}: {
+  events: TimelineEvent[]
+  copiedKey: string
+  copiedLabel: string
+  onCopy: (key: string, text: string) => void
+}) {
+  return (
+    <div className="detail-block">
+      <div className="detail-block-head">
+        <div className="detail-title">事件内容</div>
+      </div>
+      <div className="grouped-event-list">
+        {events.map((child, index) => {
+          const title = child.tool_name ? `${index + 1}. ${child.tool_name} result` : `${index + 1}. tool_result`
+          const text = extractEventMainText(child)
+          return (
+            <details className="grouped-event-item" key={child.event_id || `tool-result-${index}`}>
+              <summary className="grouped-event-title">{title}</summary>
+              <DetailBlock
+                title="结果"
+                value={text}
+                variant="text"
+                copyLabel="复制"
+                copied={copiedKey === `group_tool_result_${index}` ? copiedLabel : ''}
+                onCopy={(copyText) => onCopy(`group_tool_result_${index}`, copyText)}
+              />
+            </details>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProps) {
   const [copiedState, setCopiedState] = useState<{ key: string; label: string }>({ key: '', label: '' })
   const [viewerOpen, setViewerOpen] = useState(false)
@@ -1062,6 +1185,9 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
   const [eventLoading, setEventLoading] = useState(false)
   const [eventError, setEventError] = useState('')
   const displayEvent = resolvedEvent ?? event
+  const groupedEvents = useMemo(() => getGroupedEvents(displayEvent), [displayEvent])
+  const isToolCallGroup = displayEvent?.kind === 'tool_call_group'
+  const isToolResultGroup = displayEvent?.kind === 'tool_result_group'
   const mainText = useMemo(() => (displayEvent ? extractEventMainText(displayEvent) : ''), [displayEvent])
   const toolDefFields = useMemo(
     () => extractToolDefinitionFields(displayEvent?.tool_def),
@@ -1108,6 +1234,43 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
 
     setResolvedEvent(event)
     setEventError('')
+    if (sessionId && hasUnloadedGroupedEvents(event)) {
+      let cancelled = false
+      setEventLoading(true)
+      void Promise.all(
+        getGroupedEvents(event).map((child) => {
+          if (child.detail_loaded !== false) {
+            return Promise.resolve(child)
+          }
+          return fetchTimelineEventDetail(sessionId, child.event_id).then((payload) => payload.event)
+        }),
+      )
+        .then((children) => {
+          if (cancelled) {
+            return
+          }
+          setResolvedEvent({
+            ...event,
+            grouped_events: children,
+            detail: { grouped_events: children },
+            detail_loaded: true,
+          })
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setEventError(error instanceof Error ? error.message : String(error))
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setEventLoading(false)
+          }
+        })
+
+      return () => {
+        cancelled = true
+      }
+    }
     if (event.detail_loaded !== false || !sessionId) {
       setEventLoading(false)
       return
@@ -1159,7 +1322,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
       return
     }
     try {
-      const text = await buildCompressedRequestCopyText(sessionId, displayEvent.event_id)
+      const text = await buildCompressedRequestCopyText(sessionId, getEventApiId(displayEvent))
       const [, tokens] = await Promise.all([
         navigator.clipboard.writeText(text),
         fetchTextTokenCount(text).catch(() => 0),
@@ -1239,14 +1402,30 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                 copied={copiedState.key === 'summary' ? copiedState.label : ''}
                 onCopy={(text) => void onCopy('summary', text)}
               />
-              <DetailBlock
-                title="事件内容"
-                value={mainText}
-                variant={displayEvent.kind === 'assistant_text' ? 'markdown' : 'text'}
-                copyLabel="复制"
-                copied={copiedState.key === 'main_text' ? copiedState.label : ''}
-                onCopy={(text) => void onCopy('main_text', text)}
-              />
+              {isToolCallGroup ? (
+                <GroupedToolCallContent
+                  events={groupedEvents}
+                  copiedKey={copiedState.key}
+                  copiedLabel={copiedState.label}
+                  onCopy={(key, text) => void onCopy(key, text)}
+                />
+              ) : isToolResultGroup ? (
+                <GroupedToolResultContent
+                  events={groupedEvents}
+                  copiedKey={copiedState.key}
+                  copiedLabel={copiedState.label}
+                  onCopy={(key, text) => void onCopy(key, text)}
+                />
+              ) : (
+                <DetailBlock
+                  title="事件内容"
+                  value={mainText}
+                  variant={displayEvent.kind === 'assistant_text' ? 'markdown' : 'text'}
+                  copyLabel="复制"
+                  copied={copiedState.key === 'main_text' ? copiedState.label : ''}
+                  onCopy={(text) => void onCopy('main_text', text)}
+                />
+              )}
               <SourceFilesBlock
                 sourceFiles={displayEvent.source_files}
                 copied={copiedState.key === 'source_files' ? copiedState.label : ''}
@@ -1303,7 +1482,7 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
                 </>
               ) : null}
 
-              <TokenBreakdownBlock key={displayEvent.event_id} sessionId={sessionId} eventId={displayEvent.event_id} />
+              <TokenBreakdownBlock key={displayEvent.event_id} sessionId={sessionId} eventId={getEventApiId(displayEvent)} />
 
               <details className="raw-event">
                 <summary>完整事件 JSON</summary>

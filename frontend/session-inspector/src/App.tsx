@@ -99,6 +99,7 @@ export default function App() {
           q: (value) => actions.setFilter('q', value),
           qNot: (value) => actions.setFilter('qNot', value),
           includeNonTool: (value) => actions.setFilter('includeNonTool', value),
+          expandTools: (value) => actions.setFilter('expandTools', value),
         }}
         onSelectKeywordPreset={actions.selectKeywordPreset}
         onCreateKeywordPreset={actions.createKeywordPreset}

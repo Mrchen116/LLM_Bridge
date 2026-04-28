@@ -111,6 +111,13 @@ export function buildTimelineFilterOptions(parsed: ParsedTimeline | null): {
     if (event.kind === 'tool_call' && event.raw.tool_name) {
       toolSet.add(event.raw.tool_name)
     }
+    if (event.kind === 'tool_call_group' && Array.isArray(event.raw.grouped_events)) {
+      for (const child of event.raw.grouped_events) {
+        if (child.tool_name) {
+          toolSet.add(child.tool_name)
+        }
+      }
+    }
   }
 
   for (const toolName of [...toolSet].sort((a, b) => a.localeCompare(b))) {
