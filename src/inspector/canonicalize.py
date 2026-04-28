@@ -37,6 +37,9 @@ def context_fingerprint(context_key: Dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(context_key).encode("utf-8")).hexdigest()
 
 
+_CCH_RE = re.compile(r"cch=[a-f0-9]+;")
+
+
 def _normalize_space(value: str) -> str:
     return " ".join(value.split()).strip()
 
@@ -190,6 +193,47 @@ def _responses_context_key_from_payload(payload: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def _normalize_billing_header_in_content(content: Any) -> Any:
+    """Replace changing cch values in billing header with a stable placeholder."""
+    if isinstance(content, str):
+        return _CCH_RE.sub("cch=_;", content)
+    if isinstance(content, list):
+        out: List[Any] = []
+        for part in content:
+            if isinstance(part, dict) and "text" in part:
+                text = str(part.get("text") or "")
+                normalized = _CCH_RE.sub("cch=_;", text)
+                if normalized != text:
+                    out.append({**part, "text": normalized})
+                else:
+                    out.append(part)
+            else:
+                out.append(part)
+        return out
+    return content
+
+
+def _normalize_billing_header_in_input_items(
+    input_items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Normalize system messages that contain x-anthropic-billing-header."""
+    out: List[Dict[str, Any]] = []
+    for item in input_items:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        if str(item.get("role") or "") != "system":
+            out.append(item)
+            continue
+        content = item.get("content")
+        normalized = _normalize_billing_header_in_content(content)
+        if normalized is not content:
+            out.append({**item, "content": normalized})
+        else:
+            out.append(item)
+    return out
+
+
 def canonical_context_from_req(req_obj: Dict[str, Any], downstream_format: str) -> Tuple[Dict[str, Any], str]:
     if downstream_format == "openai_responses":
         payload = {
@@ -201,7 +245,7 @@ def canonical_context_from_req(req_obj: Dict[str, Any], downstream_format: str) 
             "include": req_obj.get("include"),
         }
         prefix_input, _ = _split_trailing_user_suffix_responses_input(payload["input"])
-        payload["input"] = prefix_input
+        payload["input"] = _normalize_billing_header_in_input_items(prefix_input)
         context_key = _responses_context_key_from_payload(payload)
         return context_key, str(req_obj.get("model") or "unknown")
 
@@ -217,6 +261,8 @@ def canonical_context_from_req(req_obj: Dict[str, Any], downstream_format: str) 
     model = str(chat_body.get("model") or "unknown")
     responses_payload = _build_codex_responses_payload_from_chat(prefix_chat_body, model)
     context_key = _responses_context_key_from_payload(responses_payload)
+    raw_input = context_key.get("input") if isinstance(context_key.get("input"), list) else []
+    context_key["input"] = _normalize_billing_header_in_input_items(raw_input)
     return context_key, model
 
 
