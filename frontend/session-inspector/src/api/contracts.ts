@@ -169,6 +169,22 @@ export interface TokenBreakdownResponse {
   has_uncountable_image_content: boolean
 }
 
+export interface ToolTokenTimelineItem {
+  sequence: number
+  call_id: string
+  tool_name: string
+  args_tokens: number
+  result_tokens: number
+  total_tokens: number
+  has_uncountable_image_content: boolean
+}
+
+export interface ToolTokenTimelineResponse {
+  total_tokens: number
+  items: ToolTokenTimelineItem[]
+  has_uncountable_image_content: boolean
+}
+
 export interface RequestCopyCompressedItem {
   pointer: string
   tool_name: string

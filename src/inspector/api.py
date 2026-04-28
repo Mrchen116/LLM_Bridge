@@ -12,6 +12,7 @@ from src.inspector.service import (
     get_request_copy_compression_for_event,
     get_timeline,
     get_timeline_event_detail,
+    get_tool_token_timeline_for_event,
     get_token_breakdown_for_event,
     list_sessions,
 )
@@ -142,6 +143,25 @@ async def session_inspector_token_breakdown(
         session_id=session_id,
         event_id=event_id,
     )
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"event_id {event_id} not found")
+    return payload
+
+
+@ROUTER.get("/api/session-inspector/sessions/{session_id}/events/{event_id}/tool-token-timeline")
+async def session_inspector_tool_token_timeline(
+    session_id: str,
+    event_id: str,
+):
+    _require_enabled()
+    try:
+        payload = get_tool_token_timeline_for_event(
+            logs_session_dir=DEFAULT_LOGS_SESSION_DIR,
+            session_id=session_id,
+            event_id=event_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not payload:
         raise HTTPException(status_code=404, detail=f"event_id {event_id} not found")
     return payload

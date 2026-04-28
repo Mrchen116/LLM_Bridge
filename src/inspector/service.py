@@ -31,6 +31,7 @@ from src.inspector.grouping import AssignedLane, TurnLaneInput, assign_lanes, la
 from src.inspector.types import Lane, SessionSummary, TimelineEvent, session_summary_to_dict
 from src.observability.token_stats import (
     collect_usage_tokens_for_stats,
+    compute_tool_token_timeline,
     compute_token_breakdown,
     list_compressible_tool_results,
 )
@@ -994,6 +995,42 @@ def get_token_breakdown_for_event(
     return compute_token_breakdown(
         record.req_obj,
         total_input_tokens_from_api=total_input_tokens_from_api,
+        downstream_format=record.downstream_format,
+    )
+
+
+def get_tool_token_timeline_for_event(
+    *,
+    logs_session_dir: str,
+    session_id: str,
+    event_id: str,
+) -> Optional[Dict[str, Any]]:
+    session_dir = _resolve_session_dir(logs_session_dir, session_id)
+    if not session_dir:
+        return None
+
+    bundle, _ = _get_raw_timeline_bundle(session_dir=session_dir, summary_chars=120)
+
+    turn_ts: Optional[str] = None
+    for raw_event in bundle.raw_events:
+        if str(raw_event.get("event_id") or "") == event_id:
+            turn_ts = str(raw_event.get("turn_ts") or "")
+            break
+
+    if not turn_ts:
+        return None
+
+    record: Optional[_TurnRecord] = None
+    for rec in bundle.records:
+        if rec.ts == turn_ts:
+            record = rec
+            break
+
+    if not record:
+        return None
+
+    return compute_tool_token_timeline(
+        record.req_obj,
         downstream_format=record.downstream_format,
     )
 

@@ -666,6 +666,234 @@ def compute_token_breakdown(
     }
 
 
+def _token_count_for_tool_result(value: Any) -> Tuple[int, bool]:
+    if isinstance(value, str):
+        return _count_text_tokens_no_images(value)
+    return _count_json_tokens_no_images(value)
+
+
+def _complete_tool_timeline_item(
+    *,
+    pending: Dict[str, Dict[str, Any]],
+    completed: List[Dict[str, Any]],
+    call_id: str,
+    result_tokens: int,
+    had_images: bool,
+) -> None:
+    item = pending.pop(call_id, None)
+    if item is None:
+        raise ValueError(f"tool result without matching tool call: {call_id or '(missing call id)'}")
+    item["result_tokens"] = result_tokens
+    item["total_tokens"] = int(item.get("args_tokens") or 0) + result_tokens
+    item["has_uncountable_image_content"] = bool(item.get("has_uncountable_image_content")) or had_images
+    completed.append(item)
+
+
+def _ensure_no_unmatched_tool_calls(pending: Dict[str, Dict[str, Any]]) -> None:
+    if not pending:
+        return
+    first = next(iter(pending.values()))
+    call_id = str(first.get("call_id") or "")
+    tool_name = str(first.get("tool_name") or "")
+    raise ValueError(f"tool call without matching result: {tool_name or '(unknown)'} {call_id or ''}".strip())
+
+
+def _build_tool_token_timeline_response(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total_tokens = sum(int(item.get("total_tokens") or 0) for item in items)
+    return {
+        "total_tokens": total_tokens,
+        "items": items,
+        "has_uncountable_image_content": any(
+            bool(item.get("has_uncountable_image_content")) for item in items
+        ),
+    }
+
+
+def _tool_token_timeline_anthropic(body: Dict[str, Any]) -> Dict[str, Any]:
+    pending: Dict[str, Dict[str, Any]] = {}
+    completed: List[Dict[str, Any]] = []
+    sequence = 0
+
+    messages = body.get("messages") or []
+    if not isinstance(messages, list):
+        return _build_tool_token_timeline_response([])
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+
+        if role == "assistant":
+            for block in content:
+                if not isinstance(block, dict) or str(block.get("type") or "") != "tool_use":
+                    continue
+                call_id = str(block.get("id") or "")
+                if not call_id:
+                    raise ValueError("tool call without call id")
+                if call_id in pending:
+                    raise ValueError(f"duplicate tool call id: {call_id}")
+                tool_name = str(block.get("name") or "(unknown)")
+                args_tokens = _count_text_tokens(block.get("name")) + _count_json_tokens(block.get("input"))
+                pending[call_id] = {
+                    "sequence": sequence,
+                    "call_id": call_id,
+                    "tool_name": tool_name,
+                    "args_tokens": args_tokens,
+                    "result_tokens": 0,
+                    "total_tokens": args_tokens,
+                    "has_uncountable_image_content": False,
+                }
+                sequence += 1
+        elif role == "user":
+            for block in content:
+                if not isinstance(block, dict) or str(block.get("type") or "") != "tool_result":
+                    continue
+                call_id = str(block.get("tool_use_id") or "")
+                inner = block.get("content")
+                had_images = _content_has_images(inner)
+                result_tokens = _count_text_tokens(_extract_text_from_blocks(inner))
+                _complete_tool_timeline_item(
+                    pending=pending,
+                    completed=completed,
+                    call_id=call_id,
+                    result_tokens=result_tokens,
+                    had_images=had_images,
+                )
+
+    _ensure_no_unmatched_tool_calls(pending)
+    return _build_tool_token_timeline_response(completed)
+
+
+def _tool_token_timeline_openai_chat(body: Dict[str, Any]) -> Dict[str, Any]:
+    pending: Dict[str, Dict[str, Any]] = {}
+    completed: List[Dict[str, Any]] = []
+    sequence = 0
+
+    messages = body.get("messages") or []
+    if not isinstance(messages, list):
+        return _build_tool_token_timeline_response([])
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                call_id = str(tc.get("id") or "")
+                if not call_id:
+                    raise ValueError("tool call without call id")
+                if call_id in pending:
+                    raise ValueError(f"duplicate tool call id: {call_id}")
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                tool_name = str(fn.get("name") or "(unknown)")
+                args_tokens = _count_text_tokens(fn.get("name")) + _count_text_tokens(fn.get("arguments"))
+                pending[call_id] = {
+                    "sequence": sequence,
+                    "call_id": call_id,
+                    "tool_name": tool_name,
+                    "args_tokens": args_tokens,
+                    "result_tokens": 0,
+                    "total_tokens": args_tokens,
+                    "has_uncountable_image_content": False,
+                }
+                sequence += 1
+        elif role == "tool":
+            call_id = str(msg.get("tool_call_id") or "")
+            content = msg.get("content")
+            result_tokens, had_images = _token_count_for_tool_result(
+                content if isinstance(content, str) else json.dumps(content or "", ensure_ascii=False)
+            )
+            _complete_tool_timeline_item(
+                pending=pending,
+                completed=completed,
+                call_id=call_id,
+                result_tokens=result_tokens,
+                had_images=had_images,
+            )
+
+    _ensure_no_unmatched_tool_calls(pending)
+    return _build_tool_token_timeline_response(completed)
+
+
+def _tool_token_timeline_openai_responses(body: Dict[str, Any]) -> Dict[str, Any]:
+    pending: Dict[str, Dict[str, Any]] = {}
+    completed: List[Dict[str, Any]] = []
+    sequence = 0
+
+    input_value = body.get("input")
+    if not isinstance(input_value, list):
+        return _build_tool_token_timeline_response([])
+
+    for item in input_value:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "")
+        if item_type in {"function_call", "tool_call"}:
+            call_id = str(item.get("call_id") or item.get("id") or "")
+            if not call_id:
+                raise ValueError("tool call without call id")
+            if call_id in pending:
+                raise ValueError(f"duplicate tool call id: {call_id}")
+            tool_name = str(item.get("name") or "(unknown)")
+            args_tokens = _count_text_tokens(item.get("name")) + _count_text_tokens(item.get("arguments"))
+            pending[call_id] = {
+                "sequence": sequence,
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "args_tokens": args_tokens,
+                "result_tokens": 0,
+                "total_tokens": args_tokens,
+                "has_uncountable_image_content": False,
+            }
+            sequence += 1
+            continue
+        if item_type != "function_call_output":
+            continue
+        call_id = str(item.get("call_id") or "")
+        result_tokens, had_images = _token_count_for_tool_result(item.get("output"))
+        _complete_tool_timeline_item(
+            pending=pending,
+            completed=completed,
+            call_id=call_id,
+            result_tokens=result_tokens,
+            had_images=had_images,
+        )
+
+    _ensure_no_unmatched_tool_calls(pending)
+    return _build_tool_token_timeline_response(completed)
+
+
+def compute_tool_token_timeline(
+    req_obj: Dict[str, Any],
+    *,
+    downstream_format: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Compute ordered per-invocation tool token totals for a request context.
+    The per-call argument token count follows the existing token-breakdown tool_calls
+    accounting: tool name plus serialized arguments/input.
+    """
+    if downstream_format in KNOWN_TOKEN_FORMATS:
+        fmt = str(downstream_format)
+    else:
+        fmt = detect_token_format_from_request(req_obj)
+    if fmt == TOKEN_FORMAT_ANTHROPIC:
+        return _tool_token_timeline_anthropic(req_obj)
+    if fmt == TOKEN_FORMAT_OPENAI_CHAT:
+        return _tool_token_timeline_openai_chat(req_obj)
+    if fmt == TOKEN_FORMAT_OPENAI_RESPONSES:
+        return _tool_token_timeline_openai_responses(req_obj)
+    return _build_tool_token_timeline_response([])
+
+
 def list_compressible_tool_results(
     req_obj: Dict[str, Any],
     *,

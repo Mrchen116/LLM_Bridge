@@ -407,6 +407,136 @@ def test_session_inspector_request_copy_compression_marks_large_tool_results(cli
     assert payload["compressed_items"][0]["tokens"] > 500
 
 
+def test_session_inspector_tool_token_timeline_pairs_call_and_result(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-38-30_000_tool-token-timeline-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-38-30_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "openai_compatible",
+            "model": "demo-model",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": '{"command":"pwd"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "workspace path output",
+                },
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-38-30_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_tool_token_timeline",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55},
+        },
+    )
+
+    resp_timeline = client.get(
+        "/api/session-inspector/sessions/tool-token-timeline-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp_timeline.status_code == 200
+    timeline_payload = resp_timeline.json()
+    event_id = next(ev["event_id"] for ev in timeline_payload["events"] if ev["kind"] == "tool_result")
+
+    resp_tool_timeline = client.get(
+        f"/api/session-inspector/sessions/tool-token-timeline-session/events/{event_id}/tool-token-timeline"
+    )
+    assert resp_tool_timeline.status_code == 200
+    payload = resp_tool_timeline.json()
+    assert payload["total_tokens"] == payload["items"][0]["total_tokens"]
+    assert payload["items"][0]["tool_name"] == "bash"
+    assert payload["items"][0]["args_tokens"] > 0
+    assert payload["items"][0]["result_tokens"] > 0
+    assert payload["items"][0]["total_tokens"] == (
+        payload["items"][0]["args_tokens"] + payload["items"][0]["result_tokens"]
+    )
+
+
+def test_session_inspector_tool_token_timeline_reports_unmatched_calls(client: TestClient, monkeypatch):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    session_dir = Path.cwd() / "logs" / "session" / "2026-02-22_12-38-40_000_unmatched-tool-token-session"
+
+    _write_json(
+        session_dir / "2026-02-22_12-38-40_001-req-openai_chat.json",
+        {
+            "_upstream_provider": "openai_compatible",
+            "model": "demo-model",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_missing",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": '{"command":"pwd"}',
+                            },
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+    _write_json(
+        session_dir / "2026-02-22_12-38-40_001-non-stream-res-openai_chat.json",
+        {
+            "id": "chatcmpl_unmatched_tool_token_timeline",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55},
+        },
+    )
+
+    resp_timeline = client.get(
+        "/api/session-inspector/sessions/unmatched-tool-token-session/timeline",
+        params={"include_non_tool": "true"},
+    )
+    assert resp_timeline.status_code == 200
+    timeline_payload = resp_timeline.json()
+    event_id = next(ev["event_id"] for ev in timeline_payload["events"] if ev["kind"] == "assistant_text")
+
+    resp_tool_timeline = client.get(
+        f"/api/session-inspector/sessions/unmatched-tool-token-session/events/{event_id}/tool-token-timeline"
+    )
+    assert resp_tool_timeline.status_code == 422
+    assert "tool call without matching result" in resp_tool_timeline.text
+
+
 def test_session_inspector_lane_grouping_uses_full_context(client: TestClient, monkeypatch):
     monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
 

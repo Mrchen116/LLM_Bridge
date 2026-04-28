@@ -5,6 +5,7 @@ import type {
   SessionsResponse,
   TimelineEventDetailResponse,
   TimelineResponse,
+  ToolTokenTimelineResponse,
   TokenBreakdownResponse,
 } from './contracts'
 import type { TimelineFilters } from '../state/types'
@@ -142,6 +143,15 @@ export async function fetchTokenBreakdown(
 ): Promise<TokenBreakdownResponse> {
   return requestJson<TokenBreakdownResponse>(
     `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}/token-breakdown`,
+  )
+}
+
+export async function fetchToolTokenTimeline(
+  sessionId: string,
+  eventId: string,
+): Promise<ToolTokenTimelineResponse> {
+  return requestJson<ToolTokenTimelineResponse>(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}/tool-token-timeline`,
   )
 }
 

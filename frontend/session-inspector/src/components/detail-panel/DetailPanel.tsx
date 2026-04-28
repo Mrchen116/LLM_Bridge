@@ -5,6 +5,8 @@ import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import type {
   TimelineEvent,
+  ToolTokenTimelineItem,
+  ToolTokenTimelineResponse,
   ToolDefinition,
   TokenBreakdownResponse,
 } from '../../api/contracts'
@@ -13,6 +15,7 @@ import {
   fetchLogFileContent,
   fetchRequestCopyCompression,
   fetchTimelineEventDetail,
+  fetchToolTokenTimeline,
   fetchTokenBreakdown,
 } from '../../api/session-inspector-client'
 import { extractEventMainText, formatCodeValue, normalizeEscapedText, normalizeReadableText } from '../../lib/event-display'
@@ -872,6 +875,25 @@ const TOKEN_CATEGORY_LABELS: Record<string, string> = {
   assistant_reasoning: 'Assistant Reasoning',
 }
 
+const TOOL_TIMELINE_COLORS = [
+  '#0067b1',
+  '#d65f00',
+  '#00843d',
+  '#c71938',
+  '#6f2dbd',
+  '#00857a',
+  '#b0007a',
+  '#8f6a00',
+  '#2f6b00',
+  '#005f73',
+  '#9b2226',
+  '#3346a8',
+  '#bf3f00',
+  '#147d64',
+  '#7f1d7a',
+  '#5c6f00',
+]
+
 function fmt(n: number): string {
   return n.toLocaleString()
 }
@@ -879,6 +901,55 @@ function fmt(n: number): string {
 function pct(n: number, total: number): string {
   if (total === 0) return '0%'
   return ((n / total) * 100).toFixed(1) + '%'
+}
+
+function colorForToolName(toolName: string): string {
+  let hash = 0
+  for (let i = 0; i < toolName.length; i += 1) {
+    hash = (hash * 31 + toolName.charCodeAt(i)) >>> 0
+  }
+  return TOOL_TIMELINE_COLORS[hash % TOOL_TIMELINE_COLORS.length]
+}
+
+function buildToolTimelineTitle(item: ToolTokenTimelineItem): string {
+  return `${item.tool_name}: ${fmt(item.total_tokens)} tokens · args ${fmt(item.args_tokens)} / result ${fmt(item.result_tokens)}`
+}
+
+function groupToolTimelineItems(items: ToolTokenTimelineItem[]): Array<{
+  toolName: string
+  count: number
+  totalTokens: number
+  argsTokens: number
+  resultTokens: number
+}> {
+  const byTool = new Map<
+    string,
+    {
+      toolName: string
+      count: number
+      totalTokens: number
+      argsTokens: number
+      resultTokens: number
+    }
+  >()
+
+  for (const item of items) {
+    const key = item.tool_name || '(unknown)'
+    const existing = byTool.get(key) ?? {
+      toolName: key,
+      count: 0,
+      totalTokens: 0,
+      argsTokens: 0,
+      resultTokens: 0,
+    }
+    existing.count += 1
+    existing.totalTokens += item.total_tokens
+    existing.argsTokens += item.args_tokens
+    existing.resultTokens += item.result_tokens
+    byTool.set(key, existing)
+  }
+
+  return [...byTool.values()].sort((a, b) => b.totalTokens - a.totalTokens || a.toolName.localeCompare(b.toolName))
 }
 
 function TokenBreakdownBlock({
@@ -1021,6 +1092,240 @@ function TokenBreakdownBlock({
         </div>
       )}
     </details>
+  )
+}
+
+function ToolTokenTimelineBlock({
+  sessionId,
+  eventId,
+}: {
+  sessionId: string
+  eventId: string
+}) {
+  const [data, setData] = useState<ToolTokenTimelineResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [modalOpen, setModalOpen] = useState(false)
+  const [activeToolName, setActiveToolName] = useState('')
+  const onToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
+    const isOpen = e.currentTarget.open
+    if (isOpen && !data && !loading && !error) {
+      setLoading(true)
+      void fetchToolTokenTimeline(sessionId, eventId)
+        .then((payload) => {
+          setData(payload)
+          setActiveToolName('')
+        })
+        .catch((err: unknown) => {
+          setError(err instanceof Error ? err.message : String(err))
+        })
+        .finally(() => {
+          setLoading(false)
+        })
+    }
+  }
+
+  const totalTokens = data?.total_tokens ?? 0
+  const groupedTools = useMemo(() => groupToolTimelineItems(data?.items ?? []), [data])
+
+  useEffect(() => {
+    if (!modalOpen) {
+      return
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setModalOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [modalOpen])
+
+  return (
+    <>
+      <details className="raw-event tool-token-timeline-details" onToggle={onToggle}>
+        <summary>工具 Token 时间轴</summary>
+
+        {loading && <div className="subtle tool-token-timeline-body">计算中...</div>}
+        {!loading && error && <div className="subtle tool-token-timeline-body">加载失败：{error}</div>}
+
+        {!loading && data && (
+          <div className="tool-token-timeline-body">
+            <div className="tool-token-header">
+              <div>
+                <span className="token-breakdown-total">{fmt(totalTokens)} tool tokens</span>
+                <span className="token-breakdown-note">
+                  {data.items.length > 0 ? `${fmt(data.items.length)} 次工具调用` : '当前请求上下文没有已配对工具调用'}
+                </span>
+              </div>
+              {data.items.length > 0 ? (
+                <button className="btn ghost tool-token-expand-btn" type="button" onClick={() => setModalOpen(true)}>
+                  全屏查看
+                </button>
+              ) : null}
+            </div>
+
+            {totalTokens > 0 ? (
+              <div className="tool-token-track" title="按工具调用顺序展示 args + result tokens">
+                {data.items.map((item) => {
+                  const width = pct(item.total_tokens, totalTokens)
+                  const color = colorForToolName(item.tool_name)
+                  return (
+                    <div
+                      className="tool-token-segment"
+                      key={`${item.sequence}-${item.call_id}`}
+                      style={{ width, background: color }}
+                      title={buildToolTimelineTitle(item)}
+                    />
+                  )
+                })}
+              </div>
+            ) : null}
+
+            {data.items.length > 0 ? (
+              <div className="tool-token-rows">
+                {data.items.map((item) => {
+                  const color = colorForToolName(item.tool_name)
+                  return (
+                    <div className="tool-token-row" key={`tool-row-${item.sequence}-${item.call_id}`}>
+                      <span className="token-breakdown-dot" style={{ background: color }} />
+                      <span className="tool-token-name" title={item.tool_name}>
+                        {item.tool_name}
+                      </span>
+                      <span className="token-breakdown-bar-mini">
+                        <span
+                          className="token-breakdown-bar-fill"
+                          style={{ width: pct(item.total_tokens, totalTokens), background: color }}
+                        />
+                      </span>
+                      <span className="tool-token-split">
+                        {fmt(item.args_tokens)} + {fmt(item.result_tokens)}
+                      </span>
+                      <span className="token-breakdown-count">{fmt(item.total_tokens)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+
+            {data.has_uncountable_image_content && (
+              <div className="token-breakdown-warn">
+                部分 Tool Results 包含图片数据（base64），已跳过计数，实际 result token 占比可能更高。
+              </div>
+            )}
+          </div>
+        )}
+      </details>
+
+      {modalOpen && data ? (
+        <div className="tool-token-modal-backdrop" onClick={() => setModalOpen(false)}>
+          <div className="tool-token-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="tool-token-modal-head">
+              <div>
+                <div className="tool-token-modal-title">工具 Token 时间轴</div>
+                <div className="subtle">
+                  {fmt(totalTokens)} tokens · {fmt(data.items.length)} 次工具调用
+                  {activeToolName ? ` · 高亮 ${activeToolName}` : ''}
+                </div>
+              </div>
+              <div className="tool-token-modal-actions">
+                {activeToolName ? (
+                  <button className="btn ghost" type="button" onClick={() => setActiveToolName('')}>
+                    清除高亮
+                  </button>
+                ) : null}
+                <button className="btn ghost" type="button" onClick={() => setModalOpen(false)}>
+                  关闭
+                </button>
+              </div>
+            </div>
+
+            <div className="tool-token-modal-track-wrap">
+              <div className="tool-token-modal-track" title="按工具调用顺序展示 args + result tokens">
+                {data.items.map((item) => {
+                  const color = colorForToolName(item.tool_name)
+                  const isDimmed = Boolean(activeToolName && item.tool_name !== activeToolName)
+                  return (
+                    <button
+                      className={`tool-token-modal-segment${isDimmed ? ' dimmed' : ''}${item.tool_name === activeToolName ? ' active' : ''}`}
+                      key={`modal-segment-${item.sequence}-${item.call_id}`}
+                      style={{ width: pct(item.total_tokens, totalTokens), background: color }}
+                      title={buildToolTimelineTitle(item)}
+                      type="button"
+                      onClick={() => setActiveToolName(item.tool_name)}
+                    />
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="tool-token-modal-body">
+              <section className="tool-token-modal-panel">
+                <div className="tool-token-modal-panel-title">按时序</div>
+                <div className="tool-token-modal-list">
+                  {data.items.map((item) => {
+                    const color = colorForToolName(item.tool_name)
+                    const isDimmed = Boolean(activeToolName && item.tool_name !== activeToolName)
+                    const isActive = item.tool_name === activeToolName
+                    return (
+                      <button
+                        className={`tool-token-modal-row${isDimmed ? ' dimmed' : ''}${isActive ? ' active' : ''}`}
+                        key={`modal-row-${item.sequence}-${item.call_id}`}
+                        type="button"
+                        onClick={() => setActiveToolName(item.tool_name)}
+                      >
+                        <span className="tool-token-modal-index">{item.sequence + 1}</span>
+                        <span className="token-breakdown-dot" style={{ background: color }} />
+                        <span className="tool-token-modal-name" title={item.tool_name}>
+                          {item.tool_name}
+                        </span>
+                        <span className="tool-token-modal-meter">
+                          <span style={{ width: pct(item.total_tokens, totalTokens), background: color }} />
+                        </span>
+                        <span className="tool-token-modal-split">
+                          args {fmt(item.args_tokens)} · result {fmt(item.result_tokens)}
+                        </span>
+                        <span className="tool-token-modal-total">{fmt(item.total_tokens)}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </section>
+
+              <aside className="tool-token-modal-panel tool-token-modal-panel--summary">
+                <div className="tool-token-modal-panel-title">按工具聚合</div>
+                <div className="tool-token-summary-list">
+                  {groupedTools.map((tool) => {
+                    const color = colorForToolName(tool.toolName)
+                    const isActive = tool.toolName === activeToolName
+                    const isDimmed = Boolean(activeToolName && !isActive)
+                    return (
+                      <button
+                        className={`tool-token-summary-item${isDimmed ? ' dimmed' : ''}${isActive ? ' active' : ''}`}
+                        key={`tool-summary-${tool.toolName}`}
+                        type="button"
+                        onClick={() => setActiveToolName(isActive ? '' : tool.toolName)}
+                      >
+                        <span className="token-breakdown-dot" style={{ background: color }} />
+                        <span className="tool-token-summary-main">
+                          <span className="tool-token-summary-name" title={tool.toolName}>
+                            {tool.toolName}
+                          </span>
+                          <span className="tool-token-summary-meta">
+                            {fmt(tool.count)} 次 · args {fmt(tool.argsTokens)} · result {fmt(tool.resultTokens)}
+                          </span>
+                        </span>
+                        <span className="tool-token-summary-total">{fmt(tool.totalTokens)}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   )
 }
 
@@ -1483,6 +1788,11 @@ export function DetailPanel({ event, sessionId, onResizeStart }: DetailPanelProp
               ) : null}
 
               <TokenBreakdownBlock key={displayEvent.event_id} sessionId={sessionId} eventId={getEventApiId(displayEvent)} />
+              <ToolTokenTimelineBlock
+                key={`tool-token-timeline-${displayEvent.event_id}`}
+                sessionId={sessionId}
+                eventId={getEventApiId(displayEvent)}
+              />
 
               <details className="raw-event">
                 <summary>完整事件 JSON</summary>
