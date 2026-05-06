@@ -102,6 +102,7 @@ def test_messages_stream_writes_session_logs(client_with_logs: TestClient):
 
     assert req_obj["model"] == "moonshot:kimi-k2.5"
     assert non_stream_obj["object"] == "chat.completion"
+    assert "usage may omit provider-native fields" in non_stream_obj["_log_meta"]["usage_warning"]
     assert non_stream_obj["usage"]["prompt_tokens"] == 2
     assert non_stream_obj["usage"]["completion_tokens"] == 1
 

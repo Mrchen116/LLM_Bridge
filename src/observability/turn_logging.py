@@ -16,6 +16,12 @@ DOWNSTREAM_FORMAT_ANTHROPIC_MESSAGES = "anthropic_messages"
 DOWNSTREAM_FORMAT_OPENAI_CHAT = "openai_chat"
 DOWNSTREAM_FORMAT_OPENAI_RESPONSES = "openai_responses"
 
+_NON_STREAM_NORMALIZED_USAGE_WARNING = (
+    "This session non-stream response is normalized to OpenAI ChatCompletion format; "
+    "usage may omit provider-native fields. See the matching downstream-res log for "
+    "complete usage."
+)
+
 RAW_BUCKET_OPENAI_CHAT = "openai_chat"
 RAW_BUCKET_OPENAI_CODEX = "openai_codex"
 RAW_BUCKET_ANTHROPIC = "anthropic"
@@ -165,9 +171,16 @@ def log_response_phase(
         _dump_json(paths.session_downstream_res_path, with_session_log_meta(downstream_response_obj))
     if session_writable and paths.session_non_stream_res_path:
         source_obj = non_stream_response_obj or downstream_response_obj
+        non_stream_log_obj = build_session_non_stream_openai_chat(source_obj, paths.downstream_format)
+        if paths.downstream_format != DOWNSTREAM_FORMAT_OPENAI_CHAT:
+            meta = non_stream_log_obj.get("_log_meta") if isinstance(non_stream_log_obj.get("_log_meta"), dict) else {}
+            non_stream_log_obj["_log_meta"] = {
+                **meta,
+                "usage_warning": _NON_STREAM_NORMALIZED_USAGE_WARNING,
+            }
         _dump_json(
             paths.session_non_stream_res_path,
-            with_session_log_meta(build_session_non_stream_openai_chat(source_obj, paths.downstream_format)),
+            with_session_log_meta(non_stream_log_obj),
         )
 
 
