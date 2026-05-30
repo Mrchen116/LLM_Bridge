@@ -840,6 +840,31 @@ select {
   white-space: pre;
 }
 
+.detail-markdown table {
+  margin: 0 0 10px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  /* GFM tables render as <table> via remark-gfm; without these rules they
+     collapse into borderless stacked text and look unrendered. */
+}
+
+.detail-markdown th,
+.detail-markdown td {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.detail-markdown thead th {
+  background: #eef3f8;
+  font-weight: 600;
+}
+
+.detail-markdown tbody tr:nth-child(even) td {
+  background: #f0f4f9;
+}
+
 .grouped-event-list {
   display: flex;
   flex-direction: column;
