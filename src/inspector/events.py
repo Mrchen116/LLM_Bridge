@@ -212,6 +212,14 @@ def _extract_tail_request_summaries(req_obj: Dict[str, Any], downstream_format: 
             role = str(item.get("role") or "")
             if role == "assistant":
                 break
+            # A trailing system message (e.g. appended skills/context block) is not a
+            # turn boundary; emit it as its own event and keep walking so the real user
+            # input behind it is still captured.
+            if role == "system":
+                system_text = _extract_text_from_content(item.get("content"))
+                if system_text:
+                    out.append({"kind": "system_context", "summary": system_text})
+                continue
             if role not in {"user", "tool", "developer"}:
                 break
             text = _extract_text_from_content(item.get("content"))
@@ -228,31 +236,50 @@ def _extract_tail_request_summaries(req_obj: Dict[str, Any], downstream_format: 
         role = str(msg.get("role") or "")
         if role == "assistant":
             break
+        # A trailing system message (e.g. appended skills/context block) is not a
+        # turn boundary; emit it as its own event and keep walking so the real user
+        # input behind it is still captured.
+        if role == "system":
+            system_text = _extract_text_from_content(msg.get("content"))
+            if system_text:
+                out.append({"kind": "system_context", "summary": system_text})
+            continue
         if role not in {"user", "tool", "developer"}:
             break
 
         content = msg.get("content")
         if role == "user" and isinstance(content, list):
-            # anthropic tool_result 常见于 user role；同一个 content 列表中可能有多个结果。
-            # 这里按单个结果产出事件；由于外层稍后会 reverse，内部需倒序追加。
+            # anthropic tool_result 常见于 user role；同一个 content 列表中可能有多个结果，
+            # 且可能与用户新输入的 text 块混在同一条消息里（例如打断后重新发起指令）。
+            # 这里把 tool_result 与 text 分别产出事件；由于外层稍后会 reverse，
+            # 内部需倒序追加（先 user_input 再 tool_results，最终展示为 tool_results→user_input）。
             tool_results: List[Dict[str, Any]] = []
+            user_text_parts: List[str] = []
             for part in reversed(content):
                 if not isinstance(part, dict):
                     continue
-                if str(part.get("type") or "") != "tool_result":
+                if str(part.get("type") or "") == "tool_result":
+                    text = _extract_text_from_content(part.get("content"))
+                    if text:
+                        tool_use_id = str(part.get("tool_use_id") or "").strip()
+                        tool_results.append(
+                            {
+                                "kind": "tool_result",
+                                "summary": text,
+                                "tool_name": tool_name_by_call_id.get(tool_use_id),
+                                "tool_use_id": tool_use_id or None,
+                            }
+                        )
                     continue
-                text = _extract_text_from_content(part.get("content"))
-                if text:
-                    tool_use_id = str(part.get("tool_use_id") or "").strip()
-                    tool_results.append(
-                        {
-                            "kind": "tool_result",
-                            "summary": text,
-                            "tool_name": tool_name_by_call_id.get(tool_use_id),
-                            "tool_use_id": tool_use_id or None,
-                        }
-                    )
-            if tool_results:
+                part_text = _extract_text_from_content(part)
+                if part_text:
+                    user_text_parts.append(part_text)
+            if tool_results or user_text_parts:
+                if user_text_parts:
+                    # user_text_parts 按 reversed(content) 收集，需还原成原始顺序。
+                    user_text = "\n".join(reversed(user_text_parts)).strip()
+                    if user_text:
+                        out.append({"kind": "user_input", "summary": user_text})
                 out.extend(tool_results)
                 continue
 

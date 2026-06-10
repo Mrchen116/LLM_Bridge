@@ -1412,3 +1412,65 @@ def test_session_inspector_keyword_presets_api(client: TestClient, monkeypatch):
     resp_get = client.get("/api/session-inspector/keyword-presets")
     assert resp_get.status_code == 200
     assert resp_get.json()["default_preset_id"] == "p1"
+
+
+def test_request_events_trailing_system_message_keeps_user_input():
+    from src.inspector.events import build_request_events
+
+    req_obj = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<command-message>code-review</command-message>"},
+                    {"type": "text", "text": "please review my diff"},
+                ],
+            },
+            # Claude Code appends an extra system-role message at the very end.
+            {"role": "system", "content": "The following skills are available..."},
+        ]
+    }
+    events = build_request_events(
+        turn_ts="t",
+        lane_id="L",
+        downstream_format="anthropic_messages",
+        req_obj=req_obj,
+        summary_chars=200,
+    )
+    kinds = [e["kind"] for e in events]
+    assert kinds == ["user_input", "system_context"]
+    assert "please review my diff" in events[0]["summary"]
+    assert "skills" in events[1]["summary"]
+
+
+def test_request_events_user_message_mixing_tool_result_and_text():
+    from src.inspector.events import build_request_events
+
+    req_obj = {
+        "messages": [
+            {"role": "assistant", "content": [{"type": "text", "text": "calling tools"}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "a", "content": "result A"},
+                    {"type": "tool_result", "tool_use_id": "b", "content": "result B"},
+                    {"type": "text", "text": "[Request interrupted by user]"},
+                    {"type": "text", "text": "/code-review high"},
+                ],
+            },
+        ]
+    }
+    events = build_request_events(
+        turn_ts="t",
+        lane_id="L",
+        downstream_format="anthropic_messages",
+        req_obj=req_obj,
+        summary_chars=200,
+    )
+    kinds = [e["kind"] for e in events]
+    # tool results first (in array order), then the user's new typed input.
+    assert kinds == ["tool_result", "tool_result", "user_input"]
+    assert events[0]["summary"] == "result A"
+    assert events[1]["summary"] == "result B"
+    assert "/code-review high" in events[2]["summary"]
+    assert "[Request interrupted by user]" in events[2]["summary"]

@@ -196,7 +196,12 @@ function decodeUnicodeEscapes(value: string): string {
 export function extractEventMainText(event: Pick<TimelineEvent, 'kind' | 'summary' | 'detail'>): string {
   const detail = event.detail
 
-  if ((event.kind === 'user_input' || event.kind === 'tool_result') && isObjectRecord(detail)) {
+  if (
+    (event.kind === 'user_input' ||
+      event.kind === 'tool_result' ||
+      event.kind === 'system_context') &&
+    isObjectRecord(detail)
+  ) {
     const summaryText = detail.summary_text
     if (typeof summaryText === 'string') {
       return normalizeReadableText(summaryText)
