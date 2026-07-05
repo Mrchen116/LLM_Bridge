@@ -30,9 +30,9 @@ CODEX_RETRYABLE_ERROR_CODES = CODEX_FAILOVER_ERROR_CODES | {
     "server_error",
 }
 CODEX_DEFAULT_ORIGINATOR = "codex_cli_rs"
-CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.104.0 (LLM_PROXY)"
+CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.135.0 (LLM_PROXY)"
 CODEX_DEFAULT_BETA_FEATURES = "multi_agent,prevent_idle_sleep"
-CODEX_DEFAULT_VERSION = "0.104.0"
+CODEX_DEFAULT_VERSION = "0.135.0"
 
 
 def is_rate_limit_status(status_code: int) -> bool:
@@ -267,6 +267,7 @@ async def collect_codex_response_from_stream(
                 }
 
             text_parts: List[str] = []
+            output_items: List[Dict[str, Any]] = []
             completed_response: Dict[str, Any] | None = None
             failed_response: Dict[str, Any] | None = None
             stream_error_text = ""
@@ -290,6 +291,10 @@ async def collect_codex_response_from_stream(
                     delta_text = evt.get("delta")
                     if isinstance(delta_text, str) and delta_text:
                         text_parts.append(delta_text)
+                elif evt_type == "response.output_item.done":
+                    item = evt.get("item")
+                    if isinstance(item, dict):
+                        output_items.append(item)
                 elif evt_type == "error":
                     error_obj = evt.get("error")
                     if isinstance(error_obj, dict):
@@ -343,6 +348,20 @@ async def collect_codex_response_from_stream(
                     "output": [{"type": "message", "content": [{"type": "output_text", "text": "".join(text_parts)}]}],
                     "usage": {"input_tokens": 0, "output_tokens": 0},
                 }
+            else:
+                # Some models (e.g. gpt-5.5) send `response.completed` with an empty
+                # `output` and only deliver the real content (message text + reasoning
+                # encrypted_content) via `response.output_item.done` events. Backfill the
+                # output from the collected items so downstream text extraction and
+                # reasoning re-injection keep working.
+                existing_output = completed_response.get("output")
+                if not (isinstance(existing_output, list) and existing_output):
+                    if output_items:
+                        completed_response["output"] = output_items
+                    elif text_parts:
+                        completed_response["output"] = [
+                            {"type": "message", "content": [{"type": "output_text", "text": "".join(text_parts)}]}
+                        ]
             return {
                 "ok": True,
                 "status_code": r.status_code,
