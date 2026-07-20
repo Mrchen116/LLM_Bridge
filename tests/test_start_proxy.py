@@ -82,6 +82,25 @@ def test_resolve_profile_supports_byenv_with_reasoning_suffix():
     assert resolved.reasoning_effort == "high"
 
 
+def test_resolve_profile_supports_max_reasoning_suffix():
+    cfg = {
+        "defaultProfile": "codexOAuth",
+        "profiles": {
+            "codexOAuth": {
+                "provider": "codex_oauth",
+                "baseUrl": "https://api.openai.com/v1",
+                "auth": {},
+                "capabilities": {"ingress": ["openai_chat"]},
+                "defaults": {"model": "gpt-5.6-luna"},
+            }
+        },
+    }
+
+    resolved = resolve_profile(cfg, {"model": "byenv@max"}, PROTOCOL_OPENAI_CHAT)
+    assert resolved.model == "gpt-5.6-luna"
+    assert resolved.reasoning_effort == "max"
+
+
 def test_resolve_profile_supports_profile_prefixed_byenv_with_reasoning_suffix():
     cfg = {
         "defaultProfile": "moonshot",

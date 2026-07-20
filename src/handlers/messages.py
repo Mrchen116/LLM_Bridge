@@ -48,6 +48,7 @@ from token_auth import CodexAccountUnavailableError
 from proxy_converters import (
     _extract_model_and_ban_explore,
     _strip_task_explore_line,
+    anthropic_output_config_to_codex_reasoning_effort,
 )
 from proxy_logging import (
     _build_anthropic_non_stream_from_events,
@@ -305,6 +306,7 @@ def _build_openai_bridge_payload(
     session_id: Optional[str],
     provider: str,
     model_suffix_effort: Optional[str],
+    anthropic_output_config: Any,
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     oai_messages = anthropic_messages_to_openai_chat_messages(messages, system)
 
@@ -355,6 +357,11 @@ def _build_openai_bridge_payload(
         codex_chat_body["top_p"] = top_p
     if stop_sequences is not None:
         codex_chat_body["stop"] = stop_sequences
+
+    anthropic_effort = anthropic_output_config_to_codex_reasoning_effort(anthropic_output_config)
+    if anthropic_effort is not None:
+        # 复用统一的显式参数 > 模型 @后缀 > 默认值优先级解析。
+        codex_chat_body["reasoning_effort"] = anthropic_effort
 
     codex_payload = openai_chat_body_to_codex_payload(
         codex_chat_body, model, model_suffix_effort=model_suffix_effort
@@ -615,6 +622,7 @@ async def run_messages_flow(
     tools = body.get("tools")
     tool_choice = body.get("tool_choice")
     thinking = body.get("thinking")
+    output_config = body.get("output_config")
 
     tools = _strip_task_explore_line(tools, ban_explore=ban_explore)
     if tools is not None:
@@ -710,6 +718,7 @@ async def run_messages_flow(
         session_id=session_id,
         provider=str(profile.get("provider") or ""),
         model_suffix_effort=resolved.reasoning_effort if auth_type == "codex_oauth" else None,
+        anthropic_output_config=output_config,
     )
 
     log_request_phase(

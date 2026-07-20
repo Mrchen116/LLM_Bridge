@@ -180,7 +180,7 @@ def _split_model_reasoning_effort(raw_model: str, provider: str) -> Tuple[str, O
 
     model_name, maybe_effort = raw_model.rsplit("@", 1)
     effort = str(maybe_effort).strip().lower()
-    allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    allowed = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
     if model_name and effort in allowed:
         return model_name, effort
     return raw_model, None

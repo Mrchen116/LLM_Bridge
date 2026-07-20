@@ -178,6 +178,10 @@ For `codex_oauth` profiles, you can optionally append a reasoning effort suffix 
 
 When the downstream request does not provide `reasoning_effort` / `reasoning.effort`, the model suffix is used. Explicit parameters take precedence over the suffix.
 
+For Anthropic Messages ingress (including Claude Code), `output_config.effort` is converted to Codex Responses `reasoning.effort` and takes precedence over the model suffix. `low`, `medium`, `high`, `xhigh`, and `max` map directly.
+
+The Codex OAuth upstream client version defaults to `0.144.6`. If the upstream later requires a newer client, set `CODEX_UPSTREAM_CLIENT_VERSION` before starting the proxy instead of changing source code.
+
 ## API Endpoints
 
 - `GET /health`: health check

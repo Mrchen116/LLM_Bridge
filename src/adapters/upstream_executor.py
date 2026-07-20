@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -30,9 +31,14 @@ CODEX_RETRYABLE_ERROR_CODES = CODEX_FAILOVER_ERROR_CODES | {
     "server_error",
 }
 CODEX_DEFAULT_ORIGINATOR = "codex_cli_rs"
-CODEX_DEFAULT_USER_AGENT = "codex_cli_rs/0.135.0 (LLM_PROXY)"
 CODEX_DEFAULT_BETA_FEATURES = "multi_agent,prevent_idle_sleep"
-CODEX_DEFAULT_VERSION = "0.135.0"
+CODEX_DEFAULT_VERSION = "0.144.6"
+CODEX_UPSTREAM_CLIENT_VERSION_ENV = "CODEX_UPSTREAM_CLIENT_VERSION"
+
+
+def _get_codex_upstream_client_version() -> str:
+    configured = os.getenv(CODEX_UPSTREAM_CLIENT_VERSION_ENV, "").strip()
+    return configured or CODEX_DEFAULT_VERSION
 
 
 def is_rate_limit_status(status_code: int) -> bool:
@@ -166,6 +172,8 @@ def build_codex_oauth_style_headers(
     incoming_originator = _header_value_case_insensitive(client_headers, "originator")
     incoming_user_agent = _header_value_case_insensitive(client_headers, "user-agent")
     incoming_beta_features = _header_value_case_insensitive(client_headers, "x-codex-beta-features")
+    incoming_version = _header_value_case_insensitive(client_headers, "version")
+    codex_version = incoming_version or _get_codex_upstream_client_version()
     is_codex_downstream = bool(
         incoming_originator.lower() == "codex_cli_rs"
         or "codex_cli_rs" in incoming_user_agent.lower()
@@ -176,12 +184,9 @@ def build_codex_oauth_style_headers(
         "accept": "text/event-stream",
         "content-type": "application/json",
         "originator": incoming_originator or CODEX_DEFAULT_ORIGINATOR,
-        "user-agent": incoming_user_agent or CODEX_DEFAULT_USER_AGENT,
+        "user-agent": incoming_user_agent or f"codex_cli_rs/{codex_version} (LLM_PROXY)",
         "x-codex-beta-features": incoming_beta_features or CODEX_DEFAULT_BETA_FEATURES,
-        "version": (
-            _header_value_case_insensitive(client_headers, "version")
-            or CODEX_DEFAULT_VERSION
-        ),
+        "version": codex_version,
     }
 
     if authorization:

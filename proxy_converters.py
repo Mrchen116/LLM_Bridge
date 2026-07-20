@@ -507,10 +507,22 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
         return None
     effort = str(value).strip().lower()
     # Responses API 的推理强度白名单，避免把无效值透传到上游导致 4xx。
-    allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    allowed = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
     if effort in allowed:
         return effort
     return None
+
+
+def anthropic_output_config_to_codex_reasoning_effort(output_config: Any) -> Optional[str]:
+    """Map Anthropic Messages output_config.effort to Codex Responses reasoning.effort."""
+    if not isinstance(output_config, dict):
+        return None
+
+    raw_effort = output_config.get("effort")
+    if raw_effort is None:
+        return None
+
+    return _normalize_reasoning_effort(raw_effort)
 
 
 def resolve_codex_upstream_reasoning_effort(
