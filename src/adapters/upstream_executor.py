@@ -11,6 +11,7 @@ import zstandard as zstd
 from token_auth import (
     get_codex_upstream_headers,
     get_x_auth_token,
+    mark_codex_account_auth_expired,
     mark_codex_account_rate_limited,
 )
 from upstream_config import (
@@ -223,6 +224,14 @@ async def mark_retryable_response_for_profile(
 ) -> None:
     auth_type = get_effective_auth_type(profile)
     if auth_type != "codex_oauth":
+        return
+    if status_code in CODEX_AUTH_STATUS_CODES and not should_mark_codex_cooldown(
+        status_code, error_text
+    ):
+        await mark_codex_account_auth_expired(
+            headers=headers,
+            error_text=error_text,
+        )
         return
     if not should_mark_codex_cooldown(status_code, error_text):
         return

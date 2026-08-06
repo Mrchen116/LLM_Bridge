@@ -806,6 +806,7 @@ async def _get_or_refresh_account_token(
     *,
     cooldown_seconds: int,
     apply_cooldown_on_refresh_failure: bool,
+    force_refresh: bool = False,
 ) -> Tuple[str, str]:
     clean = _validate_label(label)
 
@@ -825,7 +826,11 @@ async def _get_or_refresh_account_token(
     if not refresh_token:
         raise RuntimeError(f"账号 {clean} 缺少 refresh_token，请重新登录")
 
-    if access_token and expires_at > (_now_ts() + REFRESH_MARGIN_SECONDS):
+    if (
+        not force_refresh
+        and access_token
+        and expires_at > (_now_ts() + REFRESH_MARGIN_SECONDS)
+    ):
         return access_token, account_id
 
     try:
@@ -1003,6 +1008,30 @@ async def mark_codex_account_rate_limited(
         _write_store(root)
 
 
+async def mark_codex_account_auth_expired(
+    *,
+    headers: Dict[str, str],
+    error_text: str = "",
+) -> bool:
+    """Force the account used by one failed request to refresh on its next use."""
+
+    async with _lock:
+        root = _load_pool_locked()
+        accounts = [it for it in root.get("accounts") or [] if isinstance(it, dict)]
+        idx = _find_account_index_by_headers(accounts, headers)
+        if idx < 0:
+            return False
+
+        record = dict(accounts[idx])
+        record["expires_at"] = 0
+        record["last_error"] = f"auth_expired: {str(error_text or '')[:300]}"
+        record["updated_at"] = _now_ts()
+        accounts[idx] = record
+        root["accounts"] = accounts
+        _write_store(root)
+    return True
+
+
 async def login_all_codex_accounts() -> Dict[str, Any]:
     status = await list_codex_accounts()
     accounts = status.get("accounts") or []
@@ -1020,6 +1049,7 @@ async def login_all_codex_accounts() -> Dict[str, Any]:
                 label,
                 cooldown_seconds=DEFAULT_COOLDOWN_SECONDS,
                 apply_cooldown_on_refresh_failure=False,
+                force_refresh=True,
             )
             ok += 1
             details.append({"label": label, "ok": True})

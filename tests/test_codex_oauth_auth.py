@@ -1,6 +1,7 @@
+import asyncio
+import copy
 import json
 import sys
-import copy
 from pathlib import Path
 from typing import Any, Dict
 
@@ -82,6 +83,160 @@ def test_codex_oauth_auto_refresh_on_upstream_call(client: TestClient, monkeypat
     store = json.loads(Path(".codex_oauth.json").read_text(encoding="utf-8"))
     assert store["schema_version"] == 2
     assert store["accounts"][0]["refresh_token"] == "refresh-new"
+
+
+def test_codex_oauth_refreshes_when_upstream_rejects_locally_unexpired_token(
+    client: TestClient, monkeypatch
+):
+    """An upstream 401 must invalidate and refresh a token whose local expiry is stale."""
+
+    cfg = copy.deepcopy(app_module.UPSTREAM_CONFIG)
+    codex = cfg["profiles"]["codexOAuth"]
+    codex["defaults"]["retryMax"] = 2
+    codex["auth"] = {
+        "codexEndpoint": "https://chatgpt.com/backend-api/codex/responses",
+        "accountPoolPolicy": {"maxFailoverPerRequest": 1, "cooldownSeconds": 300},
+    }
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", cfg)
+
+    Path(".codex_oauth.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "default_label": "primary",
+                "accounts": [
+                    {
+                        "label": "primary",
+                        "account_id": "org-primary",
+                        "priority": 100,
+                        "enabled": True,
+                        "access_token": "token-old",
+                        "refresh_token": "refresh-old",
+                        "expires_at": 4102444800,
+                        "cooldown_until": 0,
+                        "last_error": "",
+                        "updated_at": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    refresh_calls: list[str] = []
+
+    async def fake_refresh_access_token(refresh_token: str) -> Dict[str, Any]:
+        refresh_calls.append(refresh_token)
+        return {
+            "access_token": "token-new",
+            "refresh_token": "refresh-new",
+            "expires_in": 3600,
+        }
+
+    call_headers: list[str] = []
+
+    async def fake_collect_codex_response_from_stream(
+        client, upstream_url, profile, headers, request_body
+    ):
+        del client, upstream_url, profile, request_body
+        auth = str(headers.get("authorization") or headers.get("Authorization") or "")
+        call_headers.append(auth)
+        if auth == "Bearer token-old":
+            err_text = '{"error":{"code":"token_expired","message":"expired"}}'
+            return {
+                "ok": False,
+                "status_code": 401,
+                "error_bytes": err_text.encode("utf-8"),
+                "error_text": err_text,
+                "chunks": [{"type": "error_body", "body": err_text}],
+            }
+        return {
+            "ok": True,
+            "status_code": 200,
+            "response_json": {
+                "id": "resp_ok",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+            "chunks": ["data: [DONE]"],
+        }
+
+    monkeypatch.setattr(token_auth, "_refresh_access_token", fake_refresh_access_token)
+    monkeypatch.setattr(
+        chat_handler,
+        "collect_codex_response_from_stream",
+        fake_collect_codex_response_from_stream,
+    )
+
+    payload = {
+        "model": "codexOAuth:gpt-5.6-luna",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    resp = client.post("/v1/chat/completions", json=payload)
+
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "ok"
+    assert call_headers == ["Bearer token-old", "Bearer token-new"]
+    assert refresh_calls == ["refresh-old"]
+    store = json.loads(Path(".codex_oauth.json").read_text(encoding="utf-8"))
+    assert store["accounts"][0]["access_token"] == "token-new"
+    assert store["accounts"][0]["refresh_token"] == "refresh-new"
+
+
+def test_login_all_forces_refresh_even_when_local_expiry_is_in_future(
+    tmp_path, monkeypatch
+):
+    """login-all must recover tokens invalidated by the upstream before local expiry."""
+
+    monkeypatch.chdir(tmp_path)
+    Path(".codex_oauth.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "default_label": "primary",
+                "accounts": [
+                    {
+                        "label": "primary",
+                        "account_id": "org-primary",
+                        "priority": 100,
+                        "enabled": True,
+                        "access_token": "token-old",
+                        "refresh_token": "refresh-old",
+                        "expires_at": 4102444800,
+                        "cooldown_until": 0,
+                        "last_error": "",
+                        "updated_at": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    refresh_calls: list[str] = []
+
+    async def fake_refresh_access_token(refresh_token: str) -> Dict[str, Any]:
+        refresh_calls.append(refresh_token)
+        return {
+            "access_token": "token-new",
+            "refresh_token": "refresh-new",
+            "expires_in": 3600,
+        }
+
+    monkeypatch.setattr(token_auth, "_refresh_access_token", fake_refresh_access_token)
+
+    result = asyncio.run(token_auth.login_all_codex_accounts())
+
+    assert result["ok"] == 1
+    assert result["failed"] == 0
+    assert refresh_calls == ["refresh-old"]
+    store = json.loads(Path(".codex_oauth.json").read_text(encoding="utf-8"))
+    assert store["accounts"][0]["access_token"] == "token-new"
 
 
 def test_codex_oauth_failover_on_429_switches_account(client: TestClient, monkeypatch):
