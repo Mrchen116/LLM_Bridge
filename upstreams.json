@@ -1,6 +1,44 @@
 {
-    "defaultProfile": "codexOAuth",
+    "defaultProfile": "kimiCoding",
     "profiles": {
+      "Ali-cloud": {
+        "provider": "anthropic",
+        "baseUrl": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+        "auth": {
+          "apiKeyEnv": "ALI_API_KEY"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages"
+          ]
+        },
+        "defaults": {
+          "model": "glm-5",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      },
+      "mimo": {
+        "provider": "anthropic",
+        "baseUrl": "https://token-plan-cn.xiaomimimo.com/anthropic",
+        "auth": {
+          "apiKeyEnv": "MIMO_API_KEY"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages"
+          ]
+        },
+        "defaults": {
+          "model": "mimo-v2.5-pro",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      },
       "moonshotAnthropic": {
         "provider": "anthropic",
         "baseUrl": "https://api.moonshot.cn/anthropic",
@@ -52,14 +90,33 @@
           ]
         },
         "defaults": {
-          "model": "kimi-coding",
+          "model": "kimi-for-coding",
           "timeoutSeconds": 300,
           "sslVerify": true,
           "retryMax": 8,
           "trustEnv": true
         }
       },
-      "volcanoArk": {
+      "deepseek": {
+        "provider": "anthropic",
+        "baseUrl": "https://api.deepseek.com/anthropic",
+        "auth": {
+          "apiKeyEnv": "DEEPSEEK_API_KEY"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages"
+          ]
+        },
+        "defaults": {
+          "model": "deepseek-v4-flash",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      },
+      "volcanoArk-openai": {
         "provider": "openai_compatible",
         "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
         "auth": {
@@ -67,8 +124,26 @@
         },
         "capabilities": {
           "ingress": [
-            "anthropic_messages",
             "openai_chat"
+          ]
+        },
+        "defaults": {
+          "model": "doubao-seed-2-0-code-preview-260215",
+          "timeoutSeconds": 300,
+          "sslVerify": true,
+          "retryMax": 8,
+          "trustEnv": true
+        }
+      },
+      "volcanoArk": {
+        "provider": "anthropic",
+        "baseUrl": "https://ark.cn-beijing.volces.com/api/compatible",
+        "auth": {
+          "apiKeyEnv": "ARK_API_KEY"
+        },
+        "capabilities": {
+          "ingress": [
+            "anthropic_messages"
           ]
         },
         "defaults": {
@@ -98,7 +173,7 @@
           ]
         },
         "defaults": {
-          "model": "gpt-5.4",
+          "model": "gpt-5.6-luna",
           "timeoutSeconds": 300,
           "sslVerify": true,
           "retryMax": 8,
