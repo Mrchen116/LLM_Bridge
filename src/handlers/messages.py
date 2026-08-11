@@ -394,6 +394,27 @@ def _build_anthropic_response_from_openai_chat(
     if not isinstance(server_tool_use, dict):
         server_tool_use = {"web_search_requests": 0}
     service_tier = usage.get("service_tier") or "standard"
+    prompt_tokens_details = usage.get("prompt_tokens_details")
+    if not isinstance(prompt_tokens_details, dict):
+        prompt_tokens_details = usage.get("input_tokens_details")
+    if not isinstance(prompt_tokens_details, dict):
+        prompt_tokens_details = {}
+    cache_read_input_tokens = usage.get("cache_read_input_tokens")
+    if cache_read_input_tokens is None:
+        cache_read_input_tokens = prompt_tokens_details.get("cached_tokens", 0)
+    cache_creation_input_tokens = usage.get("cache_creation_input_tokens")
+    if cache_creation_input_tokens is None:
+        cache_creation_input_tokens = prompt_tokens_details.get("cache_write_tokens", 0)
+    input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    # OpenAI reports input_tokens inclusive of cached tokens, while Anthropic
+    # defines input_tokens as the uncached remainder.
+    if usage.get("cache_read_input_tokens") is None and usage.get("cache_creation_input_tokens") is None:
+        input_tokens = max(
+            0,
+            input_tokens
+            - int(cache_read_input_tokens or 0)
+            - int(cache_creation_input_tokens or 0),
+        )
 
     choice0 = (data.get("choices") or [None])[0] or {}
     finish_reason = choice0.get("finish_reason")
@@ -441,10 +462,10 @@ def _build_anthropic_response_from_openai_chat(
         "stop_reason": stop_reason,
         "stop_sequence": None,
         "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
+            "input_tokens": input_tokens,
             "output_tokens": usage.get("completion_tokens", 0),
-            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
-            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+            "cache_creation_input_tokens": int(cache_creation_input_tokens or 0),
+            "cache_read_input_tokens": int(cache_read_input_tokens or 0),
             "cache_creation": {
                 "ephemeral_1h_input_tokens": cache_creation.get("ephemeral_1h_input_tokens", 0),
                 "ephemeral_5m_input_tokens": cache_creation.get("ephemeral_5m_input_tokens", 0),
