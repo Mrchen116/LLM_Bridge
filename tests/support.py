@@ -60,7 +60,11 @@ class FakeStreamResponse:
         self._read_bytes = read_bytes
 
     async def aread(self) -> bytes:
-        return self._read_bytes
+        if self._read_bytes:
+            return self._read_bytes
+        if self._raw_chunks:
+            return b"".join(self._raw_chunks)
+        return b""
 
     async def aiter_lines(self):
         for line in self._lines:

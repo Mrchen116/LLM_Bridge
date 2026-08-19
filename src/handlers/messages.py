@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Mapping, Optional
 
 import httpx
 from fastapi import Request
@@ -73,6 +73,74 @@ async def _prepend_stream_chunk(first_chunk: bytes, iterator: AsyncIterator[byte
     yield first_chunk
     async for chunk in iterator:
         yield chunk
+
+
+def _looks_like_sse_chunk(chunk: bytes) -> bool:
+    """True when the chunk already uses SSE framing (event:/data:)."""
+
+    stripped = chunk.lstrip()
+    return stripped.startswith(b"event:") or stripped.startswith(b"data:")
+
+
+def _parse_json_object(chunk: bytes) -> Optional[Dict[str, Any]]:
+    """Parse a complete JSON object from a stream chunk; ignore partial/non-JSON."""
+
+    text = chunk.decode("utf-8", errors="replace").strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _json_error_http_status(error_payload: Mapping[str, Any], *, fallback: int = 400) -> int:
+    """Recover an HTTP status from an OpenAI/Anthropic-style JSON error body."""
+
+    error = error_payload.get("error")
+    if not isinstance(error, dict):
+        return fallback
+    code = error.get("code")
+    if isinstance(code, int) and 400 <= code <= 599:
+        return code
+    if isinstance(code, str) and code.isdigit():
+        parsed = int(code)
+        if 400 <= parsed <= 599:
+            return parsed
+    return fallback
+
+
+def _non_sse_json_error_payload(chunk: bytes) -> Optional[Dict[str, Any]]:
+    """Detect a JSON error object that was dumped into a stream without SSE framing.
+
+    Some Anthropic-compatible upstreams (e.g. mimo invalid key) return
+    ``{"error": {"code": "401", "type": "invalid_key", ...}}`` as the stream
+    body. Forwarding that as HTTP 200 SSE hides the permanent failure from
+    clients that classify retryability from HTTP status.
+    """
+
+    if _looks_like_sse_chunk(chunk):
+        return None
+    obj = _parse_json_object(chunk)
+    if obj is None:
+        return None
+    error = obj.get("error")
+    if isinstance(error, dict):
+        return obj
+    return None
+
+
+def _empty_upstream_http_error_body() -> str:
+    return json.dumps(
+        {
+            "error": {
+                "message": "上游返回异常状态，但响应体为空",
+                "type": "upstream_http_error",
+            }
+        },
+        ensure_ascii=False,
+    )
 
 
 async def _forward_anthropic_native_messages(
@@ -179,8 +247,34 @@ async def _forward_anthropic_native_messages(
                             continue
 
                         connection_established = True
+                        # 429 以外的 4xx/5xx 保持原状态返回 JSON，不要洗成 200 SSE。
+                        # 否则下游会把 Invalid API Key 当成可重试的截断流。
+                        if r.status_code >= 400:
+                            err = await r.aread()
+                            err_text = err.decode("utf-8", errors="replace")
+                            up_chunks.append({"type": "error_body", "text": err_text})
+                            media_type = (r.headers.get("content-type") or "application/json").split(";")[0].strip()
+                            set_error_response(
+                                status_code=r.status_code,
+                                body=err_text or _empty_upstream_http_error_body(),
+                                media_type=media_type or "application/json",
+                            )
+                            return
+
+                        first_chunk = True
                         async for chunk in r.aiter_raw():
-                            down_chunks.append(chunk.decode("utf-8", errors="replace"))
+                            decoded = chunk.decode("utf-8", errors="replace")
+                            down_chunks.append(decoded)
+                            if first_chunk:
+                                first_chunk = False
+                                json_error = _non_sse_json_error_payload(chunk)
+                                if json_error is not None:
+                                    up_chunks.append({"type": "error_body", "text": decoded})
+                                    set_error_response(
+                                        status_code=_json_error_http_status(json_error),
+                                        body=decoded,
+                                    )
+                                    return
                             yield chunk
                         if not down_chunks:
                             set_error_response(

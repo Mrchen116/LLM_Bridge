@@ -142,6 +142,69 @@ def test_messages_stream_anthropic_passthrough(client: TestClient):
     assert "data: ping" in data
 
 
+def test_messages_stream_anthropic_forwards_upstream_401(client: TestClient):
+    """流式透传必须保留上游 401，不能洗成 200 SSE。"""
+    from tests.support import FakeAsyncClient
+
+    error_body = {
+        "error": {
+            "message": "Invalid API Key",
+            "param": "Please provide valid API Key",
+            "code": "401",
+            "type": "invalid_key",
+        }
+    }
+    raw = json.dumps(error_body, indent=4).encode("utf-8")
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=401,
+        headers={"content-type": "application/json"},
+        raw_chunks=[raw],
+        read_bytes=raw,
+    )
+    payload = {
+        "model": "moonshotAnthropic:claude-test",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+    }
+    resp = client.post("/v1/messages", json=payload)
+    assert resp.status_code == 401
+    assert "text/event-stream" not in (resp.headers.get("content-type") or "")
+    body = resp.json()
+    assert body["error"]["type"] == "invalid_key"
+    assert body["error"]["message"] == "Invalid API Key"
+
+
+def test_messages_stream_anthropic_json_error_on_http_200(client: TestClient):
+    """上游 200 但 body 是非 SSE 的 JSON 错误时，按错误码返回 JSON 而不是 SSE。"""
+    from tests.support import FakeAsyncClient
+
+    error_body = {
+        "error": {
+            "message": "Invalid API Key",
+            "param": "Please provide valid API Key",
+            "code": "401",
+            "type": "invalid_key",
+        }
+    }
+    raw = (json.dumps(error_body, indent=4) + "\n").encode("utf-8")
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=200,
+        headers={"content-type": "text/event-stream"},
+        raw_chunks=[raw],
+    )
+    payload = {
+        "model": "moonshotAnthropic:claude-test",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+    }
+    resp = client.post("/v1/messages", json=payload)
+    assert resp.status_code == 401
+    assert "text/event-stream" not in (resp.headers.get("content-type") or "")
+    body = resp.json()
+    assert body["error"]["type"] == "invalid_key"
+    assert body["error"]["message"] == "Invalid API Key"
+
+
 def test_messages_codex_oauth_stream_bridge(client: TestClient):
     """测试 /v1/messages 在 codex_oauth 下流式桥接输出。"""
     from tests.support import FakeAsyncClient
