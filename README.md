@@ -112,6 +112,8 @@ Optional flags:
 
 **Agent clients:** To connect Claude Code, Codex CLI, or other agents through this gateway, see [docs/agent-integration.md](docs/agent-integration.md) (中文：[docs/agent-integration-zh.md](docs/agent-integration-zh.md)). That document also covers how the proxy resolves **session IDs** for the Session Inspector.
 
+**macOS login startup:** To run the proxy in a detached tmux session through launchd, see [docs/macos-autostart.md](docs/macos-autostart.md) (中文：[docs/macos-autostart-zh.md](docs/macos-autostart-zh.md)).
+
 ## Session Inspector
 
 Enable it in one of two ways:
@@ -179,6 +181,8 @@ For `codex_oauth` profiles, you can optionally append a reasoning effort suffix 
 When the downstream request does not provide `reasoning_effort` / `reasoning.effort`, the model suffix is used. Explicit parameters take precedence over the suffix.
 
 For Anthropic Messages ingress (including Claude Code), `output_config.effort` is converted to Codex Responses `reasoning.effort` and takes precedence over the model suffix. `low`, `medium`, `high`, `xhigh`, and `max` map directly.
+
+For bridged responses, Codex/OpenAI cache usage is exposed in Anthropic usage: `input_tokens_details.cached_tokens` becomes `cache_read_input_tokens`, and `input_tokens_details.cache_write_tokens` becomes `cache_creation_input_tokens` (also available in streaming `message_start`/`message_delta`). Since OpenAI's `input_tokens` includes cached tokens, the bridge reports Anthropic's uncached remainder in `input_tokens`.
 
 The Codex OAuth upstream client version defaults to `0.144.6`. If the upstream later requires a newer client, set `CODEX_UPSTREAM_CLIENT_VERSION` before starting the proxy instead of changing source code.
 

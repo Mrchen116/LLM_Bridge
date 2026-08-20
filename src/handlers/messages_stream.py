@@ -91,11 +91,14 @@ async def build_openai_bridge_streaming_response(
         prompt_tokens = 0
         completion_tokens = 0
         total_tokens = 0
+        cache_read_input_tokens = 0
+        cache_creation_input_tokens = 0
         usage_received = False
         final_finish_reason: Optional[str] = None
 
         def _update_usage_from_obj(obj: Any) -> None:
-            nonlocal prompt_tokens, completion_tokens, total_tokens, usage_received
+            nonlocal prompt_tokens, completion_tokens, total_tokens
+            nonlocal cache_read_input_tokens, cache_creation_input_tokens, usage_received
             if not isinstance(obj, dict):
                 return
             u = obj.get("usage")
@@ -107,6 +110,19 @@ async def build_openai_bridge_streaming_response(
                     completion_tokens = int(u.get("completion_tokens") or completion_tokens)
                 if u.get("total_tokens") is not None:
                     total_tokens = int(u.get("total_tokens") or total_tokens)
+                details = u.get("prompt_tokens_details")
+                if not isinstance(details, dict):
+                    details = u.get("input_tokens_details")
+                if not isinstance(details, dict):
+                    details = {}
+                if u.get("cache_read_input_tokens") is not None:
+                    cache_read_input_tokens = int(u.get("cache_read_input_tokens") or 0)
+                elif details.get("cached_tokens") is not None:
+                    cache_read_input_tokens = int(details.get("cached_tokens") or 0)
+                if u.get("cache_creation_input_tokens") is not None:
+                    cache_creation_input_tokens = int(u.get("cache_creation_input_tokens") or 0)
+                elif details.get("cache_write_tokens") is not None:
+                    cache_creation_input_tokens = int(details.get("cache_write_tokens") or 0)
             choices = obj.get("choices")
             if isinstance(choices, list) and choices:
                 c0 = choices[0] or {}
@@ -118,6 +134,28 @@ async def build_openai_bridge_streaming_response(
                             prompt_tokens = int(u2.get("prompt_tokens") or prompt_tokens)
                         if u2.get("completion_tokens") is not None:
                             completion_tokens = int(u2.get("completion_tokens") or completion_tokens)
+                        details = u2.get("prompt_tokens_details")
+                        if not isinstance(details, dict):
+                            details = u2.get("input_tokens_details")
+                        if not isinstance(details, dict):
+                            details = {}
+                        if details.get("cached_tokens") is not None:
+                            cache_read_input_tokens = int(details.get("cached_tokens") or 0)
+                        if details.get("cache_write_tokens") is not None:
+                            cache_creation_input_tokens = int(details.get("cache_write_tokens") or 0)
+
+        def _anthropic_usage(output_tokens: int) -> Dict[str, int]:
+            return {
+                # OpenAI's input_tokens includes cached tokens; Anthropic's
+                # input_tokens is the uncached remainder.
+                "input_tokens": max(
+                    0,
+                    prompt_tokens - cache_read_input_tokens - cache_creation_input_tokens,
+                ),
+                "output_tokens": output_tokens,
+                "cache_read_input_tokens": cache_read_input_tokens,
+                "cache_creation_input_tokens": cache_creation_input_tokens,
+            }
 
         current_block_index = 0
         current_block_type = None
@@ -186,6 +224,13 @@ async def build_openai_bridge_streaming_response(
                     usage_received = bool(usage_obj)
                     prompt_tokens = int(usage_obj.get("prompt_tokens") or 0)
                     completion_tokens = int(usage_obj.get("completion_tokens") or 0)
+                    details = usage_obj.get("prompt_tokens_details")
+                    if not isinstance(details, dict):
+                        details = usage_obj.get("input_tokens_details")
+                    if not isinstance(details, dict):
+                        details = {}
+                    cache_read_input_tokens = int(details.get("cached_tokens") or 0)
+                    cache_creation_input_tokens = int(details.get("cache_write_tokens") or 0)
                     text = (
                         (chat_obj.get("choices") or [{}])[0].get("message", {}).get("content", "")
                         if isinstance(chat_obj.get("choices"), list)
@@ -208,7 +253,7 @@ async def build_openai_bridge_streaming_response(
                             "content": [],
                             "stop_reason": None,
                             "stop_sequence": None,
-                            "usage": {"input_tokens": prompt_tokens, "output_tokens": 0},
+                            "usage": _anthropic_usage(0),
                         }
                     })
                     if text:
@@ -244,7 +289,7 @@ async def build_openai_bridge_streaming_response(
                             yield emit("content_block_stop", {"index": block_index})
                     yield emit("message_delta", {
                         "delta": {"stop_reason": "tool_use" if tool_uses else "end_turn"},
-                        "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens},
+                        "usage": _anthropic_usage(completion_tokens),
                     })
                     yield emit("message_stop", {})
                     return
@@ -325,7 +370,7 @@ async def build_openai_bridge_streaming_response(
                                         "content": [],
                                         "stop_reason": None,
                                         "stop_sequence": None,
-                                        "usage": {"input_tokens": prompt_tokens, "output_tokens": 0},
+                                        "usage": _anthropic_usage(0),
                                     }
                                 })
 
@@ -458,7 +503,7 @@ async def build_openai_bridge_streaming_response(
 
                             yield emit("message_delta", {
                                 "delta": {"stop_reason": stop_reason},
-                                "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens}
+                                "usage": _anthropic_usage(completion_tokens)
                             })
                             yield emit("message_stop", {})
                             return

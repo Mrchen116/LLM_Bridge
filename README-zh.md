@@ -112,6 +112,8 @@ python start_proxy.py
 
 **接入 Agent：** 若要让 Claude Code、Codex CLI 等通过本网关访问模型，见 [docs/agent-integration-zh.md](docs/agent-integration-zh.md)（英文：[docs/agent-integration.md](docs/agent-integration.md)）。Session Inspector 所需的 **session ID 如何解析** 也在该文档中说明。
 
+**macOS 登录自启动：** 若要通过 launchd 在 detached tmux 会话中运行代理，见 [docs/macos-autostart-zh.md](docs/macos-autostart-zh.md)（英文：[docs/macos-autostart.md](docs/macos-autostart.md)）。
+
 ## Session Inspector（多 Agent 会话分析）
 
 启用方式（二选一）：

@@ -724,6 +724,11 @@ def _codex_responses_to_chat_completion(resp_json: Dict[str, Any], model: str) -
     prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
     total_tokens = prompt_tokens + completion_tokens
+    input_details = usage.get("input_tokens_details")
+    if not isinstance(input_details, dict):
+        input_details = {}
+    cached_tokens = int(input_details.get("cached_tokens") or 0)
+    cache_write_tokens = int(input_details.get("cache_write_tokens") or 0)
 
     message: Dict[str, Any] = {"role": "assistant", "content": text}
     if tool_uses:
@@ -750,6 +755,10 @@ def _codex_responses_to_chat_completion(resp_json: Dict[str, Any], model: str) -
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
+            "prompt_tokens_details": {
+                "cached_tokens": cached_tokens,
+                "cache_write_tokens": cache_write_tokens,
+            },
         },
     }
 

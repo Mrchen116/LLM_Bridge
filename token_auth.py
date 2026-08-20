@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import re
 import secrets
 import threading
@@ -1032,7 +1033,7 @@ async def mark_codex_account_auth_expired(
     return True
 
 
-async def login_all_codex_accounts() -> Dict[str, Any]:
+async def login_all_codex_accounts(*, force_refresh: bool = True) -> Dict[str, Any]:
     status = await list_codex_accounts()
     accounts = status.get("accounts") or []
     ok = 0
@@ -1049,7 +1050,7 @@ async def login_all_codex_accounts() -> Dict[str, Any]:
                 label,
                 cooldown_seconds=DEFAULT_COOLDOWN_SECONDS,
                 apply_cooldown_on_refresh_failure=False,
-                force_refresh=True,
+                force_refresh=force_refresh,
             )
             ok += 1
             details.append({"label": label, "ok": True})
@@ -1064,24 +1065,139 @@ async def login_all_codex_accounts() -> Dict[str, Any]:
     }
 
 
-async def ensure_codex_login_for_startup(login_method: Optional[str] = None) -> bool:
+# 开机时网络/代理可能尚未就绪；默认在窗口内重试 refresh，避免 LaunchAgent 一次失败就退出。
+_DEFAULT_STARTUP_RETRY_SECONDS = 180
+_DEFAULT_STARTUP_RETRY_INTERVAL_SECONDS = 15
+
+
+class CodexStartupAuthError(RuntimeError):
+    """启动期 Codex 认证失败；permanent=True 表示重试无意义（如未配置账号）。"""
+
+    def __init__(self, message: str, *, permanent: bool = False) -> None:
+        super().__init__(message)
+        self.permanent = permanent
+
+
+def _startup_retry_budget_seconds() -> int:
+    raw = os.getenv("CODEX_STARTUP_RETRY_SECONDS", str(_DEFAULT_STARTUP_RETRY_SECONDS))
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_STARTUP_RETRY_SECONDS
+
+
+def _startup_retry_interval_seconds() -> int:
+    raw = os.getenv(
+        "CODEX_STARTUP_RETRY_INTERVAL_SECONDS",
+        str(_DEFAULT_STARTUP_RETRY_INTERVAL_SECONDS),
+    )
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_STARTUP_RETRY_INTERVAL_SECONDS
+
+
+def _format_login_all_failure(summary: Dict[str, Any]) -> str:
+    details = summary.get("details") or []
+    errors = []
+    for item in details:
+        if not isinstance(item, dict) or item.get("ok"):
+            continue
+        label = str(item.get("label") or "?")
+        err = str(item.get("error") or "unknown")
+        errors.append(f"{label}: {err}")
+    if errors:
+        return "；".join(errors[:5])
+    return "所有启用账号 refresh 均失败"
+
+
+def _login_all_failure_is_permanent(summary: Dict[str, Any]) -> bool:
+    """缺少 refresh_token / 账号不存在等本地配置问题，重试不会恢复。"""
+    details = summary.get("details") or []
+    attempted = [it for it in details if isinstance(it, dict) and str(it.get("label") or "")]
+    if not attempted:
+        return True
+    permanent_markers = (
+        "缺少 refresh_token",
+        "账号不存在",
+        "请重新登录",
+        "refresh_token_reused",
+    )
+    failed = [it for it in attempted if not it.get("ok")]
+    if not failed:
+        return False
+    return all(
+        any(marker in str(it.get("error") or "") for marker in permanent_markers)
+        for it in failed
+    )
+
+
+async def _ensure_codex_login_once() -> bool:
     """
-    启动前检查 Codex OAuth；若未登录则走阻塞式 device flow 登录。
-    返回值：
-    - True: 本次执行了登录流程
-    - False: 已有可用凭证，无需登录
+    单次启动检查：对启用账号执行 login-all（过期则 refresh）。
+    返回值保持兼容：False 表示未走交互式新增登录。
     """
-    _ = login_method
     status = await get_codex_auth_status()
-    if not status.get("authorized"):
-        raise RuntimeError(
-            "Codex 账号池无可用账号。请先运行: python manage_codex_accounts.py （进入交互式向导添加账号）"
+    if int(status.get("enabled_accounts") or 0) <= 0:
+        raise CodexStartupAuthError(
+            "Codex 账号池无可用账号。请先运行: python manage_codex_accounts.py （进入交互式向导添加账号）",
+            permanent=True,
         )
 
-    summary = await login_all_codex_accounts()
+    # 不再用 authorized 做硬门槛：冷却中的账号仍可能通过 refresh 恢复；
+    # 真正能不能用交给 login_all 的 refresh 结果。
+    summary = await login_all_codex_accounts(force_refresh=False)
     if int(summary.get("ok") or 0) <= 0:
-        raise RuntimeError(
-            "Codex 账号池无可用账号。请先运行: python manage_codex_accounts.py （进入交互式向导添加账号）"
+        detail = _format_login_all_failure(summary)
+        raise CodexStartupAuthError(
+            f"Codex 账号池无可用账号（{detail}）。请先运行: python manage_codex_accounts.py （进入交互式向导添加账号）",
+            permanent=_login_all_failure_is_permanent(summary),
         )
 
     return False
+
+
+async def ensure_codex_login_for_startup(login_method: Optional[str] = None) -> bool:
+    """
+    启动前检查 Codex OAuth，并对 refresh 失败做限时重试。
+
+    环境变量：
+    - CODEX_STARTUP_RETRY_SECONDS：重试窗口秒数，默认 180；设为 0 则只尝试一次
+    - CODEX_STARTUP_RETRY_INTERVAL_SECONDS：重试间隔秒数，默认 15
+
+    返回值：
+    - True: 本次执行了登录流程（当前实现不会走交互新增，恒为 False）
+    - False: 已有可用凭证（或已成功 refresh）
+    """
+    _ = login_method
+    budget = _startup_retry_budget_seconds()
+    interval = _startup_retry_interval_seconds()
+    deadline = time.monotonic() + budget
+    attempt = 0
+    last_error: Optional[BaseException] = None
+
+    while True:
+        attempt += 1
+        try:
+            return await _ensure_codex_login_once()
+        except CodexStartupAuthError as e:
+            last_error = e
+            if e.permanent:
+                raise
+        except Exception as e:
+            last_error = e
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
+        sleep_for = min(float(interval), remaining)
+        print(
+            f"[codex-auth] 启动校验失败（第 {attempt} 次）: {last_error}；"
+            f"{sleep_for:.0f}s 后重试（窗口剩余 {remaining:.0f}s）",
+            flush=True,
+        )
+        await asyncio.sleep(sleep_for)
+
+    assert last_error is not None
+    raise last_error
