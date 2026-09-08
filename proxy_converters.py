@@ -86,6 +86,7 @@ def anthropic_messages_to_openai(messages: List[Dict[str, Any]], system: Any) ->
     """
     Anthropic Messages -> OpenAI ChatCompletions
     - user text -> {"role":"user","content": "..."}
+    - user images -> ordered text/image_url content blocks
     - assistant tool_use blocks -> assistant message with tool_calls
     - user tool_result blocks -> {"role":"tool","tool_call_id": "...","content":"..."}
     """
@@ -153,6 +154,8 @@ def anthropic_messages_to_openai(messages: List[Dict[str, Any]], system: Any) ->
 
         if role == "user":
             text_parts: List[str] = []
+            content_parts: List[Dict[str, Any]] = []
+            has_image = False
             tool_results: List[Dict[str, Any]] = []
 
             for b in content:
@@ -161,6 +164,17 @@ def anthropic_messages_to_openai(messages: List[Dict[str, Any]], system: Any) ->
                 t = b.get("type")
                 if t == "text":
                     text_parts.append(b.get("text", ""))
+                    content_parts.append({"type": "text", "text": b.get("text", "")})
+                elif t == "image":
+                    source = b["source"]
+                    if source["type"] == "base64":
+                        url = f"data:{source['media_type']};base64,{source['data']}"
+                    elif source["type"] == "url":
+                        url = source["url"]
+                    else:
+                        raise ValueError(f"Unsupported Anthropic image source: {source['type']}")
+                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+                    has_image = True
                 elif t == "tool_result":
                     tool_use_id = b.get("tool_use_id")
                     tool_content = b.get("content")
@@ -169,7 +183,11 @@ def anthropic_messages_to_openai(messages: List[Dict[str, Any]], system: Any) ->
                         tool_results.append({"tool_call_id": tool_use_id, "content": tool_text})
 
             user_text = "".join(text_parts)
-            if user_text.strip():
+            # Preserve block order for multimodal turns; retain the existing
+            # string representation for text-only conversations.
+            if has_image:
+                out.append({"role": "user", "content": content_parts})
+            elif user_text.strip():
                 out.append({"role": "user", "content": user_text})
             elif not tool_results:
                 out.append({"role": "user", "content": ""})

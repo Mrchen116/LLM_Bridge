@@ -1,6 +1,51 @@
 import json
 
+import pytest
+
 from proxy_converters import _build_codex_responses_payload_from_chat
+from src.bridge.anthropic_codex import (
+    anthropic_request_to_codex_payload,
+    anthropic_request_to_openai_chat_body,
+)
+
+
+@pytest.mark.parametrize("image_only", [False, True])
+def test_anthropic_user_images_reach_chat_and_codex_in_history(image_only):
+    images = [
+        {"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": "aW1hZ2U=",
+        }},
+        {"type": "image", "source": {
+            "type": "url", "url": "https://example.com/jd.png",
+        }},
+    ]
+    content = images if image_only else [
+        {"type": "text", "text": "前文"}, images[0],
+        {"type": "text", "text": "后文"}, images[1],
+    ]
+    expected = [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U="}},
+        {"type": "image_url", "image_url": {"url": "https://example.com/jd.png"}},
+    ]
+    if not image_only:
+        expected = [content[0], expected[0], content[2], expected[1]]
+    kwargs = dict(
+        model="gpt-5.6-terra", system=None, max_tokens=1024, stream=False,
+        messages=[
+            {"role": "user", "content": content},
+            {"role": "assistant", "content": "收到"},
+            {"role": "user", "content": [{"type": "text", "text": "刚才的图片是什么？"}]},
+        ],
+    )
+    chat = anthropic_request_to_openai_chat_body(**kwargs)
+    assert chat["messages"][0]["content"] == expected
+    assert chat["messages"][2]["content"] == "刚才的图片是什么？"
+    payload = anthropic_request_to_codex_payload(**kwargs)
+    assert payload["input"][0]["content"] == [
+        {"type": "input_image", "image_url": part["image_url"]["url"]}
+        if part["type"] == "image_url" else {"type": "input_text", "text": part["text"]}
+        for part in expected
+    ]
 
 
 def test_tool_content_with_image_url_is_preserved_in_function_call_output():
