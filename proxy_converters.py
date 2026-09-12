@@ -479,6 +479,7 @@ def _chat_tools_to_responses_tools(tools: Any) -> Optional[List[Dict[str, Any]]]
         item: Dict[str, Any] = {
             "type": "function",
             "name": name,
+            "strict": fn.get("strict", False),
         }
         if fn.get("description") is not None:
             item["description"] = fn.get("description")

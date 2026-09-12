@@ -9,6 +9,55 @@ from src.bridge.anthropic_codex import (
 )
 
 
+@pytest.mark.parametrize("strict", [None, False, True])
+def test_chat_tools_preserve_strict_and_optional_parameters(strict):
+    schema = {
+        "type": "object",
+        "properties": {"action": {"type": "string"}, "target": {"type": "string"}},
+        "required": ["action"],
+        "additionalProperties": False,
+    }
+    function = {"name": "inbox", "parameters": schema}
+    if strict is not None:
+        function["strict"] = strict
+    body = {
+        "messages": [{"role": "user", "content": "Check inbox"}],
+        "tools": [{"type": "function", "function": function}],
+    }
+
+    payload = _build_codex_responses_payload_from_chat(body, model="gpt-5.6-sol")
+
+    assert payload["tools"][0]["strict"] is (strict if strict is not None else False)
+    assert payload["tools"][0]["parameters"] == schema
+    assert function.get("strict") is strict
+
+
+def test_anthropic_tools_remain_nonstrict_when_converted_to_responses():
+    payload = anthropic_request_to_codex_payload(
+        model="gpt-5.6-sol",
+        system=None,
+        max_tokens=1024,
+        stream=False,
+        messages=[{"role": "user", "content": "Check inbox"}],
+        tools=[
+            {
+                "name": "inbox",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "target": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            }
+        ],
+    )
+
+    assert payload["tools"][0]["strict"] is False
+    assert payload["tools"][0]["parameters"]["required"] == ["action"]
+
+
 @pytest.mark.parametrize("image_only", [False, True])
 def test_anthropic_user_images_reach_chat_and_codex_in_history(image_only):
     images = [
