@@ -82,13 +82,46 @@ def _extract_text_from_blocks(blocks: Any) -> str:
     return str(blocks)
 
 
-def anthropic_messages_to_openai(messages: List[Dict[str, Any]], system: Any) -> List[Dict[str, Any]]:
+def _anthropic_image_to_openai_content_part(block: Dict[str, Any]) -> Dict[str, Any]:
+    source = block["source"]
+    if source["type"] == "base64":
+        url = f"data:{source['media_type']};base64,{source['data']}"
+    elif source["type"] == "url":
+        url = source["url"]
+    else:
+        raise ValueError(f"Unsupported Anthropic image source: {source['type']}")
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def _anthropic_tool_result_to_openai_content(content: Any) -> Any:
+    if not isinstance(content, list) or not any(
+        isinstance(part, dict) and part.get("type") == "image" for part in content
+    ):
+        return _extract_text_from_blocks(content)
+
+    parts: List[Dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text":
+            parts.append({"type": "text", "text": part.get("text", "")})
+        elif part.get("type") == "image":
+            parts.append(_anthropic_image_to_openai_content_part(part))
+    return parts
+
+
+def anthropic_messages_to_openai(
+    messages: List[Dict[str, Any]],
+    system: Any,
+    *,
+    preserve_tool_result_images: bool = False,
+) -> List[Dict[str, Any]]:
     """
     Anthropic Messages -> OpenAI ChatCompletions
     - user text -> {"role":"user","content": "..."}
     - user images -> ordered text/image_url content blocks
     - assistant tool_use blocks -> assistant message with tool_calls
-    - user tool_result blocks -> {"role":"tool","tool_call_id": "...","content":"..."}
+    - user tool_result blocks -> OpenAI tool messages; Codex conversion may preserve nested images
     """
     out: List[Dict[str, Any]] = []
 
@@ -166,21 +199,22 @@ def anthropic_messages_to_openai(messages: List[Dict[str, Any]], system: Any) ->
                     text_parts.append(b.get("text", ""))
                     content_parts.append({"type": "text", "text": b.get("text", "")})
                 elif t == "image":
-                    source = b["source"]
-                    if source["type"] == "base64":
-                        url = f"data:{source['media_type']};base64,{source['data']}"
-                    elif source["type"] == "url":
-                        url = source["url"]
-                    else:
-                        raise ValueError(f"Unsupported Anthropic image source: {source['type']}")
-                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+                    content_parts.append(_anthropic_image_to_openai_content_part(b))
                     has_image = True
                 elif t == "tool_result":
                     tool_use_id = b.get("tool_use_id")
                     tool_content = b.get("content")
-                    tool_text = _extract_text_from_blocks(tool_content)
                     if tool_use_id:
-                        tool_results.append({"tool_call_id": tool_use_id, "content": tool_text})
+                        tool_results.append(
+                            {
+                                "tool_call_id": tool_use_id,
+                                "content": (
+                                    _anthropic_tool_result_to_openai_content(tool_content)
+                                    if preserve_tool_result_images
+                                    else _extract_text_from_blocks(tool_content)
+                                ),
+                            }
+                        )
 
             user_text = "".join(text_parts)
             # Preserve block order for multimodal turns; retain the existing
@@ -440,6 +474,19 @@ def _tool_content_to_function_output(content: Any) -> Any:
     return str(content)
 
 
+def _codex_tool_output_with_user_images(content: Any) -> Tuple[Any, List[Dict[str, Any]]]:
+    output = _tool_content_to_function_output(content)
+    if not isinstance(output, list):
+        return output, []
+
+    images = [part for part in output if part.get("type") == "input_image"]
+    if not images:
+        return output, []
+
+    text = "".join(part.get("text", "") for part in output if part.get("type") == "input_text")
+    return text, images
+
+
 def _chat_tool_choice_to_responses(tool_choice: Any) -> Any:
     if isinstance(tool_choice, str):
         if tool_choice in {"auto", "none", "required"}:
@@ -638,9 +685,14 @@ def _build_codex_responses_payload_from_chat(
 
         if role == "tool":
             call_id = str(m.get("tool_call_id") or "")
-            output = _tool_content_to_function_output(content)
+            output, images = _codex_tool_output_with_user_images(content)
             if call_id:
                 input_items.append({"type": "function_call_output", "call_id": call_id, "output": output})
+                # The Codex OAuth endpoint accepts images inside function_call_output
+                # but does not expose them to the model. A following user image item
+                # preserves the tool result image on the supported multimodal path.
+                if images:
+                    input_items.append({"role": "user", "content": images})
             continue
 
     instructions = str(

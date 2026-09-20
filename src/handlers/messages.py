@@ -402,7 +402,11 @@ def _build_openai_bridge_payload(
     model_suffix_effort: Optional[str],
     anthropic_output_config: Any,
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-    oai_messages = anthropic_messages_to_openai_chat_messages(messages, system)
+    oai_messages = anthropic_messages_to_openai_chat_messages(
+        messages,
+        system,
+        preserve_tool_result_images=(auth_type == "codex_oauth"),
+    )
 
     upstream_payload: Dict[str, Any] = {
         "model": model,

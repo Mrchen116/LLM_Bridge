@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -11,7 +12,84 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import app as app_module
+from src.handlers.messages import _build_openai_bridge_payload
 from tests.support import ConnectErrorAsyncClient, FakeStreamResponse, TEST_UPSTREAM_CONFIG
+
+
+def _tool_result_image_messages():
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_route_image",
+                    "name": "inbox",
+                    "input": {"action": "read"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_route_image",
+                    "content": [
+                        {"type": "text", "text": "Image metadata"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "aW1hZ2U=",
+                            },
+                        },
+                    ],
+                }
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize("auth_type", ["bearer", "codex_oauth"])
+def test_messages_bridge_scopes_tool_result_images_to_codex(auth_type):
+    payload, _ = _build_openai_bridge_payload(
+        model="gpt-test",
+        messages=_tool_result_image_messages(),
+        system=None,
+        max_tokens=128,
+        stream=False,
+        thinking=None,
+        tools=None,
+        tool_choice=None,
+        temperature=None,
+        top_p=None,
+        stop_sequences=None,
+        auth_type=auth_type,
+        session_id=None,
+        provider="codex_oauth" if auth_type == "codex_oauth" else "openai_compatible",
+        model_suffix_effort=None,
+        anthropic_output_config=None,
+    )
+
+    if auth_type == "bearer":
+        assert payload["messages"][1] == {
+            "role": "tool",
+            "tool_call_id": "call_route_image",
+            "content": "Image metadata",
+        }
+        return
+
+    assert payload["input"][1] == {
+        "type": "function_call_output",
+        "call_id": "call_route_image",
+        "output": "Image metadata",
+    }
+    assert payload["input"][2] == {
+        "role": "user",
+        "content": [{"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="}],
+    }
 
 
 def test_messages_openai_non_stream_success(client: TestClient):

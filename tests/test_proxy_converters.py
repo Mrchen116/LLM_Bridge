@@ -97,7 +97,95 @@ def test_anthropic_user_images_reach_chat_and_codex_in_history(image_only):
     ]
 
 
-def test_tool_content_with_image_url_is_preserved_in_function_call_output():
+@pytest.mark.parametrize(
+    ("source", "expected_url"),
+    [
+        (
+            {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="},
+            "data:image/png;base64,aW1hZ2U=",
+        ),
+        ({"type": "url", "url": "https://example.com/tool.png"}, "https://example.com/tool.png"),
+    ],
+)
+def test_anthropic_tool_result_images_reach_codex_function_output(source, expected_url):
+    kwargs = dict(
+        model="gpt-5.6-terra",
+        system=None,
+        max_tokens=1024,
+        stream=False,
+        messages=[
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_img_3",
+                        "name": "inbox",
+                        "input": {"action": "read"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_img_3",
+                        "content": [
+                            {"type": "text", "text": "Image metadata"},
+                            {"type": "image", "source": source},
+                        ],
+                    }
+                ],
+            },
+        ],
+    )
+
+    chat = anthropic_request_to_openai_chat_body(**kwargs)
+    tool_message = chat["messages"][1]
+    assert tool_message["content"] == "Image metadata"
+
+    payload = anthropic_request_to_codex_payload(**kwargs)
+    outputs = [item for item in payload["input"] if item.get("type") == "function_call_output"]
+    assert outputs == [
+        {
+            "type": "function_call_output",
+            "call_id": "call_img_3",
+            "output": "Image metadata",
+        }
+    ]
+    assert payload["input"][-1] == {
+        "role": "user",
+        "content": [{"type": "input_image", "image_url": expected_url}],
+    }
+
+
+def test_anthropic_text_only_tool_result_keeps_string_content():
+    chat = anthropic_request_to_openai_chat_body(
+        model="gpt-5.6-terra",
+        system=None,
+        max_tokens=1024,
+        stream=False,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_text_1",
+                        "content": [{"type": "text", "text": "plain output"}],
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert chat["messages"] == [
+        {"role": "tool", "tool_call_id": "call_text_1", "content": "plain output"}
+    ]
+
+
+def test_tool_content_with_image_url_reaches_codex_as_following_user_image():
     body = {
         "messages": [
             {
@@ -127,14 +215,14 @@ def test_tool_content_with_image_url_is_preserved_in_function_call_output():
     input_items = payload["input"]
     outputs = [x for x in input_items if isinstance(x, dict) and x.get("type") == "function_call_output"]
     assert len(outputs) == 1
-    output_value = outputs[0]["output"]
-    assert isinstance(output_value, list)
-    assert output_value[0]["type"] == "input_text"
-    assert output_value[1]["type"] == "input_image"
-    assert output_value[1]["image_url"].startswith("data:image/png;base64,")
+    assert outputs[0]["output"] == "Image metadata"
+    assert input_items[2] == {
+        "role": "user",
+        "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAA"}],
+    }
 
 
-def test_tool_content_json_string_with_output_content_is_normalized():
+def test_tool_content_json_string_with_output_content_reaches_codex_as_user_image():
     raw_tool_content = {
         "call_id": "call_img_2",
         "name": "read",
@@ -171,7 +259,8 @@ def test_tool_content_json_string_with_output_content_is_normalized():
     input_items = payload["input"]
     outputs = [x for x in input_items if isinstance(x, dict) and x.get("type") == "function_call_output"]
     assert len(outputs) == 1
-    output_value = outputs[0]["output"]
-    assert isinstance(output_value, list)
-    assert output_value[0] == {"type": "input_text", "text": "Image metadata"}
-    assert output_value[1] == {"type": "input_image", "image_url": "data:image/png;base64,BBB"}
+    assert outputs[0]["output"] == "Image metadata"
+    assert input_items[2] == {
+        "role": "user",
+        "content": [{"type": "input_image", "image_url": "data:image/png;base64,BBB"}],
+    }

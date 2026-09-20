@@ -22,10 +22,15 @@ def anthropic_request_to_openai_chat_body(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
+    preserve_tool_result_images: bool = False,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "model": model,
-        "messages": anthropic_messages_to_openai_chat_messages(messages, system),
+        "messages": anthropic_messages_to_openai_chat_messages(
+            messages,
+            system,
+            preserve_tool_result_images=preserve_tool_result_images,
+        ),
         "max_tokens": max_tokens,
         "stream": stream,
     }
@@ -73,6 +78,6 @@ def anthropic_request_to_codex_payload(
         temperature=temperature,
         top_p=top_p,
         stop_sequences=stop_sequences,
+        preserve_tool_result_images=True,
     )
     return openai_chat_body_to_codex_payload(openai_chat_body, model, model_suffix_effort=model_suffix_effort)
-
