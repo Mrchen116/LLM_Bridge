@@ -84,12 +84,12 @@ def test_messages_bridge_scopes_tool_result_images_to_codex(auth_type):
     assert payload["input"][1] == {
         "type": "function_call_output",
         "call_id": "call_route_image",
-        "output": "Image metadata",
+        "output": [
+            {"type": "input_text", "text": "Image metadata"},
+            {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
+        ],
     }
-    assert payload["input"][2] == {
-        "role": "user",
-        "content": [{"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="}],
-    }
+    assert len(payload["input"]) == 2
 
 
 def test_messages_openai_non_stream_success(client: TestClient):

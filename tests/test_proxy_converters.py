@@ -151,13 +151,13 @@ def test_anthropic_tool_result_images_reach_codex_function_output(source, expect
         {
             "type": "function_call_output",
             "call_id": "call_img_3",
-            "output": "Image metadata",
+            "output": [
+                {"type": "input_text", "text": "Image metadata"},
+                {"type": "input_image", "image_url": expected_url},
+            ],
         }
     ]
-    assert payload["input"][-1] == {
-        "role": "user",
-        "content": [{"type": "input_image", "image_url": expected_url}],
-    }
+    assert payload["input"][-1] == outputs[0]
 
 
 def test_anthropic_text_only_tool_result_keeps_string_content():
@@ -185,7 +185,7 @@ def test_anthropic_text_only_tool_result_keeps_string_content():
     ]
 
 
-def test_tool_content_with_image_url_reaches_codex_as_following_user_image():
+def test_tool_content_with_image_url_reaches_codex_function_output():
     body = {
         "messages": [
             {
@@ -215,14 +215,14 @@ def test_tool_content_with_image_url_reaches_codex_as_following_user_image():
     input_items = payload["input"]
     outputs = [x for x in input_items if isinstance(x, dict) and x.get("type") == "function_call_output"]
     assert len(outputs) == 1
-    assert outputs[0]["output"] == "Image metadata"
-    assert input_items[2] == {
-        "role": "user",
-        "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAA"}],
-    }
+    assert outputs[0]["output"] == [
+        {"type": "input_text", "text": "Image metadata"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAA"},
+    ]
+    assert input_items[-1] == outputs[0]
 
 
-def test_tool_content_json_string_with_output_content_reaches_codex_as_user_image():
+def test_tool_content_json_string_with_output_content_reaches_codex_function_output():
     raw_tool_content = {
         "call_id": "call_img_2",
         "name": "read",
@@ -259,8 +259,8 @@ def test_tool_content_json_string_with_output_content_reaches_codex_as_user_imag
     input_items = payload["input"]
     outputs = [x for x in input_items if isinstance(x, dict) and x.get("type") == "function_call_output"]
     assert len(outputs) == 1
-    assert outputs[0]["output"] == "Image metadata"
-    assert input_items[2] == {
-        "role": "user",
-        "content": [{"type": "input_image", "image_url": "data:image/png;base64,BBB"}],
-    }
+    assert outputs[0]["output"] == [
+        {"type": "input_text", "text": "Image metadata"},
+        {"type": "input_image", "image_url": "data:image/png;base64,BBB"},
+    ]
+    assert input_items[-1] == outputs[0]
