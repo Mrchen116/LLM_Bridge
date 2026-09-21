@@ -28,6 +28,7 @@ from proxy_logging import (
     _build_anthropic_non_stream_from_events,
     _sse_event,
 )
+from upstream_config import PROTOCOL_OPENAI_RESPONSES
 
 
 async def _prepend_stream_chunk(first_chunk: bytes, iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
@@ -38,7 +39,7 @@ async def _prepend_stream_chunk(first_chunk: bytes, iterator: AsyncIterator[byte
 
 async def build_openai_bridge_streaming_response(
     *,
-    auth_type: str,
+    upstream_protocol: str,
     model: str,
     profile: Dict[str, Any],
     upstream_url: str,
@@ -165,7 +166,7 @@ async def build_openai_bridge_streaming_response(
         has_started = False
 
         try:
-            if auth_type == "codex_oauth":
+            if upstream_protocol == PROTOCOL_OPENAI_RESPONSES:
                 async with httpx.AsyncClient(
                     verify=verify,
                     timeout=httpx.Timeout(timeout_seconds),

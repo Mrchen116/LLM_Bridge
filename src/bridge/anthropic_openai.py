@@ -13,14 +13,8 @@ from proxy_converters import (
 def anthropic_messages_to_openai_chat_messages(
     messages: List[Dict[str, Any]],
     system: Any,
-    *,
-    preserve_tool_result_images: bool = False,
 ) -> List[Dict[str, Any]]:
-    return anthropic_messages_to_openai(
-        messages,
-        system,
-        preserve_tool_result_images=preserve_tool_result_images,
-    )
+    return anthropic_messages_to_openai(messages, system)
 
 
 def anthropic_tools_to_openai_chat_tools(tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:

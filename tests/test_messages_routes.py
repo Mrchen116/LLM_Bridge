@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
 import app as app_module
 from src.handlers.messages import _build_openai_bridge_payload
 from tests.support import ConnectErrorAsyncClient, FakeStreamResponse, TEST_UPSTREAM_CONFIG
+from upstream_config import PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES
 
 
 def _tool_result_image_messages():
@@ -52,8 +53,8 @@ def _tool_result_image_messages():
     ]
 
 
-@pytest.mark.parametrize("auth_type", ["bearer", "codex_oauth"])
-def test_messages_bridge_scopes_tool_result_images_to_codex(auth_type):
+@pytest.mark.parametrize("upstream_protocol", [PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES])
+def test_messages_bridge_shapes_tool_result_for_upstream_protocol(upstream_protocol):
     payload, _ = _build_openai_bridge_payload(
         model="gpt-test",
         messages=_tool_result_image_messages(),
@@ -66,14 +67,14 @@ def test_messages_bridge_scopes_tool_result_images_to_codex(auth_type):
         temperature=None,
         top_p=None,
         stop_sequences=None,
-        auth_type=auth_type,
+        upstream_protocol=upstream_protocol,
         session_id=None,
-        provider="codex_oauth" if auth_type == "codex_oauth" else "openai_compatible",
+        provider="codex_oauth" if upstream_protocol == PROTOCOL_OPENAI_RESPONSES else "openai_compatible",
         model_suffix_effort=None,
         anthropic_output_config=None,
     )
 
-    if auth_type == "bearer":
+    if upstream_protocol == PROTOCOL_OPENAI_CHAT:
         assert payload["messages"][1] == {
             "role": "tool",
             "tool_call_id": "call_route_image",
