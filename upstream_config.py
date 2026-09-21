@@ -62,6 +62,10 @@ def _resolve_auth_type_for_profile(profile_name: str, provider: str, auth: Dict[
     if auth_type is not None:
         if auth_type not in SUPPORTED_AUTH_TYPES:
             raise UpstreamConfigError(f"profiles.{profile_name}.auth.type 非法: {auth_type}")
+        if auth_type == "codex_oauth":
+            raise UpstreamConfigError(
+                f"profiles.{profile_name}.auth.type=codex_oauth 不再支持，请使用 provider=codex_oauth"
+            )
         return auth_type
 
     # 仅内网场景需要显式 type，外网场景按 provider 自动推断，减少重复配置
@@ -247,31 +251,45 @@ def resolve_profile(
 
 def build_upstream_url(profile: Dict[str, Any], protocol: str) -> str:
     base = str(profile["baseUrl"]).rstrip("/")
+    upstream_protocol = resolve_upstream_protocol(profile, protocol)
     provider = profile["provider"]
     auth = _ensure_dict("profile.auth", profile.get("auth") or {})
-    auth_type = _resolve_auth_type_for_profile("runtime", provider, auth)
-    if auth_type == "codex_oauth":
+    if provider == "codex_oauth":
         # Codex OAuth 走 ChatGPT 的 codex 专用响应端点，不拼接 /chat/completions。
         return str(auth.get("codexEndpoint") or "https://chatgpt.com/backend-api/codex/responses").rstrip("/")
 
-    if protocol == PROTOCOL_OPENAI_CHAT:
-        if provider not in {"openai_compatible", "codex_oauth"}:
-            raise UpstreamCapabilityError("anthropic provider 不支持 openai_chat")
+    if upstream_protocol == PROTOCOL_OPENAI_CHAT:
         return f"{base}/chat/completions"
-    if protocol == PROTOCOL_OPENAI_RESPONSES:
-        if provider not in {"openai_compatible", "codex_oauth"}:
-            raise UpstreamCapabilityError("anthropic provider 不支持 openai_responses")
+    if upstream_protocol == PROTOCOL_OPENAI_RESPONSES:
         return f"{base}/responses"
-    if protocol == PROTOCOL_ANTHROPIC_MESSAGES:
-        if provider == "anthropic":
-            # 兼容两种 baseUrl 写法：
-            # - .../v1      -> .../v1/messages
-            # - .../anthropic -> .../anthropic/v1/messages
-            if base.endswith("/v1"):
-                return f"{base}/messages"
-            return f"{base}/v1/messages"
-        return f"{base}/chat/completions"
-    raise UpstreamConfigError(f"未知协议: {protocol}")
+    if upstream_protocol == PROTOCOL_ANTHROPIC_MESSAGES:
+        # 兼容两种 baseUrl 写法：
+        # - .../v1      -> .../v1/messages
+        # - .../anthropic -> .../anthropic/v1/messages
+        if base.endswith("/v1"):
+            return f"{base}/messages"
+        return f"{base}/v1/messages"
+    raise UpstreamConfigError(f"未知上游协议: {upstream_protocol}")
+
+
+def resolve_upstream_protocol(profile: Dict[str, Any], ingress_protocol: str) -> str:
+    """Resolve the wire protocol used after adapting an ingress request."""
+
+    provider = str(profile.get("provider") or "")
+    auth = _ensure_dict("profile.auth", profile.get("auth") or {})
+    _resolve_auth_type_for_profile("runtime", provider, auth)
+    if provider == "codex_oauth":
+        return PROTOCOL_OPENAI_RESPONSES
+    if provider == "anthropic":
+        if ingress_protocol != PROTOCOL_ANTHROPIC_MESSAGES:
+            raise UpstreamCapabilityError(f"anthropic provider 不支持 {ingress_protocol}")
+        return PROTOCOL_ANTHROPIC_MESSAGES
+    if provider == "openai_compatible":
+        if ingress_protocol == PROTOCOL_ANTHROPIC_MESSAGES:
+            return PROTOCOL_OPENAI_CHAT
+        if ingress_protocol in {PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES}:
+            return ingress_protocol
+    raise UpstreamCapabilityError(f"provider={provider} 不支持协议 {ingress_protocol}")
 
 
 def get_runtime_options(profile: Dict[str, Any]) -> Tuple[bool, float, int, bool]:

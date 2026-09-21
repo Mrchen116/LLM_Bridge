@@ -10,7 +10,69 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from start_proxy import _apply_startup_env_flags, _has_codex_oauth_profile
-from upstream_config import PROTOCOL_OPENAI_CHAT, resolve_profile
+from upstream_config import (
+    PROTOCOL_ANTHROPIC_MESSAGES,
+    PROTOCOL_OPENAI_CHAT,
+    PROTOCOL_OPENAI_RESPONSES,
+    UpstreamConfigError,
+    build_upstream_url,
+    resolve_profile,
+    resolve_upstream_protocol,
+)
+
+
+@pytest.mark.parametrize(
+    ("profile", "ingress_protocol", "expected"),
+    [
+        ({"provider": "anthropic"}, PROTOCOL_ANTHROPIC_MESSAGES, PROTOCOL_ANTHROPIC_MESSAGES),
+        ({"provider": "openai_compatible"}, PROTOCOL_ANTHROPIC_MESSAGES, PROTOCOL_OPENAI_CHAT),
+        ({"provider": "openai_compatible"}, PROTOCOL_OPENAI_RESPONSES, PROTOCOL_OPENAI_RESPONSES),
+        ({"provider": "codex_oauth"}, PROTOCOL_ANTHROPIC_MESSAGES, PROTOCOL_OPENAI_RESPONSES),
+        ({"provider": "codex_oauth"}, PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES),
+    ],
+)
+def test_resolve_upstream_protocol(profile, ingress_protocol, expected):
+    assert resolve_upstream_protocol(profile, ingress_protocol) == expected
+
+
+@pytest.mark.parametrize(
+    ("profile", "ingress_protocol", "expected"),
+    [
+        (
+            {"provider": "anthropic", "baseUrl": "https://api.anthropic.com", "auth": {"type": "anthropic_key"}},
+            PROTOCOL_ANTHROPIC_MESSAGES,
+            "https://api.anthropic.com/v1/messages",
+        ),
+        (
+            {"provider": "openai_compatible", "baseUrl": "https://api.openai.com/v1", "auth": {"type": "bearer"}},
+            PROTOCOL_ANTHROPIC_MESSAGES,
+            "https://api.openai.com/v1/chat/completions",
+        ),
+        (
+            {"provider": "openai_compatible", "baseUrl": "https://api.openai.com/v1", "auth": {"type": "bearer"}},
+            PROTOCOL_OPENAI_RESPONSES,
+            "https://api.openai.com/v1/responses",
+        ),
+        (
+            {"provider": "codex_oauth", "baseUrl": "https://api.openai.com/v1", "auth": {}},
+            PROTOCOL_ANTHROPIC_MESSAGES,
+            "https://chatgpt.com/backend-api/codex/responses",
+        ),
+    ],
+)
+def test_build_upstream_url_follows_resolved_protocol(profile, ingress_protocol, expected):
+    assert build_upstream_url(profile, ingress_protocol) == expected
+
+
+def test_codex_oauth_auth_type_requires_codex_provider():
+    profile = {
+        "provider": "openai_compatible",
+        "baseUrl": "https://api.openai.com/v1",
+        "auth": {"type": "codex_oauth"},
+    }
+
+    with pytest.raises(UpstreamConfigError, match="provider=codex_oauth"):
+        resolve_upstream_protocol(profile, PROTOCOL_ANTHROPIC_MESSAGES)
 
 
 def test_has_codex_oauth_profile_true():

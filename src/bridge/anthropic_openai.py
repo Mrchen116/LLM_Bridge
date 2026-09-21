@@ -10,7 +10,10 @@ from proxy_converters import (
 )
 
 
-def anthropic_messages_to_openai_chat_messages(messages: List[Dict[str, Any]], system: Any) -> List[Dict[str, Any]]:
+def anthropic_messages_to_openai_chat_messages(
+    messages: List[Dict[str, Any]],
+    system: Any,
+) -> List[Dict[str, Any]]:
     return anthropic_messages_to_openai(messages, system)
 
 
@@ -24,4 +27,3 @@ def anthropic_tool_choice_to_openai_chat_tool_choice(tool_choice: Optional[Dict[
 
 def openai_chat_finish_reason_to_anthropic_stop_reason(finish_reason: Optional[str]) -> Optional[str]:
     return oai_finish_reason_to_stop_reason(finish_reason)
-

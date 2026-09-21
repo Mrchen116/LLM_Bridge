@@ -20,6 +20,7 @@ from src.adapters.upstream_executor import (
     should_retry_codex_result,
     should_trigger_codex_failover,
 )
+from src.bridge.anthropic_codex import anthropic_messages_to_openai_responses_bridge_messages
 from src.bridge.anthropic_openai import (
     anthropic_messages_to_openai_chat_messages,
     anthropic_tool_choice_to_openai_chat_tool_choice,
@@ -58,6 +59,8 @@ from proxy_logging import (
 
 from upstream_config import (
     PROTOCOL_ANTHROPIC_MESSAGES,
+    PROTOCOL_OPENAI_CHAT,
+    PROTOCOL_OPENAI_RESPONSES,
     UpstreamCapabilityError,
     UpstreamConfigError,
     build_upstream_url,
@@ -66,6 +69,7 @@ from upstream_config import (
     get_effective_auth_type,
     get_runtime_options,
     resolve_profile,
+    resolve_upstream_protocol,
 )
 
 
@@ -396,13 +400,18 @@ def _build_openai_bridge_payload(
     temperature: Any,
     top_p: Any,
     stop_sequences: Any,
-    auth_type: str,
+    upstream_protocol: str,
     session_id: Optional[str],
     provider: str,
     model_suffix_effort: Optional[str],
     anthropic_output_config: Any,
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-    oai_messages = anthropic_messages_to_openai_chat_messages(messages, system)
+    if upstream_protocol == PROTOCOL_OPENAI_RESPONSES:
+        oai_messages = anthropic_messages_to_openai_responses_bridge_messages(messages, system)
+    elif upstream_protocol == PROTOCOL_OPENAI_CHAT:
+        oai_messages = anthropic_messages_to_openai_chat_messages(messages, system)
+    else:
+        raise ValueError(f"Unsupported OpenAI bridge protocol: {upstream_protocol}")
 
     upstream_payload: Dict[str, Any] = {
         "model": model,
@@ -433,7 +442,7 @@ def _build_openai_bridge_payload(
     if stream:
         upstream_payload["stream_options"] = {"include_usage": True}
 
-    if auth_type != "codex_oauth":
+    if upstream_protocol == PROTOCOL_OPENAI_CHAT:
         return upstream_payload, None
 
     codex_chat_body: Dict[str, Any] = {
@@ -572,7 +581,7 @@ def _build_anthropic_response_from_openai_chat(
 
 async def _handle_openai_bridge_non_stream(
     *,
-    auth_type: str,
+    upstream_protocol: str,
     model: str,
     profile: Dict[str, Any],
     upstream_url: str,
@@ -588,7 +597,7 @@ async def _handle_openai_bridge_non_stream(
     expose_thinking: bool,
     refresh_headers: Callable[[], Awaitable[Dict[str, str]]],
 ) -> Response:
-    if auth_type == "codex_oauth":
+    if upstream_protocol == PROTOCOL_OPENAI_RESPONSES:
         async with httpx.AsyncClient(
             verify=verify,
             timeout=httpx.Timeout(timeout_seconds),
@@ -756,6 +765,7 @@ async def run_messages_flow(
     profile = resolved.profile
     model = resolved.model
     auth_type = get_effective_auth_type(profile)
+    upstream_protocol = resolve_upstream_protocol(profile, PROTOCOL_ANTHROPIC_MESSAGES)
     upstream_url = build_upstream_url(profile, PROTOCOL_ANTHROPIC_MESSAGES)
     verify, timeout_seconds, max_retries, trust_env = get_runtime_options(profile)
     max_failovers = 0
@@ -829,10 +839,12 @@ async def run_messages_flow(
         temperature=temperature,
         top_p=top_p,
         stop_sequences=stop_sequences,
-        auth_type=auth_type,
+        upstream_protocol=upstream_protocol,
         session_id=session_id,
         provider=str(profile.get("provider") or ""),
-        model_suffix_effort=resolved.reasoning_effort if auth_type == "codex_oauth" else None,
+        model_suffix_effort=(
+            resolved.reasoning_effort if upstream_protocol == PROTOCOL_OPENAI_RESPONSES else None
+        ),
         anthropic_output_config=output_config,
     )
 
@@ -846,7 +858,7 @@ async def run_messages_flow(
 
     if not stream:
         return await _handle_openai_bridge_non_stream(
-            auth_type=auth_type,
+            upstream_protocol=upstream_protocol,
             model=model,
             profile=profile,
             upstream_url=upstream_url,
@@ -864,7 +876,7 @@ async def run_messages_flow(
         )
 
     return await build_openai_bridge_streaming_response(
-        auth_type=auth_type,
+        upstream_protocol=upstream_protocol,
         model=model,
         profile=profile,
         upstream_url=upstream_url,
