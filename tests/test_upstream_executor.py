@@ -13,9 +13,9 @@ def test_codex_oauth_headers_use_current_default_version(monkeypatch):
         session_id=None,
     )
 
-    assert CODEX_DEFAULT_VERSION == "0.144.6"
-    assert headers["version"] == "0.144.6"
-    assert headers["user-agent"] == "codex_cli_rs/0.144.6 (LLM_PROXY)"
+    assert CODEX_DEFAULT_VERSION == "0.155.1"
+    assert headers["version"] == "0.155.1"
+    assert headers["user-agent"] == "codex_cli_rs/0.155.1 (LLM_PROXY)"
 
 
 def test_codex_oauth_headers_allow_version_override(monkeypatch):

@@ -184,7 +184,7 @@ For Anthropic Messages ingress (including Claude Code), `output_config.effort` i
 
 For bridged responses, Codex/OpenAI cache usage is exposed in Anthropic usage: `input_tokens_details.cached_tokens` becomes `cache_read_input_tokens`, and `input_tokens_details.cache_write_tokens` becomes `cache_creation_input_tokens` (also available in streaming `message_start`/`message_delta`). Since OpenAI's `input_tokens` includes cached tokens, the bridge reports Anthropic's uncached remainder in `input_tokens`.
 
-The Codex OAuth upstream client version defaults to `0.144.6`. If the upstream later requires a newer client, set `CODEX_UPSTREAM_CLIENT_VERSION` before starting the proxy instead of changing source code.
+The Codex OAuth upstream client version defaults to `0.155.1`, which supports GPT-6 Sol and Luna with an eligible ChatGPT account. Set `CODEX_UPSTREAM_CLIENT_VERSION` before starting the proxy to override it for a later upstream requirement.
 
 ## API Endpoints
 
