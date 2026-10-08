@@ -536,3 +536,36 @@ def test_messages_profile_unsupported_for_protocol(client: TestClient):
     resp = client.post("/v1/messages", json=payload)
     assert resp.status_code == 404
     assert resp.json()["error"]["type"] == "unsupported_for_upstream"
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "incomplete", None])
+def test_messages_codex_empty_stream_requires_successful_completion(client: TestClient, terminal_status):
+    """A completed silent turn retains usage; a truncated empty stream stays an error."""
+    from tests.support import FakeAsyncClient
+
+    lines = []
+    if terminal_status is not None:
+        lines.append("data: " + json.dumps({
+            "type": "response.completed" if terminal_status == "completed" else "response.incomplete",
+            "response": {
+                "id": "resp_silent", "status": terminal_status, "output": [],
+                "usage": {"input_tokens": 11037, "output_tokens": 4},
+            },
+        }))
+    lines.append("data: [DONE]")
+    FakeAsyncClient.stream_response = FakeStreamResponse(status_code=200, lines=lines)
+    with client.stream("POST", "/v1/messages", json={
+        "model": "codexOAuth:gpt-6.1-sol", "stream": True,
+        "messages": [{"role": "user", "content": "The message was delivered; finish the turn."}],
+    }) as response:
+        data = "".join(response.iter_text())
+    if terminal_status != "completed":
+        assert response.status_code == 502
+        assert "upstream_empty_stream" in data
+        return
+    assert response.status_code == 200
+    events = [json.loads(line[6:]) for line in data.splitlines() if line.startswith("data: ")]
+    assert [event["type"] for event in events] == ["message_start", "message_delta", "message_stop"]
+    assert events[1]["delta"]["stop_reason"] == "end_turn"
+    assert events[1]["usage"]["input_tokens"] == 11037
+    assert events[1]["usage"]["output_tokens"] == 4

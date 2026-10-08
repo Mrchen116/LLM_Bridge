@@ -238,7 +238,9 @@ async def build_openai_bridge_streaming_response(
                         else ""
                     )
                     tool_uses = codex_response_extract_tool_uses(codex_resp_json)
-                    if not text and not tool_uses:
+                    # A real completed response can silently end a tool-driven turn.
+                    # The collector's fallback for a truncated stream has no status.
+                    if not text and not tool_uses and codex_resp_json.get("status") != "completed":
                         set_error_response(
                             status_code=502,
                             body=error_body_json("上游返回成功，但未生成任何文本或工具调用", "upstream_empty_stream"),
