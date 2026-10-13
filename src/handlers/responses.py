@@ -343,7 +343,8 @@ async def run_responses_flow(
 
                         connected = True
 
-                        async for raw in r.aiter_raw():
+                        # Downstream SSE has no Content-Encoding; decode upstream compression first.
+                        async for raw in r.aiter_bytes():
                             chunks.append(raw.decode("utf-8", errors="replace"))
                             yield emit_bytes(raw)
                         if not down_chunks:

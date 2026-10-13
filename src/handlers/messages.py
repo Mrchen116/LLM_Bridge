@@ -266,7 +266,8 @@ async def _forward_anthropic_native_messages(
                             return
 
                         first_chunk = True
-                        async for chunk in r.aiter_raw():
+                        # Downstream SSE has no Content-Encoding; decode upstream compression first.
+                        async for chunk in r.aiter_bytes():
                             decoded = chunk.decode("utf-8", errors="replace")
                             down_chunks.append(decoded)
                             if first_chunk:

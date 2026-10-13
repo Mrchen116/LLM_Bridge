@@ -74,6 +74,10 @@ class FakeStreamResponse:
         for chunk in self._raw_chunks:
             yield chunk
 
+    async def aiter_bytes(self):
+        for chunk in self._raw_chunks:
+            yield chunk
+
 
 class FakeStreamContext:
     def __init__(self, response: FakeStreamResponse) -> None:
