@@ -1,5 +1,6 @@
 import os
 import httpx
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -14,6 +15,7 @@ from src.handlers.messages import run_messages_flow
 from src.handlers.responses import run_responses_flow
 from src.inspector.api import ROUTER as SESSION_INSPECTOR_ROUTER, UI_DIR as SESSION_INSPECTOR_UI_DIR
 from src.observability.session_metrics import get_session_stats
+from src.observability.log_cleanup import RequestLogMiddleware, log_cleanup_worker
 from src.observability.token_stats import (
     TOKEN_FORMAT_ANTHROPIC,
     collect_usage_tokens_for_stats,
@@ -32,7 +34,14 @@ LOGS_RAW_DIR = os.path.join(LOGS_ROOT_DIR, "raw")
 LOGS_SESSION_DIR = os.path.join(LOGS_ROOT_DIR, "session")
 
 
-app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    with log_cleanup_worker(LOGS_RAW_DIR, LOGS_SESSION_DIR):
+        yield
+
+
+app = FastAPI(title="Anthropic+OpenAI Proxy (FastAPI)", lifespan=lifespan)
+app.add_middleware(RequestLogMiddleware)
 app.include_router(SESSION_INSPECTOR_ROUTER)
 app.mount(
     "/ui/session-inspector/assets",

@@ -1,16 +1,22 @@
 import json
+import logging
 import os
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from proxy_converters import _extract_text_from_blocks
 
+_logger = logging.getLogger(__name__)
+
 
 def _dump_json(path: str, obj):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2, sort_keys=True)
-        f.write("\n")
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.write("\n")
+    except OSError as error:
+        _logger.warning("Cannot write log %s: %s", path, error)
 
 
 def _resp_to_obj(r):  # httpx.Response -> dict

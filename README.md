@@ -223,7 +223,9 @@ Running the service creates logs under:
 - `logs/session/`: per-session turn logs used by Session Inspector
 - `logs/raw/`: raw request/response/header captures, grouped by bucket such as `anthropic`, `openai_chat`, and `openai_codex`
 
-Old logs are cleaned automatically on an hourly cadence. Set `LOG_RETENTION_DAYS` (default 7) to adjust how long they are kept.
+Logs are cleaned at startup and every 5 minutes. Turns older than `LOG_RETENTION_DAYS` (default 7) expire first; if raw and session logs still exceed `LOG_MAX_TOTAL_GB` (default 8 GiB), the oldest turns are removed until they fit. Request and response files are removed together. In-flight requests, including streaming responses, are protected; long-lived sessions retain their newer turns. Active requests can temporarily exceed the cap and become eligible for a later cleanup after finishing. The former minimum file/session counts no longer prevent capacity cleanup.
+
+Log directory or write failures emit warnings without failing model requests. Cleanup only handles timestamped JSON logs inside `logs/raw/` and `logs/session/`; configuration, credentials and other directories are untouched.
 
 ## Tests
 

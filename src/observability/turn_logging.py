@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from proxy_logging import _discard_session_req, _dump_json
 
-from src.observability.log_cleanup import maybe_cleanup_logs
+from src.observability.log_cleanup import track_turn
 
 DOWNSTREAM_FORMAT_ANTHROPIC_MESSAGES = "anthropic_messages"
 DOWNSTREAM_FORMAT_OPENAI_CHAT = "openai_chat"
@@ -81,8 +81,7 @@ def build_turn_log_paths(
 ) -> TurnLogPaths:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
     raw_dir = os.path.join(logs_raw_dir, raw_bucket)
-    os.makedirs(raw_dir, exist_ok=True)
-    maybe_cleanup_logs(logs_raw_dir, logs_session_dir)
+    track_turn(logs_raw_dir, logs_session_dir, ts)
 
     def raw_file(kind: str) -> str:
         return os.path.join(raw_dir, f"{ts}-{kind}-{downstream_format}.json")
@@ -93,10 +92,8 @@ def build_turn_log_paths(
     session_non_stream_res_path: Optional[str] = None
 
     if session_id:
-        os.makedirs(logs_session_dir, exist_ok=True)
         existing_dirs = sorted(glob.glob(os.path.join(logs_session_dir, f"*_{session_id}")))
         session_dir = existing_dirs[0] if existing_dirs else os.path.join(logs_session_dir, f"{ts}_{session_id}")
-        os.makedirs(session_dir, exist_ok=True)
         session_req_path = os.path.join(session_dir, f"{ts}-req-{downstream_format}.json")
         session_downstream_res_path = os.path.join(session_dir, f"{ts}-downstream-res-{downstream_format}.json")
         session_non_stream_res_path = os.path.join(session_dir, f"{ts}-non-stream-res-{downstream_format}.json")

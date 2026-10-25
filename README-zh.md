@@ -209,7 +209,9 @@ npm run build
 - `logs/session/`：按会话聚合的 turn 日志，供 Session Inspector 使用
 - `logs/raw/`：原始请求、上游请求、响应和 headers 落盘，按 bucket 分组，例如 `anthropic`、`openai_chat`、`openai_codex`
 
-旧日志每小时自动清理一次，保留时长可通过 `LOG_RETENTION_DAYS` 调整（默认 7 天）。
+日志在服务启动时和每 5 分钟自动清理：先删除超过 `LOG_RETENTION_DAYS`（默认 7 天）的请求轮次；raw 与 session 合计仍超过 `LOG_MAX_TOTAL_GB`（默认 8 GiB）时，继续从最旧轮次清理到上限以内。同轮请求与响应一起清理，正在执行或流式返回的请求不删；长期 session 只删除旧轮次，保留新的记录。活跃请求可能暂时使日志超过上限，结束后由后续清理处理。旧的最少文件数/会话数保留规则不再限制容量清理。
+
+日志目录创建或写入失败只产生告警，不影响模型请求转发。清理仅处理 `logs/raw/` 与 `logs/session/` 下带请求时间戳的 JSON 日志，不清理配置、凭据或其他目录。
 
 ## 测试
 
