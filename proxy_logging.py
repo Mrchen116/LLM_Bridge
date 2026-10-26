@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from proxy_converters import _extract_text_from_blocks
 
 _logger = logging.getLogger(__name__)
+REQUEST_LOGGING_ENABLED = False
 
 
 def _dump_json(path: str, obj):

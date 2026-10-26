@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
 
+import proxy_logging
 from proxy_logging import _discard_session_req, _dump_json
 
 from src.observability.log_cleanup import track_turn
@@ -81,7 +82,8 @@ def build_turn_log_paths(
 ) -> TurnLogPaths:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
     raw_dir = os.path.join(logs_raw_dir, raw_bucket)
-    track_turn(logs_raw_dir, logs_session_dir, ts)
+    if proxy_logging.REQUEST_LOGGING_ENABLED:
+        track_turn(logs_raw_dir, logs_session_dir, ts)
 
     def raw_file(kind: str) -> str:
         return os.path.join(raw_dir, f"{ts}-{kind}-{downstream_format}.json")
@@ -91,7 +93,7 @@ def build_turn_log_paths(
     session_downstream_res_path: Optional[str] = None
     session_non_stream_res_path: Optional[str] = None
 
-    if session_id:
+    if proxy_logging.REQUEST_LOGGING_ENABLED and session_id:
         existing_dirs = sorted(glob.glob(os.path.join(logs_session_dir, f"*_{session_id}")))
         session_dir = existing_dirs[0] if existing_dirs else os.path.join(logs_session_dir, f"{ts}_{session_id}")
         session_req_path = os.path.join(session_dir, f"{ts}-req-{downstream_format}.json")
@@ -122,6 +124,8 @@ def log_request_phase(
     client_headers: Mapping[str, Any],
     upstream_headers: Mapping[str, Any],
 ) -> None:
+    if not proxy_logging.REQUEST_LOGGING_ENABLED:
+        return
     _dump_json(paths.raw_req_path, request_obj)
     _dump_json(paths.raw_upstream_req_path, upstream_request_obj)
     _dump_json(
@@ -142,6 +146,8 @@ def log_response_phase(
     downstream_response_obj: Dict[str, Any],
     non_stream_response_obj: Optional[Dict[str, Any]] = None,
 ) -> None:
+    if not proxy_logging.REQUEST_LOGGING_ENABLED:
+        return
     response_completed_at = datetime.now()
     response_completed_at_ms = int(response_completed_at.timestamp() * 1000)
 

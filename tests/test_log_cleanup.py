@@ -101,7 +101,9 @@ def test_cleanup_ignores_symlinks_and_unmanaged_files(tmp_path):
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-def test_asgi_protection_lasts_through_stream_and_is_released_on_cancel(tmp_path, cancel):
+def test_asgi_protection_lasts_through_stream_and_is_released_on_cancel(tmp_path, monkeypatch, cancel):
+    monkeypatch.setattr(proxy_logging, "REQUEST_LOGGING_ENABLED", True)
+
     async def scenario():
         date = NOW - timedelta(days=8)
         files = turn_files(tmp_path, date)
@@ -138,6 +140,7 @@ def test_asgi_protection_lasts_through_stream_and_is_released_on_cancel(tmp_path
 
 
 def test_worker_runs_without_requests_and_recovers_from_scan_error(monkeypatch):
+    monkeypatch.setattr(proxy_logging, "REQUEST_LOGGING_ENABLED", True)
     called_twice = threading.Event()
     calls = []
 
@@ -152,6 +155,16 @@ def test_worker_runs_without_requests_and_recovers_from_scan_error(monkeypatch):
         assert called_twice.wait(timeout=2)
     assert len(calls) >= 2
     assert not any(t.name == "log-cleanup" and t.is_alive() for t in threading.enumerate())
+
+
+def test_disabled_logging_does_not_start_cleanup_or_remove_old_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr(proxy_logging, "REQUEST_LOGGING_ENABLED", False)
+    old = turn_files(tmp_path, NOW - timedelta(days=8))
+
+    with log_cleanup_worker(str(tmp_path / "raw"), str(tmp_path / "session")):
+        assert not any(t.name == "log-cleanup" and t.is_alive() for t in threading.enumerate())
+
+    assert all(path.exists() for path in old)
 
 
 @pytest.mark.parametrize("stream", [False, True])

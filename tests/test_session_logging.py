@@ -1,12 +1,70 @@
 import json
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from src.session_id_plugins.plugin_metadata import MetadataPlugin
 from tests.support import FakeAsyncClient, FakeStreamResponse
 
 _metadata_plugin = MetadataPlugin()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status_code", [200, 400])
+@pytest.mark.parametrize("endpoint, model, upstream_format", [
+    ("/v1/messages", "moonshot:kimi-k2.5", "chat"),
+    ("/v1/messages", "moonshotAnthropic:claude-test", "anthropic"),
+    ("/v1/chat/completions", "moonshot:kimi-k2.5", "chat"),
+    ("/v1/responses", "codexOAuth:gpt-5.2-codex", "responses"),
+])
+def test_requests_do_not_write_logs_by_default(client, monkeypatch, stream, status_code, endpoint, model, upstream_format):
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "true")
+    if upstream_format == "anthropic":
+        response_body = {
+            "id": "msg_no_logs", "type": "message", "role": "assistant", "model": "claude-test",
+            "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        events = [
+            {"type": "message_start", "message": response_body},
+            {"type": "message_stop"},
+        ]
+        sse = "".join(f'event: {event["type"]}\ndata: {json.dumps(event)}\n\n' for event in events)
+    elif upstream_format == "responses":
+        response_body = {
+            "id": "resp_no_logs", "object": "response",
+            "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        sse = f'data: {json.dumps({"type": "response.completed", "response": response_body})}\n\ndata: [DONE]\n\n'
+    else:
+        response_body = {
+            "id": "chatcmpl_no_logs", "model": "kimi-k2.5",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        }
+        sse = 'data: {"id":"chatcmpl_no_logs","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+    if status_code >= 400:
+        response_body = {"error": {"message": "rejected"}}
+    FakeAsyncClient.post_response = httpx.Response(status_code, json=response_body)
+    FakeAsyncClient.stream_response = FakeStreamResponse(
+        status_code=status_code,
+        lines=sse.splitlines(),
+        raw_chunks=[sse.encode()],
+        read_bytes=json.dumps(response_body).encode(),
+    )
+    payload = {"model": model, "stream": stream}
+    if endpoint == "/v1/responses":
+        payload["input"] = "hi"
+    else:
+        payload["messages"] = [{"role": "user", "content": "hi"}]
+
+    response = client.post(endpoint, json=payload, headers={"X-Session-Id": "no-logs"})
+
+    assert response.status_code == status_code
+    assert ("ok" if status_code == 200 else "rejected") in response.text
+    assert not (Path.cwd() / "logs").exists()
 
 
 def test_extract_session_id_from_body_metadata_supports_legacy_and_json_string_formats():

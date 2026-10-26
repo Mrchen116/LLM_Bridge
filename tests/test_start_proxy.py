@@ -9,7 +9,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from start_proxy import _apply_startup_env_flags, _has_codex_oauth_profile
+import proxy_logging
+from start_proxy import _apply_startup_env_flags, _build_parser, _has_codex_oauth_profile
 from upstream_config import (
     PROTOCOL_ANTHROPIC_MESSAGES,
     PROTOCOL_OPENAI_CHAT,
@@ -111,7 +112,7 @@ def test_has_codex_oauth_profile_false():
 
 def test_apply_startup_env_flags_sets_ui_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ENABLE_SESSION_INSPECTOR_UI", raising=False)
-    args = argparse.Namespace(ban_explore=False, ban_stream=False, ui=True, open_ui=False)
+    args = argparse.Namespace(ban_explore=False, ban_stream=False, log=False, ui=True, open_ui=False)
     _apply_startup_env_flags(args)
     assert "ENABLE_SESSION_INSPECTOR_UI" in os.environ
     assert os.environ["ENABLE_SESSION_INSPECTOR_UI"] == "true"
@@ -119,9 +120,17 @@ def test_apply_startup_env_flags_sets_ui_env(monkeypatch: pytest.MonkeyPatch):
 
 def test_apply_startup_env_flags_open_ui_implies_ui_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ENABLE_SESSION_INSPECTOR_UI", raising=False)
-    args = argparse.Namespace(ban_explore=False, ban_stream=False, ui=False, open_ui=True)
+    args = argparse.Namespace(ban_explore=False, ban_stream=False, log=False, ui=False, open_ui=True)
     _apply_startup_env_flags(args)
     assert os.environ.get("ENABLE_SESSION_INSPECTOR_UI") == "true"
+
+
+@pytest.mark.parametrize("flags, enabled", [([], False), (["--ui"], False), (["--open-ui"], False), (["--log"], True)])
+def test_request_logging_requires_explicit_flag(monkeypatch, flags, enabled):
+    monkeypatch.setattr(proxy_logging, "REQUEST_LOGGING_ENABLED", False)
+    monkeypatch.setenv("ENABLE_SESSION_INSPECTOR_UI", "false")
+    _apply_startup_env_flags(_build_parser().parse_args(flags))
+    assert proxy_logging.REQUEST_LOGGING_ENABLED is enabled
 
 
 def test_resolve_profile_supports_byenv_with_reasoning_suffix():

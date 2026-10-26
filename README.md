@@ -107,6 +107,7 @@ Optional flags:
 
 - `--ban_explore`: remove `- Explore:` lines from Task tool descriptions
 - `--ban_stream`: disable streaming for `/v1/messages`
+- `--log`: enable raw request/response and session logs (off by default)
 - `--ui`: enable the Session Inspector UI and API
 - `--open-ui`: enable the UI and open the browser automatically at `/ui/session-inspector`
 
@@ -120,6 +121,8 @@ Enable it in one of two ways:
 
 - Environment variable: `export ENABLE_SESSION_INSPECTOR_UI=true`
 - Startup flag: `python start_proxy.py --ui` or `python start_proxy.py --open-ui`
+
+The UI can inspect existing logs without recording new ones. To capture new requests as well, run `python start_proxy.py --ui --log`.
 
 Endpoints:
 
@@ -218,7 +221,9 @@ Build output is emitted to the backend static directory `src/inspector_ui/`, whi
 
 ## Log Directories
 
-Running the service creates logs under:
+Request logging is disabled by default. Enable it explicitly with `python start_proxy.py --log`. With logging disabled, no raw or session logs are written and the cleanup worker does not run. Console diagnostics are unaffected.
+
+When enabled, the service creates logs under:
 
 - `logs/session/`: per-session turn logs used by Session Inspector
 - `logs/raw/`: raw request/response/header captures, grouped by bucket such as `anthropic`, `openai_chat`, and `openai_codex`

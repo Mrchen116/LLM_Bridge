@@ -41,6 +41,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable stream requests for anthropic api /v1/messages",
     )
     parser.add_argument(
+        "--log",
+        action="store_true",
+        help="Write raw request/response and session logs (disabled by default)",
+    )
+    parser.add_argument(
         "--ui",
         action="store_true",
         help="Enable built-in session inspector web UI and API",
@@ -60,6 +65,9 @@ def _apply_startup_env_flags(args: argparse.Namespace) -> None:
         os.environ["BAN_STREAM"] = "true"
     if args.ui or args.open_ui:
         os.environ["ENABLE_SESSION_INSPECTOR_UI"] = "true"
+    # proxy_logging imports converters, whose defaults depend on these flags.
+    import proxy_logging
+    proxy_logging.REQUEST_LOGGING_ENABLED = args.log
 
 
 def _schedule_ui_open(host: str, port: int) -> None:

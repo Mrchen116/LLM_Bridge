@@ -10,12 +10,14 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import app as app_module
+import proxy_logging
 from tests.support import FakeAsyncClient, TEST_UPSTREAM_CONFIG
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch) -> TestClient:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(proxy_logging, "REQUEST_LOGGING_ENABLED", False)
     monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
     Path(".codex_oauth.json").write_text(
         json.dumps(
@@ -50,6 +52,7 @@ def client(tmp_path, monkeypatch) -> TestClient:
 @pytest.fixture()
 def client_with_logs(tmp_path, monkeypatch) -> TestClient:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(proxy_logging, "REQUEST_LOGGING_ENABLED", True)
     monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
     Path(".codex_oauth.json").write_text(
         json.dumps(

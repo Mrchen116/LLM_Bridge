@@ -10,6 +10,8 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import proxy_logging
+
 _RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "7"))
 _MAX_BYTES = int(float(os.getenv("LOG_MAX_TOTAL_GB", "8")) * 1024**3)
 _INTERVAL_SECONDS = 300
@@ -57,7 +59,7 @@ class RequestLogMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] != "http" or not proxy_logging.REQUEST_LOGGING_ENABLED:
             return await self.app(scope, receive, send)
         with request_log_scope():
             await self.app(scope, receive, send)
@@ -136,6 +138,9 @@ def cleanup_logs(
 @contextmanager
 def log_cleanup_worker(raw_dir: str, session_dir: str, *, interval: float = _INTERVAL_SECONDS):
     """Run one cleanup at startup and every five minutes until service shutdown."""
+    if not proxy_logging.REQUEST_LOGGING_ENABLED:
+        yield
+        return
     stopped = threading.Event()
 
     def run():

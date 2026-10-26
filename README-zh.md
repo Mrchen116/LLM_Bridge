@@ -107,6 +107,7 @@ python start_proxy.py
 
 - `--ban_explore`：移除 Task 工具描述中的 `- Explore:` 行
 - `--ban_stream`：禁用 `/v1/messages` 流式请求
+- `--log`：启用原始请求/响应和会话日志（默认关闭）
 - `--ui`：启用 Session Inspector UI 与 API
 - `--open-ui`：启用 UI，并自动打开浏览器（`/ui/session-inspector`）
 
@@ -120,6 +121,8 @@ python start_proxy.py
 
 - 环境变量：`export ENABLE_SESSION_INSPECTOR_UI=true`
 - 启动参数：`python start_proxy.py --ui` 或 `python start_proxy.py --open-ui`
+
+UI 可以查看已有日志，不会自动开启新日志记录。需要同时记录新请求时，运行 `python start_proxy.py --ui --log`。
 
 访问地址：
 
@@ -204,7 +207,9 @@ npm run build
 
 ## 日志目录
 
-运行后会在 `logs/` 下生成这些目录：
+请求日志默认关闭，需显式使用 `python start_proxy.py --log` 开启。关闭时不写 raw 和 session 日志，也不运行定时清理；控制台运行信息不受影响。
+
+开启后会在 `logs/` 下生成这些目录：
 
 - `logs/session/`：按会话聚合的 turn 日志，供 Session Inspector 使用
 - `logs/raw/`：原始请求、上游请求、响应和 headers 落盘，按 bucket 分组，例如 `anthropic`、`openai_chat`、`openai_codex`
