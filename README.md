@@ -232,6 +232,8 @@ Logs are cleaned at startup and every 5 minutes. Turns older than `LOG_RETENTION
 
 Log directory or write failures emit warnings without failing model requests. Cleanup only handles timestamped JSON logs inside `logs/raw/` and `logs/session/`; configuration, credentials and other directories are untouched.
 
+Codex reasoning snapshots persist across restarts in `.llm-proxy-cache/reasoning.sqlite3` in the proxy's working directory. Each snapshot expires seven days after its latest write or cache hit. The proxy removes expired snapshots at startup and every five minutes, independently of request logging.
+
 ## Tests
 
 ```bash

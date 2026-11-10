@@ -86,6 +86,7 @@ class _FilteredTimelineCacheEntry:
 _SESSION_SUMMARY_CACHE: Dict[str, _SessionSummaryCacheEntry] = {}
 _RAW_TIMELINE_CACHE: Dict[Tuple[str, int], _RawTimelineBundle] = {}
 _FILTERED_TIMELINE_CACHE: Dict[Tuple[str, Tuple[Any, ...]], _FilteredTimelineCacheEntry] = {}
+_TIMELINE_CACHE_MAX_SOURCE_BYTES = 4 * 1024 * 1024
 
 
 def _to_workspace_relative(path: Path) -> str:
@@ -448,9 +449,26 @@ def _get_raw_timeline_bundle(
     if cached and cached.signature == signature:
         return cached, True
 
+    # Parsed timelines can be much larger than their source logs. Retain only
+    # the most recent small timeline and its latest filter result.
+    _RAW_TIMELINE_CACHE.clear()
+    _FILTERED_TIMELINE_CACHE.clear()
     bundle = _build_raw_events_bundle(session_dir=session_dir, summary_chars=summary_chars)
-    _RAW_TIMELINE_CACHE[cache_key] = bundle
+    if _timeline_fits_cache(session_dir):
+        _RAW_TIMELINE_CACHE[cache_key] = bundle
     return bundle, False
+
+
+def _timeline_fits_cache(session_dir: Path) -> bool:
+    remaining = _TIMELINE_CACHE_MAX_SOURCE_BYTES
+    try:
+        for path in session_dir.glob("*.json"):
+            remaining -= path.stat().st_size
+            if remaining < 0:
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def _parse_keyword_list(raw: Optional[str]) -> List[str]:
@@ -639,7 +657,8 @@ def get_timeline(
         include_detail,
         bundle.signature,
     )
-    cached_payload = _FILTERED_TIMELINE_CACHE.get((str(session_dir.resolve()), filter_cache_key))
+    session_path = str(session_dir.resolve())
+    cached_payload = _FILTERED_TIMELINE_CACHE.get((session_path, filter_cache_key))
     if cached_payload:
         payload = _copy_jsonish(cached_payload.payload)
         meta = payload.setdefault("meta", {})
@@ -893,10 +912,12 @@ def get_timeline(
             },
         },
     }
-    _FILTERED_TIMELINE_CACHE[(str(session_dir.resolve()), filter_cache_key)] = _FilteredTimelineCacheEntry(
-        key=filter_cache_key,
-        payload=_copy_jsonish(payload),
-    )
+    if _RAW_TIMELINE_CACHE.get((session_path, summary_chars)) is bundle:
+        _FILTERED_TIMELINE_CACHE.clear()
+        _FILTERED_TIMELINE_CACHE[(session_path, filter_cache_key)] = _FilteredTimelineCacheEntry(
+            key=filter_cache_key,
+            payload=_copy_jsonish(payload),
+        )
     return payload
 
 

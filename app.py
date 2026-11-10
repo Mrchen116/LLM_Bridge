@@ -16,6 +16,7 @@ from src.handlers.responses import run_responses_flow
 from src.inspector.api import ROUTER as SESSION_INSPECTOR_ROUTER, UI_DIR as SESSION_INSPECTOR_UI_DIR
 from src.observability.session_metrics import get_session_stats
 from src.observability.log_cleanup import RequestLogMiddleware, log_cleanup_worker
+from src.reasoning.reinject import get_reasoning_store
 from src.observability.token_stats import (
     TOKEN_FORMAT_ANTHROPIC,
     collect_usage_tokens_for_stats,
@@ -36,7 +37,7 @@ LOGS_SESSION_DIR = os.path.join(LOGS_ROOT_DIR, "session")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    with log_cleanup_worker(LOGS_RAW_DIR, LOGS_SESSION_DIR):
+    with log_cleanup_worker(LOGS_RAW_DIR, LOGS_SESSION_DIR), get_reasoning_store().cleanup_worker():
         yield
 
 

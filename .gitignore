@@ -2,6 +2,7 @@
 __pycache__/
 .pytest_cache/
 .codex_oauth.json
+.llm-proxy-cache/
 logs/
 logs_*/
 .playwright-cli/

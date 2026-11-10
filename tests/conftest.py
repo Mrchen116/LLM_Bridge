@@ -11,7 +11,17 @@ if str(ROOT_DIR) not in sys.path:
 
 import app as app_module
 import proxy_logging
+from src.reasoning import reinject
+from src.state.sqlite_store import PersistentSqliteReasoningStore
 from tests.support import FakeAsyncClient, TEST_UPSTREAM_CONFIG
+
+
+@pytest.fixture(autouse=True)
+def isolate_reasoning_cache(tmp_path, monkeypatch):
+    store = PersistentSqliteReasoningStore(tmp_path / "reasoning.sqlite3")
+    monkeypatch.setattr(reinject, "_REASONING_STORE", store)
+    yield
+    store.close()
 
 
 @pytest.fixture()

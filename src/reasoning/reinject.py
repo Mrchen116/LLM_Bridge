@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from proxy_converters import (
@@ -11,14 +12,13 @@ from proxy_converters import (
     _codex_responses_to_chat_completion,
     _extract_codex_output_tool_uses,
 )
-from src.state.memory_store import InMemoryReasoningStore
-from src.state.interfaces import ReasoningStore
+from src.state.sqlite_store import PersistentSqliteReasoningStore
 
 
-_REASONING_STORE: ReasoningStore = InMemoryReasoningStore()
+_REASONING_STORE = PersistentSqliteReasoningStore(Path(".llm-proxy-cache/reasoning.sqlite3"))
 
 
-def get_reasoning_store() -> ReasoningStore:
+def get_reasoning_store() -> PersistentSqliteReasoningStore:
     return _REASONING_STORE
 
 
@@ -187,7 +187,7 @@ def _maybe_reinject_codex_reasoning(
             model_suffix_effort=model_suffix_effort,
         )
         suffix_input = suffix_input_payload.get("input") if isinstance(suffix_input_payload.get("input"), list) else []
-        payload["input"] = copy.deepcopy(decorated_prefix_input) + list(suffix_input)
+        payload["input"] = decorated_prefix_input + list(suffix_input)
 
     trace = {
         "session_id": session_id,
@@ -243,7 +243,7 @@ def _update_codex_reasoning_reinject_cache(trace: Optional[Dict[str, Any]], resp
             assistant_input_items = [x for x in raw_assistant_input if isinstance(x, dict)]
 
     reasoning_items = _extract_codex_reasoning_encrypted_items(resp_json)
-    decorated_next_input = copy.deepcopy(sent_input) + reasoning_items + assistant_input_items
+    decorated_next_input = sent_input + reasoning_items + assistant_input_items
 
     _REASONING_STORE.set_decorated_prefix((session_id, provider, model), next_fp, decorated_next_input)
 
@@ -297,7 +297,7 @@ def _maybe_reinject_codex_reasoning_for_responses(
 
     out_payload = dict(payload)
     if decorated_prefix_input is not None:
-        out_payload["input"] = copy.deepcopy(decorated_prefix_input) + copy.deepcopy(suffix_user_items)
+        out_payload["input"] = decorated_prefix_input + copy.deepcopy(suffix_user_items)
 
     trace = {
         "session_id": session_id,
@@ -329,7 +329,7 @@ def _update_codex_reasoning_reinject_cache_for_responses(trace: Optional[Dict[st
     next_payload["input"] = copy.deepcopy(sent_input) + copy.deepcopy(assistant_items)
     next_fp = _codex_context_fingerprint(next_payload)
 
-    decorated_next_input = copy.deepcopy(sent_input) + reasoning_items + assistant_items
+    decorated_next_input = sent_input + reasoning_items + assistant_items
     _REASONING_STORE.set_decorated_prefix((session_id, provider, model), next_fp, decorated_next_input)
 
 
