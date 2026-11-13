@@ -2,6 +2,7 @@ import json
 import copy
 from pathlib import Path
 from fastapi.testclient import TestClient
+import pytest
 import zstandard as zstd
 
 import app as app_module
@@ -116,6 +117,74 @@ def test_responses_codex_oauth_can_compress_stream_request_body(client: TestClie
     assert decoded["input"] == "hello"
     assert decoded["reasoning"]["effort"] == "medium"
     assert decoded["include"] == ["reasoning.encrypted_content"]
+
+
+@pytest.mark.parametrize(
+    ("route", "payload"),
+    [
+        ("/v1/messages", {"messages": [{"role": "user", "content": "你好"}], "max_tokens": 64}),
+        (
+            "/v1/responses",
+            {"input": [{"type": "reasoning", "encrypted_content": "encrypted-test", "summary": []}]},
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("compress", "errors", "expected_status"),
+    [
+        (True, [b'{"detail":"Bad Request"}'], 200),
+        (True, [b'{"detail":"Bad Request"}', b'{"detail":"Bad Request"}'], 400),
+        (True, [b'{"detail":"Bad Request","code":"invalid_input"}'], 400),
+        (False, [b'{"detail":"Bad Request"}'], 400),
+    ],
+)
+def test_codex_oauth_stream_compression_fallback(
+    client: TestClient, monkeypatch, route, payload, compress, errors, expected_status,
+):
+    cfg = copy.deepcopy(TEST_UPSTREAM_CONFIG)
+    cfg["profiles"]["codexOAuth"]["features"] = {"enableRequestCompression": compress}
+    monkeypatch.setattr(app_module, "UPSTREAM_CONFIG", cfg)
+    requests = []
+    completed = (
+        b'data: {"type":"response.completed","response":'
+        b'{"id":"resp_ok","status":"completed","output":[]}}\n\n'
+    )
+    monkeypatch.setattr(
+        FakeAsyncClient,
+        "stream_responses",
+        [FakeStreamResponse(400, read_bytes=error) for error in errors]
+        + [FakeStreamResponse(200, lines=[completed.decode().strip()], raw_chunks=[completed])],
+    )
+    original_stream = FakeAsyncClient.stream
+
+    def record_stream(self, method, url, headers, **kwargs):
+        requests.append((url, dict(headers), kwargs))
+        return original_stream(self, method, url, headers, **kwargs)
+
+    monkeypatch.setattr(FakeAsyncClient, "stream", record_stream)
+
+    response = client.post(route, json={"model": "codexOAuth:gpt-5.2-codex", "stream": True, **payload})
+
+    assert response.status_code == expected_status
+    if expected_status == 200:
+        completion_event = "message_stop" if route == "/v1/messages" else "response.completed"
+        assert completion_event in response.text
+    url, headers, kwargs = requests[0]
+    if not compress:
+        assert "content-encoding" not in headers
+        assert len(requests) == 1
+    elif len(errors) == 1 and expected_status == 400:
+        assert headers["content-encoding"] == "zstd"
+        assert len(requests) == 1
+    else:
+        assert len(requests) == 2
+        retry_url, retry_headers, retry_kwargs = requests[1]
+        assert retry_url == url
+        assert headers.pop("content-encoding") == "zstd"
+        assert retry_headers == headers
+        assert retry_kwargs["content"] == zstd.decompress(kwargs["content"])
+        if route == "/v1/responses":
+            assert json.loads(retry_kwargs["content"])["input"] == payload["input"]
 
 
 def test_responses_codex_oauth_all_accounts_cooling_down_returns_429(tmp_path, monkeypatch):

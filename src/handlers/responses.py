@@ -13,12 +13,12 @@ from src.adapters.http_retry import post_with_retry
 from src.adapters.upstream_executor import (
     build_codex_oauth_style_headers,
     build_headers_by_profile,
-    build_upstream_request_kwargs,
     collect_codex_response_from_stream,
     is_rate_limit_status,
     mark_retryable_response_for_profile,
     should_retry_codex_result,
     should_trigger_codex_failover,
+    stream_upstream_request,
 )
 from src.observability.turn_logging import (
     DOWNSTREAM_FORMAT_OPENAI_RESPONSES,
@@ -299,12 +299,13 @@ async def run_responses_flow(
                 last_retry_status = None
                 connected = False
                 for attempt in range(max_retries):
-                    request_headers, request_kwargs = build_upstream_request_kwargs(
+                    async with stream_upstream_request(
+                        client,
+                        upstream_url,
                         profile=profile,
                         headers=retry_headers,
                         request_body=body,
-                    )
-                    async with client.stream("POST", upstream_url, headers=request_headers, **request_kwargs) as r:
+                    ) as r:
                         chunks.append({"type": "response_meta", "status_code": r.status_code, "headers": dict(r.headers)})
                         if r.status_code >= 400:
                             err = await r.aread()

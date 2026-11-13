@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from typing import Any, Dict, List, Mapping, Optional
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Mapping, Optional
 
 import httpx
 import zstandard as zstd
@@ -155,6 +156,41 @@ def build_upstream_request_kwargs(
     return request_headers, {"content": compressed_bytes}
 
 
+@asynccontextmanager
+async def stream_upstream_request(
+    client: httpx.AsyncClient,
+    upstream_url: str,
+    *,
+    profile: Dict[str, Any],
+    headers: Mapping[str, Any],
+    request_body: Dict[str, Any],
+) -> AsyncIterator[httpx.Response]:
+    """Send an upstream stream request, falling back from a rejected zstd body once."""
+    request_headers, request_kwargs = build_upstream_request_kwargs(
+        profile=profile, headers=headers, request_body=request_body,
+    )
+    compressed_body = request_kwargs.get("content")
+    async with client.stream("POST", upstream_url, headers=request_headers, **request_kwargs) as response:
+        if compressed_body is None or response.status_code != 400:
+            yield response
+            return
+        try:
+            error = json.loads(await response.aread())
+        except ValueError:
+            error = None
+        if error != {"detail": "Bad Request"}:
+            yield response
+            return
+
+    # Close the rejected response before sending the same JSON without zstd.
+    plain_headers = dict(request_headers)
+    del plain_headers["content-encoding"]
+    async with client.stream(
+        "POST", upstream_url, headers=plain_headers, content=zstd.decompress(compressed_body),
+    ) as response:
+        yield response
+
+
 def build_codex_oauth_style_headers(
     *,
     auth_headers: Mapping[str, Any],
@@ -253,14 +289,11 @@ async def collect_codex_response_from_stream(
 ) -> Dict[str, Any]:
     req_body = dict(request_body)
     req_body["stream"] = True
-    request_headers, request_kwargs = build_upstream_request_kwargs(
-        profile=profile,
-        headers=headers,
-        request_body=req_body,
-    )
     collected_chunks: List[Any] = []
     try:
-        async with client.stream("POST", upstream_url, headers=request_headers, **request_kwargs) as r:
+        async with stream_upstream_request(
+            client, upstream_url, profile=profile, headers=headers, request_body=req_body,
+        ) as r:
             collected_chunks.append(
                 {
                     "type": "codex_stream_meta",
