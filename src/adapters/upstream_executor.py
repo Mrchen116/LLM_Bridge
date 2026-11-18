@@ -32,9 +32,9 @@ CODEX_FAILOVER_ERROR_CODES = {
 CODEX_RETRYABLE_ERROR_CODES = CODEX_FAILOVER_ERROR_CODES | {
     "server_error",
 }
-CODEX_DEFAULT_ORIGINATOR = "codex_cli_rs"
+CODEX_DEFAULT_ORIGINATOR = "LLM_PROXY"
 CODEX_DEFAULT_BETA_FEATURES = "multi_agent,prevent_idle_sleep"
-CODEX_DEFAULT_VERSION = "0.155.1"
+CODEX_DEFAULT_VERSION = "0.169.1"
 CODEX_UPSTREAM_CLIENT_VERSION_ENV = "CODEX_UPSTREAM_CLIENT_VERSION"
 
 
@@ -221,7 +221,7 @@ def build_codex_oauth_style_headers(
         "accept": "text/event-stream",
         "content-type": "application/json",
         "originator": incoming_originator or CODEX_DEFAULT_ORIGINATOR,
-        "user-agent": incoming_user_agent or f"codex_cli_rs/{codex_version} (LLM_PROXY)",
+        "user-agent": incoming_user_agent or "LLM_PROXY",
         "x-codex-beta-features": incoming_beta_features or CODEX_DEFAULT_BETA_FEATURES,
         "version": codex_version,
     }

@@ -13,9 +13,9 @@ def test_codex_oauth_headers_use_current_default_version(monkeypatch):
         session_id=None,
     )
 
-    assert CODEX_DEFAULT_VERSION == "0.155.1"
-    assert headers["version"] == "0.155.1"
-    assert headers["user-agent"] == "codex_cli_rs/0.155.1 (LLM_PROXY)"
+    assert CODEX_DEFAULT_VERSION == "0.169.1"
+    assert headers["version"] == "0.169.1"
+    assert headers["user-agent"] == "LLM_PROXY"
 
 
 def test_codex_oauth_headers_allow_version_override(monkeypatch):
@@ -28,7 +28,7 @@ def test_codex_oauth_headers_allow_version_override(monkeypatch):
     )
 
     assert headers["version"] == "0.145.1"
-    assert headers["user-agent"] == "codex_cli_rs/0.145.1 (LLM_PROXY)"
+    assert headers["user-agent"] == "LLM_PROXY"
 
 
 def test_codex_oauth_headers_prefer_downstream_version(monkeypatch):
@@ -41,4 +41,4 @@ def test_codex_oauth_headers_prefer_downstream_version(monkeypatch):
     )
 
     assert headers["version"] == "0.146.0"
-    assert headers["user-agent"] == "codex_cli_rs/0.146.0 (LLM_PROXY)"
+    assert headers["user-agent"] == "LLM_PROXY"

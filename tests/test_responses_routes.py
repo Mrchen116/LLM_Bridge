@@ -40,7 +40,7 @@ def test_openai_responses_codex_oauth_non_stream_passthrough(client: TestClient)
     assert FakeAsyncClient.last_stream_args["url"] == "https://chatgpt.com/backend-api/codex/responses"
     assert FakeAsyncClient.last_stream_args["headers"]["authorization"] == "Bearer codex-access-token"
     assert FakeAsyncClient.last_stream_args["headers"]["chatgpt-account-id"] == "org-test-account"
-    assert FakeAsyncClient.last_stream_args["headers"]["originator"] == "codex_cli_rs"
+    assert FakeAsyncClient.last_stream_args["headers"]["originator"] == "LLM_PROXY"
     assert FakeAsyncClient.last_stream_args["headers"]["accept"] == "text/event-stream"
     assert "session_id" not in FakeAsyncClient.last_stream_args["headers"]
     assert "x-codex-turn-metadata" not in FakeAsyncClient.last_stream_args["headers"]
